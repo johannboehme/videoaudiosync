@@ -183,6 +183,18 @@ async def edit_render(
         filter_chains.append(f"{last_a}anull[af]")
         last_a = "[af]"
 
+    # Export preset: optional resolution scale filter inserted at the very end
+    # of the video chain. Codec / bitrate / format come from edit_spec.export.
+    export_cfg = edit_spec.get("export") or {}
+    target_res = export_cfg.get("resolution")
+    if isinstance(target_res, dict):
+        # libx264 wants even dimensions
+        tw = int(target_res.get("w", width)) // 2 * 2
+        th = int(target_res.get("h", height)) // 2 * 2
+        if (tw, th) != (width, height):
+            filter_chains.append(f"{last_v}scale={tw}:{th}:flags=lanczos[v_scaled]")
+            last_v = "[v_scaled]"
+
     if last_v != "[vf]":
         filter_chains.append(f"{last_v}null[vf]")
         last_v = "[vf]"
@@ -192,22 +204,40 @@ async def edit_render(
     if progress_cb:
         progress_cb(45)
 
+    # Resolve codec/bitrate/format from preset (defaults match the previous behaviour).
+    codec = str(export_cfg.get("video_codec") or "h264").lower()
+    v_codec_arg = "libx265" if codec == "h265" else "libx264"
+    v_bitrate_kbps = int(export_cfg.get("video_bitrate_kbps") or 0)
+    a_bitrate_kbps = int(export_cfg.get("audio_bitrate_kbps") or 192)
+    fmt = str(export_cfg.get("format") or "mp4").lower()
+
     args = [
         "-i", str(video_path),
         "-i", str(studio_audio_path),
         "-filter_complex", filter_complex,
         "-map", "[vf]",
         "-map", "[af]",
-        "-c:v", "libx264",
+        "-c:v", v_codec_arg,
         "-preset", "veryfast",
-        "-crf", "20",
+    ]
+    if v_bitrate_kbps > 0:
+        # bitrate-targeted: better predictability for export presets
+        args += ["-b:v", f"{v_bitrate_kbps}k", "-maxrate", f"{int(v_bitrate_kbps * 1.5)}k",
+                 "-bufsize", f"{v_bitrate_kbps * 2}k"]
+    else:
+        args += ["-crf", "20"]
+    args += [
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        "-b:a", "192k",
+        "-b:a", f"{a_bitrate_kbps}k",
         "-shortest",
         "-movflags", "+faststart",
-        str(out_path),
     ]
+    # Adjust output path extension if requested format differs.
+    target_path = out_path
+    if fmt == "mov" and out_path.suffix.lower() != ".mov":
+        target_path = out_path.with_suffix(".mov")
+    args.append(str(target_path))
     # Output duration: sum of segments, or full input duration if no cuts.
     out_dur = sum(
         max(0.0, float(s.get("out", 0)) - float(s.get("in", 0))) for s in segments
@@ -224,4 +254,4 @@ async def edit_render(
         await ffmpeg(args)
     if progress_cb:
         progress_cb(95)
-    return out_path
+    return target_path

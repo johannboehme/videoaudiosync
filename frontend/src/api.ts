@@ -3,6 +3,7 @@
 export interface User {
   id: string;
   email: string;
+  last_sync_override_ms: number | null;
 }
 
 export type JobStatus =
@@ -28,6 +29,7 @@ export interface Job {
   duration_s: number | null;
   width: number | null;
   height: number | null;
+  fps: number | null;
   progress_pct: number;
   progress_stage: string;
   progress_detail: string | null;
@@ -72,11 +74,24 @@ export interface VisualizerConfig {
   opacity?: number;
 }
 
+export type ExportPreset = "web" | "archive" | "mobile" | "custom";
+
+export interface ExportSpec {
+  preset: ExportPreset;
+  format?: "mp4" | "mov";
+  resolution?: { w: number; h: number } | "source";
+  video_codec?: "h264" | "h265";
+  video_bitrate_kbps?: number;
+  audio_bitrate_kbps?: number;
+}
+
 export interface EditSpec {
   version: 1;
   segments: Segment[];
   overlays: TextOverlay[];
   visualizer: VisualizerConfig | null;
+  sync_override_ms?: number;
+  export?: ExportSpec;
 }
 
 export class ApiError extends Error {
@@ -230,6 +245,14 @@ export class ApiClient {
 
   thumbnailsUrl(id: string): string {
     return this.url(`/api/jobs/${id}/thumbnails`);
+  }
+
+  rawVideoUrl(id: string): string {
+    return this.url(`/api/jobs/${id}/raw-video`);
+  }
+
+  rawAudioUrl(id: string): string {
+    return this.url(`/api/jobs/${id}/raw-audio`);
   }
 
   // ---- progress SSE ----

@@ -25,6 +25,10 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    # Auto-learn: last manual sync_override_ms the user submitted. Pre-fills the
+    # SyncTuner on the next job — Ray-Ban-style devices have a fairly constant
+    # capture-time A/V offset, so the prior value is usually a good starting point.
+    last_sync_override_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     jobs: Mapped[list[Job]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
@@ -55,6 +59,7 @@ class Job(Base):
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fps: Mapped[float | None] = mapped_column(Float, nullable=True)
     bytes_in: Mapped[int] = mapped_column(Integer, default=0)
     bytes_out: Mapped[int] = mapped_column(Integer, default=0)
 

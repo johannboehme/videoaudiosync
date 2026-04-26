@@ -148,3 +148,31 @@ def duration_s(probe: dict[str, Any]) -> float | None:
         return float(fmt["duration"])
     except (KeyError, ValueError, TypeError):
         return None
+
+
+def video_fps(probe: dict[str, Any]) -> float | None:
+    """Best-effort frames-per-second for the first video stream.
+
+    Prefers `avg_frame_rate` (effective playback fps) over `r_frame_rate`
+    (declared base fps) — they only differ for VFR sources, where the
+    average is the more useful value for frame-stepping in the editor.
+    Returns None if the rate is "0/0" (unknown) or malformed.
+    """
+    for s in probe.get("streams", []):
+        if s.get("codec_type") != "video":
+            continue
+        for key in ("avg_frame_rate", "r_frame_rate"):
+            raw = s.get(key)
+            if not raw:
+                continue
+            try:
+                num_s, _, den_s = str(raw).partition("/")
+                num = float(num_s)
+                den = float(den_s) if den_s else 1.0
+                if den <= 0 or num <= 0:
+                    continue
+                return num / den
+            except (ValueError, ZeroDivisionError):
+                continue
+        return None
+    return None

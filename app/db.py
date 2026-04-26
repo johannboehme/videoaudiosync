@@ -26,6 +26,10 @@ _LAZY_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "jobs": [
         ("progress_detail", "VARCHAR(255)"),
         ("progress_eta_s", "FLOAT"),
+        ("fps", "FLOAT"),
+    ],
+    "users": [
+        ("last_sync_override_ms", "FLOAT"),
     ],
 }
 

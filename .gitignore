@@ -8,6 +8,8 @@ venv/
 data/
 node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.claude/
 app/static/
 .pytest_cache/
 .ruff_cache/

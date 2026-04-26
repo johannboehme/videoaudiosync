@@ -14,7 +14,7 @@ from app.pipeline.extract import (
     extract_reference_audio,
     extract_thumbnails_strip,
 )
-from app.pipeline.ffmpeg_util import duration_s, ffprobe, video_dims
+from app.pipeline.ffmpeg_util import duration_s, ffprobe, video_dims, video_fps
 from app.pipeline.render_quick import quick_render
 from app.pipeline.sync import sync_audio
 from app.queue import mark_done, report_progress
@@ -51,6 +51,7 @@ async def run_sync_job(job_id: str) -> None:
     probe = await ffprobe(video)
     dur = duration_s(probe)
     dims = video_dims(probe)
+    fps = video_fps(probe)
     async with SessionLocal() as s:
         job = await s.get(Job, job_id)
         if job is not None:
@@ -58,6 +59,8 @@ async def run_sync_job(job_id: str) -> None:
                 job.duration_s = dur
             if dims is not None:
                 job.width, job.height = dims
+            if fps is not None:
+                job.fps = fps
             await s.commit()
 
     await report_progress(job_id, "analyzing", 10, detail="Extracting reference audio")
@@ -70,7 +73,8 @@ async def run_sync_job(job_id: str) -> None:
 
     await report_progress(job_id, "analyzing", 35, detail="Generating thumbnails")
     try:
-        await extract_thumbnails_strip(video, job_cache / "thumbs.png")
+        # WebP strip: 3-5× smaller than PNG, density adapts to duration.
+        await extract_thumbnails_strip(video, job_cache / "thumbs.webp", duration_s=dur)
     except Exception:  # noqa: BLE001
         pass  # thumbs are nice-to-have, never block sync
 
@@ -127,9 +131,16 @@ async def run_edit_job(job_id: str) -> None:
             return
         video = Path(job.video_path)
         audio = Path(job.audio_path)
-        offset_ms = float(job.sync_offset_ms or 0.0)
-        drift_ratio = float(job.sync_drift_ratio or 1.0)
         edit_spec = dict(job.edit_spec or {})
+        # User-supplied manual offset (e.g. for Ray-Ban-style devices with a
+        # constant capture-time A/V desync) is applied additively on top of the
+        # algorithm-computed sync_offset_ms.
+        try:
+            override_ms = float(edit_spec.get("sync_override_ms") or 0.0)
+        except (TypeError, ValueError):
+            override_ms = 0.0
+        offset_ms = float(job.sync_offset_ms or 0.0) + override_ms
+        drift_ratio = float(job.sync_drift_ratio or 1.0)
         job.started_at = datetime.now(timezone.utc)
         job.error = None
         await s.commit()
@@ -159,7 +170,7 @@ async def run_edit_job(job_id: str) -> None:
             report_progress(job_id, "rendering", pct, detail=detail_label)
         )
 
-    await edit_render(
+    final_path = await edit_render(
         video_path=video,
         studio_audio_path=audio,
         offset_ms=offset_ms,
@@ -169,5 +180,5 @@ async def run_edit_job(job_id: str) -> None:
         cache_dir=job_cache,
         progress_cb=_on_render_progress,
     )
-    size = out_path.stat().st_size if out_path.exists() else 0
-    await mark_done(job_id, str(out_path), size)
+    size = final_path.stat().st_size if final_path.exists() else 0
+    await mark_done(job_id, str(final_path), size)

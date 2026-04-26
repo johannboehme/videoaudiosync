@@ -19,6 +19,15 @@ class LoginIn(BaseModel):
 class UserOut(BaseModel):
     id: str
     email: str
+    last_sync_override_ms: float | None = None
+
+
+def _user_to_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        last_sync_override_ms=user.last_sync_override_ms,
+    )
 
 
 @router.post("/login", response_model=UserOut)
@@ -31,7 +40,7 @@ async def login(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     issue_session(response, user.id)
-    return UserOut(id=user.id, email=user.email)
+    return _user_to_out(user)
 
 
 @router.post("/logout", status_code=204)
@@ -43,4 +52,4 @@ async def logout() -> Response:
 
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(current_user)) -> UserOut:
-    return UserOut(id=user.id, email=user.email)
+    return _user_to_out(user)

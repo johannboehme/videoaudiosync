@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ class JobOut(BaseModel):
     duration_s: float | None
     width: int | None
     height: int | None
+    fps: float | None
     progress_pct: float
     progress_stage: str
     progress_detail: str | None
@@ -70,6 +71,7 @@ def _job_to_out(job: Job) -> JobOut:
         duration_s=job.duration_s,
         width=job.width,
         height=job.height,
+        fps=job.fps,
         progress_pct=job.progress_pct,
         progress_stage=job.progress_stage,
         progress_detail=job.progress_detail,
@@ -243,6 +245,14 @@ async def submit_edit(
     job.status = "queued"
     job.progress_stage = "queued"
     job.progress_pct = 0.0
+    # Auto-learn: if the user provided a manual override, remember it on their
+    # profile so the next job's SyncTuner pre-fills with this value. Absent
+    # field means "no opinion, leave the pref alone."
+    if "sync_override_ms" in body.spec:
+        try:
+            user.last_sync_override_ms = float(body.spec["sync_override_ms"])
+        except (TypeError, ValueError):
+            pass
     await session.commit()
     await queue.submit(job.id, run_edit_job)
     await session.refresh(job)
@@ -279,6 +289,124 @@ async def preview_output(
     return FileResponse(job.output_path, media_type="video/mp4")
 
 
+_VIDEO_MIME_BY_EXT = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+_AUDIO_MIME_BY_EXT = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+}
+
+
+def _serve_with_range(
+    path: Path,
+    range_header: str | None,
+    media_type: str,
+) -> Response | FileResponse:
+    """Serve a static file with HTTP Range support so <video> seek + AudioBuffer
+    streaming both work efficiently.
+
+    Why hand-rolled: Starlette's FileResponse only honors the Range header in
+    very recent versions and only for some response paths. A small explicit
+    handler is more reliable and keeps the test contract obvious.
+    """
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    file_size = path.stat().st_size
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=3600",
+    }
+    if not range_header:
+        return FileResponse(str(path), media_type=media_type, headers=common_headers)
+
+    # parse "bytes=START-END"
+    if not range_header.startswith("bytes="):
+        raise HTTPException(status_code=416, detail="Invalid Range unit")
+    spec = range_header[len("bytes="):].strip()
+    if "," in spec:  # multi-range — not supported, return full file
+        return FileResponse(str(path), media_type=media_type, headers=common_headers)
+    try:
+        start_s, end_s = spec.split("-", 1)
+        if start_s == "":
+            # suffix range: last N bytes
+            n = int(end_s)
+            start = max(0, file_size - n)
+            end = file_size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else file_size - 1
+    except ValueError:
+        raise HTTPException(status_code=416, detail="Invalid Range value")
+    if start < 0 or start >= file_size or end < start:
+        raise HTTPException(
+            status_code=416,
+            detail=f"Requested range not satisfiable (file size {file_size})",
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+    end = min(end, file_size - 1)
+    length = end - start + 1
+    with path.open("rb") as f:
+        f.seek(start)
+        chunk = f.read(length)
+    return Response(
+        content=chunk,
+        status_code=206,
+        media_type=media_type,
+        headers={
+            **common_headers,
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(length),
+        },
+    )
+
+
+@router.get("/{job_id}/raw-video")
+async def get_raw_video(
+    job_id: str,
+    range: str | None = Header(default=None),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Original uploaded video, untouched. Editor plays this muted while the
+    Web-Audio scheduler drives the studio audio with a user-tuned offset."""
+    job = await _get_owned_job(session, job_id, user)
+    if not job.video_path:
+        raise HTTPException(status_code=404, detail="No raw video")
+    p = Path(job.video_path)
+    ext = p.suffix.lower()
+    media_type = _VIDEO_MIME_BY_EXT.get(ext, "application/octet-stream")
+    return _serve_with_range(p, range, media_type)
+
+
+@router.get("/{job_id}/raw-audio")
+async def get_raw_audio(
+    job_id: str,
+    range: str | None = Header(default=None),
+    user: User = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Original studio audio, untouched. Decoded into an AudioBuffer client-side
+    for sample-accurate live offset preview."""
+    job = await _get_owned_job(session, job_id, user)
+    if not job.audio_path:
+        raise HTTPException(status_code=404, detail="No raw audio")
+    p = Path(job.audio_path)
+    ext = p.suffix.lower()
+    media_type = _AUDIO_MIME_BY_EXT.get(ext, "application/octet-stream")
+    return _serve_with_range(p, range, media_type)
+
+
 @router.get("/{job_id}/waveform")
 async def get_waveform(
     job_id: str,
@@ -299,10 +427,15 @@ async def get_thumbnails(
     session: AsyncSession = Depends(get_session),
 ):
     job = await _get_owned_job(session, job_id, user)
-    p = settings.cache_dir / job.id / "thumbs.png"
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="Thumbnails not ready")
-    return FileResponse(p, media_type="image/png")
+    # New jobs use WebP; older jobs still have PNG. Serve whichever exists.
+    cache_dir = settings.cache_dir / job.id
+    webp = cache_dir / "thumbs.webp"
+    png = cache_dir / "thumbs.png"
+    if webp.exists():
+        return FileResponse(webp, media_type="image/webp")
+    if png.exists():
+        return FileResponse(png, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Thumbnails not ready")
 
 
 @router.get("/{job_id}/events")
