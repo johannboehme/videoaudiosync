@@ -243,6 +243,52 @@ def phone_audio_drift(fixtures_dir, studio_long) -> tuple[Path, float, float]:
     return path, offset_ms, drift_ratio
 
 
+@pytest.fixture(scope="session")
+def realistic_drift_pair(fixtures_dir) -> tuple[Path, Path, float, float]:
+    """Reproduces the real-world failure observed with a user's 3-min phone+studio pair:
+
+      - both files have ~7-23 s of leading silence (real phone recordings start with
+        silence before the user starts playing)
+      - the song is the same content, NOT a different take
+      - the phone clock runs ~0.33% faster than the studio (typical phone clock drift
+        over a 3-min recording)
+      - chroma confidence is high (~0.8) so the existing DTW fallback never triggers
+
+    Returns (phone_path, studio_path, expected_offset_ms_at_start, expected_drift_ratio).
+    """
+    phone_path = fixtures_dir / "drifty_phone.wav"
+    studio_path = fixtures_dir / "drifty_studio.wav"
+    # Phone song starts at 22 s, studio song starts at 7 s. Convention:
+    #   offset = phone_song_start - studio_song_start = 22 - 7 = +15 000 ms
+    # The clock drift is independent of the offset.
+    expected_offset_ms = 15000.0
+    expected_drift = 1.0033
+
+    if phone_path.exists() and studio_path.exists():
+        return phone_path, studio_path, expected_offset_ms, expected_drift
+
+    import librosa
+
+    # 90 s of varied "song-like" content: melody + bass + drums
+    song = _make_song(90.0, sr=SR, seed=42)
+
+    # Phone: silence(22 s) + song[stretched by 1/drift]; total ~112 s
+    phone_silence = np.zeros(int(SR * 22.0), dtype=np.float32)
+    # phone's clock is FASTER → it captures fewer samples per real-world second →
+    # the song appears compressed in phone audio relative to studio.
+    phone_song = librosa.effects.time_stretch(song, rate=expected_drift)
+    phone = np.concatenate([phone_silence, phone_song])
+    phone = _phone_recording(phone)
+
+    # Studio: silence(7 s) + clean song; total ~97 s
+    studio_silence = np.zeros(int(SR * 7.0), dtype=np.float32)
+    studio = np.concatenate([studio_silence, song])
+
+    sf.write(str(phone_path), phone, SR)
+    sf.write(str(studio_path), studio, SR)
+    return phone_path, studio_path, expected_offset_ms, expected_drift
+
+
 # ---- Video fixtures -----------------------------------------------------------
 
 

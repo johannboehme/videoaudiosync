@@ -82,6 +82,83 @@ def _chroma_alignment(
     return offset_samples, confidence, cr, cq
 
 
+def _windowed_drift_refinement(
+    ref: np.ndarray,
+    query: np.ndarray,
+    sr: int,
+    coarse_offset_samples: int,
+    n_windows: int = 8,
+    win_seconds: float = 10.0,
+    search_radius_seconds: float = 5.0,
+    min_peak_to_median: float = 6.0,
+    min_rms: float = 0.005,
+) -> tuple[int, float] | None:
+    """Refine (offset, drift) using sliding time-domain correlation windows.
+
+    Slides ``n_windows`` windows of ``win_seconds`` across ref. For each window,
+    cross-correlates against a slice of query around the coarse-aligned position
+    (within ±``search_radius_seconds``) and records where the best match landed.
+    Fits a line ``query_pos = drift * ref_pos + intercept`` to the matches.
+
+    Returns ``(offset_samples, drift_ratio)`` if the fit is reliable, else ``None``.
+    Reliability requires at least 3 high-confidence (peak/median) matches.
+
+    drift_ratio > 1 means query progresses faster than ref (i.e. query plays "longer"
+    in seconds for the same musical content), so the studio file needs to be
+    sped up by drift_ratio to match the phone (atempo=drift_ratio).
+    """
+    from scipy.signal import correlate
+
+    if ref.size < int(win_seconds * sr) * 2:
+        return None  # too short for reliable drift estimation
+
+    win_samples = int(win_seconds * sr)
+    radius_samples = int(search_radius_seconds * sr)
+
+    # Place windows evenly across the ref signal, skipping the very first/last 5%
+    margin = int(0.05 * ref.size)
+    if ref.size - 2 * margin - win_samples <= 0:
+        return None
+    positions = np.linspace(margin, ref.size - margin - win_samples, n_windows).astype(int)
+
+    matches: list[tuple[float, float, float]] = []  # (ref_t, query_t, score)
+    for p in positions:
+        ref_w = ref[p : p + win_samples]
+        if float(np.sqrt(np.mean(ref_w**2))) < min_rms:
+            continue  # ref window too quiet to match against
+
+        # Search inside query[approx_q_pos ± radius]. The "approximate" query position
+        # is where the coarse alignment thinks this ref position lives:
+        #     query_pos ≈ ref_pos - coarse_offset_samples
+        approx_q = p - coarse_offset_samples
+        q_lo = max(0, approx_q - radius_samples)
+        q_hi = min(query.size, approx_q + win_samples + radius_samples)
+        if q_hi - q_lo < win_samples:
+            continue
+        q_chunk = query[q_lo:q_hi]
+
+        c = correlate(q_chunk, ref_w, mode="valid", method="fft")
+        abs_c = np.abs(c)
+        peak = int(np.argmax(abs_c))
+        peak_score = float(abs_c[peak] / (np.median(abs_c) + 1e-9))
+        if peak_score < min_peak_to_median:
+            continue
+        # Best query position (in absolute query coords) for this ref window
+        q_pos = q_lo + peak
+        matches.append((p / sr, q_pos / sr, peak_score))
+
+    if len(matches) < 3:
+        return None
+
+    refs_s = np.array([m[0] for m in matches])
+    queries_s = np.array([m[1] for m in matches])
+    # query_pos = drift * ref_pos + intercept
+    drift, intercept_s = np.polyfit(refs_s, queries_s, 1)
+    # Convention: at ref_pos=0, query_pos=intercept_s. offset = ref_pos - query_pos = -intercept_s.
+    offset_samples = int(round(-intercept_s * sr))
+    return offset_samples, float(drift)
+
+
 def _chroma_confidence_at_offset(
     cr: np.ndarray, cq: np.ndarray, offset_samples: int
 ) -> float:
@@ -163,6 +240,21 @@ def sync_audio(
                 lag, confidence, drift = lag_dtw, conf_dtw, drift_dtw
         except Exception as exc:  # noqa: BLE001
             warning = f"DTW fallback failed: {exc}"
+
+    # Always run sliding-window refinement to catch clock drift that chroma's flat
+    # confidence landscape can't see. Chroma's offset is the median over the song;
+    # for drift > 0.1 % over a 3-min recording, that median value leaves the start
+    # and end visibly off. The refinement re-fits a line through per-window matches.
+    refinement = _windowed_drift_refinement(ref, query, sr, coarse_offset_samples=lag)
+    if refinement is not None:
+        refined_lag, refined_drift = refinement
+        # Trust the refinement if it found ≥3 confident windows. If the refined
+        # offset disagrees with chroma by more than 30 s the alignment was unstable
+        # — keep chroma's value to avoid a worse failure.
+        if abs(refined_lag - lag) <= 30 * sr:
+            lag = refined_lag
+            drift = refined_drift
+            method = method + "+drift"
 
     if abs(drift - 1.0) > 0.001:  # >0.1% drift
         warning = (warning + "; " if warning else "") + f"Audio drift detected: {drift:.4%}"

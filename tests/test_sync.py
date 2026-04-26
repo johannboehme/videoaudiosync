@@ -70,6 +70,25 @@ def test_sync_finds_offset_when_ref_is_much_shorter_than_query(tmp_path, studio_
     assert result.confidence > 0.5
 
 
+def test_sync_detects_drift_in_realistic_pair(realistic_drift_pair):
+    """Reproduces a real-world failure: 3-min recording where chroma confidence is
+    high but the phone clock drifts ~0.3 % faster than the studio. The current
+    chroma-only path picks a single mid-song offset, leaving the start +100 ms off
+    and the end -200 ms off. The fix must detect drift even when confidence is high."""
+    phone, studio, expected_offset_ms, expected_drift = realistic_drift_pair
+    result = sync_audio(phone, studio)
+    # offset measured at the START of the song should be within 100 ms of the truth
+    assert result.offset_ms == pytest.approx(expected_offset_ms, abs=150), (
+        f"offset {result.offset_ms:.0f} ms differs from expected {expected_offset_ms} ms"
+        f" by more than 150 ms — drift wasn't compensated"
+    )
+    # drift detection must trigger and report the slope within 0.1 %
+    assert result.drift_ratio == pytest.approx(expected_drift, abs=0.001), (
+        f"drift ratio {result.drift_ratio:.4f} differs from expected {expected_drift}"
+        f" — drift detection should always run, not just on low chroma confidence"
+    )
+
+
 def test_sync_handles_empty_audio(tmp_path):
     import soundfile as sf
     import numpy as np
