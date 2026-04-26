@@ -1,5 +1,8 @@
 # --- Stage 1: build the React frontend ---
-FROM node:20-alpine AS frontend
+# Use bookworm-slim instead of alpine — Vite's native deps (rollup, esbuild,
+# lightningcss) ship glibc binaries by default; the alpine/musl variants need
+# extra optionalDependencies that aren't always in the lockfile.
+FROM node:20-bookworm-slim AS frontend
 WORKDIR /fe
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund && \
