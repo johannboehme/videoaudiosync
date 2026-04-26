@@ -24,17 +24,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# install python deps first for cache
+# Install Python deps first (heavy, rarely changes). pyproject.toml alone is
+# enough for pip to resolve dependencies, but the actual `app` package will
+# be installed editable from /app in the next step so the `vasync` entry-point
+# script can find it.
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --no-deps -e . || true && \
     pip install --no-cache-dir .
 
 COPY app/ ./app/
 COPY --from=frontend /fe/dist/ ./app/static/
 
+# Re-install editable now that app/ exists, so vasync entry point resolves
+# `from app.cli import cli` correctly regardless of cwd.
+RUN pip install --no-cache-dir --no-deps -e .
+
 ENV DATA_DIR=/data \
     PORT=8000 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
 VOLUME ["/data"]
 EXPOSE 8000
