@@ -11,6 +11,7 @@ vi.mock("../api", () => ({
     listJobs: () => listJobsMock(),
     deleteJob: (id: string) => deleteJobMock(id),
     downloadUrl: (id: string) => `/api/jobs/${id}/download`,
+    thumbnailsUrl: (id: string) => `/api/jobs/${id}/thumbnails`,
   },
 }));
 
@@ -51,7 +52,7 @@ describe("History page", () => {
         <History />
       </MemoryRouter>,
     );
-    await waitFor(() => expect(screen.getByText(/no jobs yet/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no jobs/i)).toBeInTheDocument());
   });
 
   it("lists jobs with title, status, and a link to the job page", async () => {

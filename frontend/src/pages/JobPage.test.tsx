@@ -68,7 +68,8 @@ describe("JobPage", () => {
     getJobMock.mockResolvedValueOnce(makeJob({ status: "analyzing", progress_stage: "analyzing", progress_pct: 25 }));
     renderRouted();
     await waitFor(() => expect(screen.getByText(/my take/i)).toBeInTheDocument());
-    expect(screen.getByText(/analyzing/i)).toBeInTheDocument();
+    // 'Analyzing' appears in the status badge + stage label — multiple matches expected
+    expect(screen.getAllByText(/analyzing/i).length).toBeGreaterThan(0);
   });
 
   it("subscribes to SSE and updates progress as events arrive", async () => {
@@ -82,7 +83,9 @@ describe("JobPage", () => {
     await waitFor(() => expect(subscribeJobMock).toHaveBeenCalled());
 
     cb({ stage: "rendering", progress: 70, status: "rendering" });
-    await waitFor(() => expect(screen.getByText(/rendering/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText(/rendering/i).length).toBeGreaterThan(0),
+    );
   });
 
   it("shows download button when job is done", async () => {

@@ -38,30 +38,30 @@ export function EditorShell({
       />
 
       {/* Desktop layout (lg+) */}
-      <div className="flex-1 hidden lg:grid lg:grid-cols-[1fr_380px] gap-3 px-3 pb-3 overflow-hidden">
-        <div className="flex flex-col gap-3 min-w-0">
-          <div className="flex-1 rounded-lg border border-rule shadow-panel bg-sunken overflow-hidden">
-            {videoArea}
+      <div className="flex-1 hidden lg:grid lg:grid-cols-[1fr_380px] gap-3 px-3 pb-3 overflow-hidden min-h-0">
+        <div className="flex flex-col gap-3 min-w-0 min-h-0">
+          <div className="relative flex-1 min-h-0 rounded-lg border border-rule shadow-panel bg-sunken overflow-hidden">
+            <div className="absolute inset-0">{videoArea}</div>
           </div>
-          <div className="bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
+          <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
             {transport}
           </div>
-          <div className="bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
+          <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
             {timeline}
           </div>
         </div>
-        <div className="overflow-hidden">{sidePanel}</div>
+        <div className="overflow-hidden min-h-0">{sidePanel}</div>
       </div>
 
       {/* Tablet / mobile layout */}
-      <div className="flex-1 lg:hidden flex flex-col gap-3 px-3 pb-3 overflow-hidden">
-        <div className="aspect-video bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden">
-          {videoArea}
+      <div className="flex-1 lg:hidden flex flex-col gap-3 px-3 pb-3 overflow-hidden min-h-0">
+        <div className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden">
+          <div className="absolute inset-0">{videoArea}</div>
         </div>
-        <div className="bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
+        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
           {transport}
         </div>
-        <div className="bg-paper-hi rounded-lg border border-rule shadow-panel p-3 flex-1 overflow-hidden">
+        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
           {timeline}
         </div>
         <ChunkyButton variant="primary" size="lg" fullWidth onClick={() => setSheetOpen(true)}>

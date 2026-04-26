@@ -5,6 +5,7 @@ import { useEditorStore } from "../store";
 interface Props {
   thumbnailsUrl: string;
   peaks: [number, number][];
+  /** Duration of the studio audio file (peaks span). */
   audioDuration: number;
   height?: number;
 }
@@ -37,7 +38,11 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
   const setZoom = useEditorStore((s) => s.setZoom);
   const setScrollX = useEditorStore((s) => s.setScrollX);
 
-  const duration = audioDuration || jobMeta?.duration || 0;
+  // Time axis is the VIDEO duration. Trim/loop/playhead all live in video time.
+  // The audio peaks are mapped relative to the audio file's own duration, so a
+  // peak at audio time t is drawn at video time t (1:1) — close enough for
+  // visual reference. Algorithm offset is applied at render, not here.
+  const duration = jobMeta?.duration || audioDuration || 0;
   // Visible window in seconds
   const visibleDur = duration / zoom;
   const viewStart = Math.min(scrollX, Math.max(0, duration - visibleDur));
@@ -117,30 +122,49 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
     const wfH = height - wfTop;
     ctx.fillStyle = "rgba(26,24,22,0.06)";
     ctx.fillRect(0, wfTop, width, wfH);
-    if (peaks.length > 0 && duration > 0) {
+    // Peaks are sampled across the full audio duration, but the timeline X
+    // axis uses video duration. Map audio-time → video-time 1:1.
+    if (peaks.length > 0 && audioDuration > 0) {
       const wfMid = wfTop + wfH / 2;
-      const peaksPerSec = peaks.length / duration;
+      const peaksPerSec = peaks.length / audioDuration;
       const startIdx = Math.max(0, Math.floor(viewStart * peaksPerSec));
       const endIdx = Math.min(peaks.length, Math.ceil(viewEnd * peaksPerSec));
-      ctx.strokeStyle = "#5C544A";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
+      ctx.fillStyle = "#5C544A";
+      // Aggregate peaks per pixel column for a clean filled-bar look (cheaper
+      // to read than thin strokes when peaks-per-pixel > 1).
+      let prevX = -1;
+      let colMin = 0;
+      let colMax = 0;
       for (let i = startIdx; i < endIdx; i++) {
         const t = i / peaksPerSec;
-        const x = tToX(t);
+        const x = Math.round(tToX(t));
         const [mn, mx] = peaks[i];
-        const yMin = wfMid - (mx * wfH) / 2;
-        const yMax = wfMid - (mn * wfH) / 2;
-        ctx.moveTo(x, yMin);
-        ctx.lineTo(x, yMax);
+        if (x !== prevX) {
+          if (prevX >= 0) {
+            const yMax = wfMid - (Math.max(0, colMax) * wfH) / 2;
+            const yMin = wfMid + (Math.max(0, -colMin) * wfH) / 2;
+            ctx.fillRect(prevX, yMax, 1, Math.max(1, yMin - yMax));
+          }
+          prevX = x;
+          colMin = mn;
+          colMax = mx;
+        } else {
+          if (mn < colMin) colMin = mn;
+          if (mx > colMax) colMax = mx;
+        }
       }
-      ctx.stroke();
+      // flush last column
+      if (prevX >= 0) {
+        const yMax = wfMid - (Math.max(0, colMax) * wfH) / 2;
+        const yMin = wfMid + (Math.max(0, -colMin) * wfH) / 2;
+        ctx.fillRect(prevX, yMax, 1, Math.max(1, yMin - yMax));
+      }
     }
 
     // dim outside trim
     const xIn = tToX(trim.in);
     const xOut = tToX(trim.out);
-    ctx.fillStyle = "rgba(26,24,22,0.35)";
+    ctx.fillStyle = "rgba(232,225,208,0.78)";
     if (xIn > 0) ctx.fillRect(0, 0, xIn, height);
     if (xOut < width) ctx.fillRect(xOut, 0, width - xOut, height);
 

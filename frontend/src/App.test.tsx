@@ -39,6 +39,10 @@ describe("App routing + protected routes", () => {
         </AuthProvider>
       </MemoryRouter>,
     );
-    await waitFor(() => expect(screen.getByText(/sync your performance/i)).toBeInTheDocument());
+    // Upload page is mounted — look for the asymmetric drop-zones (one for video, one for audio)
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^picker-video$|video/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /upload/i })).toBeInTheDocument();
   });
 });

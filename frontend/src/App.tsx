@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
-import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth-context";
+import { RegistrationMark } from "./editor/components/RuleStrip";
 import Editor from "./pages/Editor";
 import History from "./pages/History";
 import JobPage from "./pages/JobPage";
@@ -8,9 +9,11 @@ import Login from "./pages/Login";
 import Upload from "./pages/Upload";
 
 export default function App() {
+  const location = useLocation();
+  const isEditor = /^\/job\/[^/]+\/edit/.test(location.pathname);
   return (
-    <div className="min-h-full flex flex-col">
-      <TopBar />
+    <div className="min-h-full flex flex-col paper-bg">
+      {!isEditor && <TopBar />}
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route
@@ -55,7 +58,13 @@ function Protected({ children }: { children: ReactNode }) {
   const { status } = useAuth();
   const location = useLocation();
   if (status === "loading") {
-    return <p className="p-6 text-white/60">Loading…</p>;
+    return (
+      <main className="flex-1 flex items-center justify-center">
+        <span className="font-mono text-xs text-ink-2 tracking-label uppercase">
+          Loading…
+        </span>
+      </main>
+    );
   }
   if (status === "anon") {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />;
@@ -66,29 +75,62 @@ function Protected({ children }: { children: ReactNode }) {
 function TopBar() {
   const { user, status, logout } = useAuth();
   return (
-    <header className="border-b border-ink-700 bg-ink-800/80 backdrop-blur">
-      <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
-        <Link to="/" className="font-semibold tracking-tight">
-          VideoAudioSync
+    <header className="border-b border-rule bg-paper-hi shadow-panel">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+        <Link to="/" className="flex items-center gap-2.5 group">
+          <RegistrationMark className="text-hot" />
+          <div className="leading-none">
+            <span className="font-display tracking-label uppercase text-[11px] text-ink-2 block">
+              VAS
+            </span>
+            <span className="font-display text-[15px] font-semibold text-ink leading-none block">
+              Video / Audio Sync
+            </span>
+          </div>
         </Link>
         {status === "authed" && (
-          <div className="flex items-center gap-3 text-sm">
-            <Link to="/jobs" className="text-white/70 hover:text-white">
-              History
-            </Link>
-            <Link to="/" className="text-white/70 hover:text-white">
+          <nav className="flex items-center gap-1">
+            <NavTab to="/" end>
               New
-            </Link>
-            <span className="text-white/30 hidden sm:inline">{user?.email}</span>
+            </NavTab>
+            <NavTab to="/jobs">History</NavTab>
+            <span className="hidden md:inline-block ml-2 mr-1 font-mono text-[11px] text-ink-3 tabular">
+              {user?.email}
+            </span>
             <button
               onClick={() => logout()}
-              className="text-white/70 hover:text-white"
+              className="h-9 px-3 text-[11px] font-display tracking-label uppercase text-ink-2 hover:text-ink rounded-md"
             >
               Sign out
             </button>
-          </div>
+          </nav>
         )}
       </div>
     </header>
+  );
+}
+
+function NavTab({
+  to,
+  end,
+  children,
+}: {
+  to: string;
+  end?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        [
+          "h-9 px-3 inline-flex items-center font-display tracking-label uppercase text-[11px] rounded-md",
+          isActive ? "bg-ink text-paper-hi" : "text-ink-2 hover:text-ink",
+        ].join(" ")
+      }
+    >
+      {children}
+    </NavLink>
   );
 }
