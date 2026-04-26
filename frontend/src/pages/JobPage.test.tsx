@@ -32,6 +32,8 @@ function makeJob(overrides: Record<string, unknown> = {}) {
     height: null,
     progress_pct: 0,
     progress_stage: "queued",
+    progress_detail: null,
+    progress_eta_s: null,
     error: null,
     edit_spec: null,
     has_output: false,
@@ -121,5 +123,47 @@ describe("JobPage", () => {
     renderRouted();
     const link = await screen.findByRole("link", { name: /open editor/i });
     expect(link).toHaveAttribute("href", "/job/j1/edit");
+  });
+
+  it("renders progress_detail under the stage label", async () => {
+    getJobMock.mockResolvedValueOnce(
+      makeJob({
+        status: "rendering",
+        progress_stage: "rendering",
+        progress_pct: 60,
+        progress_detail: "Encoding output mp4",
+      }),
+    );
+    renderRouted();
+    await waitFor(() =>
+      expect(screen.getByText(/encoding output mp4/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("shows ETA when the SSE stream provides eta_s", async () => {
+    getJobMock.mockResolvedValueOnce(
+      makeJob({
+        status: "rendering",
+        progress_stage: "rendering",
+        progress_pct: 50,
+        progress_eta_s: 75, // 1:15
+      }),
+    );
+    renderRouted();
+    await waitFor(() => expect(screen.getByText(/ETA\s+1:15/)).toBeInTheDocument());
+  });
+
+  it("shows elapsed time once the job has started", async () => {
+    const startedAt = new Date(Date.now() - 42 * 1000).toISOString();
+    getJobMock.mockResolvedValueOnce(
+      makeJob({
+        status: "rendering",
+        progress_stage: "rendering",
+        progress_pct: 50,
+        started_at: startedAt,
+      }),
+    );
+    renderRouted();
+    await waitFor(() => expect(screen.getByText(/Elapsed\s+0:4\d/)).toBeInTheDocument());
   });
 });

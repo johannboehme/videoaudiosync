@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 class FFmpegError(RuntimeError):
@@ -28,6 +29,89 @@ async def ffmpeg(args: list[str]) -> str:
     if code != 0:
         raise FFmpegError(f"ffmpeg failed ({code}): {err[-2000:]}\nargs: {shlex.join(args)}")
     return err  # ffmpeg prints info on stderr
+
+
+ProgressCb = Callable[[float, float | None], None] | Callable[[float, float | None], Awaitable[None]]
+
+
+async def ffmpeg_with_progress(
+    args: list[str],
+    *,
+    expected_duration_s: float,
+    on_progress: ProgressCb,
+) -> str:
+    """Run ffmpeg, streaming `out_time_ms` from `-progress pipe:1` and reporting
+    a fraction in [0, 1] plus an ETA in seconds (None if not estimable).
+
+    `expected_duration_s` is the *output* media duration ffmpeg is producing.
+    The fraction = out_time_ms / expected_duration_s.
+
+    The same FFmpegError is raised as `ffmpeg()` on non-zero exit.
+    """
+    full = ["ffmpeg", "-hide_banner", "-nostats", "-y", "-progress", "pipe:1", *args]
+    proc = await asyncio.create_subprocess_exec(
+        *full,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    started = time.monotonic()
+    err_chunks: list[bytes] = []
+
+    async def _drain_stderr() -> None:
+        # ffmpeg's normal output goes to stderr; keep it for error messages.
+        assert proc.stderr is not None
+        while True:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
+                return
+            err_chunks.append(chunk)
+
+    async def _drain_stdout() -> None:
+        assert proc.stdout is not None
+        last_fraction = -1.0
+        while True:
+            line_b = await proc.stdout.readline()
+            if not line_b:
+                return
+            line = line_b.decode("utf-8", "replace").strip()
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key != "out_time_ms":
+                continue
+            try:
+                out_us = int(value)
+            except ValueError:
+                continue
+            out_s = max(0.0, out_us / 1_000_000.0)
+            fraction = (out_s / expected_duration_s) if expected_duration_s > 0 else 0.0
+            # Cap reported fraction so we don't go above 1 mid-encode.
+            fraction = min(0.999, max(0.0, fraction))
+            if fraction <= last_fraction:
+                continue
+            last_fraction = fraction
+            elapsed = time.monotonic() - started
+            eta = (elapsed / fraction - elapsed) if fraction > 0.01 else None
+            res = on_progress(fraction, eta)
+            if asyncio.iscoroutine(res):
+                await res
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+    stdout_task = asyncio.create_task(_drain_stdout())
+    try:
+        rc = await proc.wait()
+    finally:
+        await asyncio.gather(stderr_task, stdout_task, return_exceptions=True)
+
+    err = b"".join(err_chunks).decode("utf-8", "replace")
+    if rc != 0:
+        raise FFmpegError(f"ffmpeg failed ({rc}): {err[-2000:]}\nargs: {shlex.join(args)}")
+    # Final tick at 1.0 so callers can rely on a complete bar.
+    res = on_progress(1.0, 0.0)
+    if asyncio.iscoroutine(res):
+        await res
+    return err
 
 
 async def ffprobe(path: Path) -> dict[str, Any]:

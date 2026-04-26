@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Awaitable, Callable
 
-from app.pipeline.ffmpeg_util import ffmpeg
+from app.pipeline.ffmpeg_util import ffmpeg, ffmpeg_with_progress
 
 
 async def quick_render(
@@ -12,6 +13,9 @@ async def quick_render(
     offset_ms: float,
     out_path: Path,
     drift_ratio: float = 1.0,
+    *,
+    expected_duration_s: float | None = None,
+    progress_cb: Callable[[float, float | None], Awaitable[None] | None] | None = None,
 ) -> Path:
     """Replace video audio with studio audio aligned by offset_ms.
 
@@ -70,5 +74,12 @@ async def quick_render(
         "+faststart",
         str(out_path),
     ]
-    await ffmpeg(args)
+    if progress_cb is not None and expected_duration_s and expected_duration_s > 0:
+        await ffmpeg_with_progress(
+            args,
+            expected_duration_s=expected_duration_s,
+            on_progress=progress_cb,
+        )
+    else:
+        await ffmpeg(args)
     return out_path

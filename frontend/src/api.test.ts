@@ -1,6 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, ApiError } from "./api";
 
+class FakeXhr {
+  static instances: FakeXhr[] = [];
+  upload = { onprogress: null as ((e: { loaded: number; total: number }) => void) | null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  status = 0;
+  responseText = "";
+  withCredentials = false;
+  open = vi.fn();
+  setRequestHeader = vi.fn();
+  send = vi.fn();
+  abort = vi.fn();
+  constructor() {
+    FakeXhr.instances.push(this);
+  }
+  emitProgress(loaded: number, total: number) {
+    this.upload.onprogress?.({ loaded, total });
+  }
+  finish(status: number, body: unknown) {
+    this.status = status;
+    this.responseText = typeof body === "string" ? body : JSON.stringify(body);
+    this.onload?.();
+  }
+  fail() {
+    this.onerror?.();
+  }
+}
+
 describe("ApiClient", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let api: ApiClient;
@@ -8,6 +36,8 @@ describe("ApiClient", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    FakeXhr.instances = [];
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
     api = new ApiClient("");
   });
 
@@ -44,21 +74,57 @@ describe("ApiClient", () => {
     expect(err).toMatchObject({ status: 401, detail: "Invalid credentials" });
   });
 
-  it("uploadJob sends multipart/form-data with both files", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: "j1", status: "queued" }), { status: 201 }),
-    );
+  it("uploadJob POSTs multipart/form-data with both files via XHR", async () => {
     const video = new File(["v"], "test.mp4", { type: "video/mp4" });
     const audio = new File(["a"], "test.wav", { type: "audio/wav" });
-    const job = await api.uploadJob({ video, audio, title: "My take" });
-    expect(job.id).toBe("j1");
-    const args = fetchMock.mock.calls[0];
-    expect(args[0]).toBe("/api/jobs/upload");
-    expect(args[1].method).toBe("POST");
-    const body = args[1].body as FormData;
+    const promise = api.uploadJob({ video, audio, title: "My take" });
+    // First (and only) XHR was constructed by uploadJob:
+    const xhr = FakeXhr.instances[0];
+    expect(xhr.open).toHaveBeenCalledWith("POST", "/api/jobs/upload");
+    expect(xhr.send).toHaveBeenCalledTimes(1);
+    const body = xhr.send.mock.calls[0][0] as FormData;
+    expect(body).toBeInstanceOf(FormData);
     expect(body.get("video")).toBeInstanceOf(File);
     expect(body.get("audio")).toBeInstanceOf(File);
     expect(body.get("title")).toBe("My take");
+    xhr.finish(201, { id: "j1", status: "queued" });
+    const job = await promise;
+    expect(job.id).toBe("j1");
+  });
+
+  it("uploadJob invokes onProgress as bytes are uploaded", async () => {
+    const onProgress = vi.fn();
+    const video = new File(["v"], "test.mp4", { type: "video/mp4" });
+    const audio = new File(["a"], "test.wav", { type: "audio/wav" });
+    const promise = api.uploadJob({ video, audio, onProgress });
+    const xhr = FakeXhr.instances[0];
+    xhr.emitProgress(50, 200);
+    xhr.emitProgress(150, 200);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 50, 200);
+    expect(onProgress).toHaveBeenNthCalledWith(2, 150, 200);
+    xhr.finish(201, { id: "j1" });
+    await promise;
+  });
+
+  it("uploadJob rejects with ApiError on non-2xx status", async () => {
+    const video = new File(["v"], "test.mp4", { type: "video/mp4" });
+    const audio = new File(["a"], "test.wav", { type: "audio/wav" });
+    const promise = api.uploadJob({ video, audio });
+    const xhr = FakeXhr.instances[0];
+    xhr.finish(413, { detail: "File too large" });
+    const err = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 413, detail: "File too large" });
+  });
+
+  it("uploadJob rejects on network error", async () => {
+    const video = new File(["v"], "test.mp4", { type: "video/mp4" });
+    const audio = new File(["a"], "test.wav", { type: "audio/wav" });
+    const promise = api.uploadJob({ video, audio });
+    const xhr = FakeXhr.instances[0];
+    xhr.fail();
+    const err = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
   });
 
   it("listJobs returns the array", async () => {

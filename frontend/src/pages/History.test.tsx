@@ -27,6 +27,8 @@ const baseJob = {
   height: 720,
   progress_pct: 100,
   progress_stage: "done",
+  progress_detail: null,
+  progress_eta_s: null,
   error: null,
   edit_spec: null,
   bytes_in: 0,
@@ -65,6 +67,30 @@ describe("History page", () => {
     await waitFor(() => expect(screen.getByText("Take 1")).toBeInTheDocument());
     expect(screen.getByText("Take 2")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /take 1/i })).toHaveAttribute("href", "/job/j1");
+  });
+
+  it("shows an inline progress bar with percent for jobs that are still running", async () => {
+    listJobsMock.mockResolvedValueOnce([
+      {
+        id: "j-rendering",
+        status: "rendering",
+        title: "Live job",
+        has_output: false,
+        created_at: "2026-04-26T00:00:00Z",
+        ...baseJob,
+        progress_stage: "rendering",
+        progress_pct: 45,
+      },
+    ]);
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("Live job")).toBeInTheDocument());
+    const bar = screen.getByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuenow", "45");
+    expect(screen.getByText(/45\s*%/)).toBeInTheDocument();
   });
 
   it("deletes a job after confirming and removes it from the list", async () => {
