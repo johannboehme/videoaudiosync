@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    container_name: videoaudiosync
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-change-me-please}
+      BASE_URL: ${BASE_URL:-http://localhost:8000}
+      MAX_USER_QUOTA_GB: ${MAX_USER_QUOTA_GB:-5}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+    volumes:
+      - ./data:/data
