@@ -47,7 +47,7 @@ async def run_sync_job(job_id: str) -> None:
     job_render.mkdir(parents=True, exist_ok=True)
 
     # === Stage: analyzing ===
-    await report_progress(job_id, "analyzing", 5)
+    await report_progress(job_id, "analyzing", 5, detail="Probing video")
     probe = await ffprobe(video)
     dur = duration_s(probe)
     dims = video_dims(probe)
@@ -60,22 +60,27 @@ async def run_sync_job(job_id: str) -> None:
                 job.width, job.height = dims
             await s.commit()
 
+    await report_progress(job_id, "analyzing", 10, detail="Extracting reference audio")
     ref_wav = job_cache / "ref.wav"
     await extract_reference_audio(video, ref_wav)
-    await report_progress(job_id, "analyzing", 15)
 
+    await report_progress(job_id, "analyzing", 25, detail="Computing waveform peaks")
     # waveform + thumbnails (good to have for the editor — done eagerly)
     await _run_cpu(compute_waveform_peaks, audio, job_cache / "waveform.json")
-    await report_progress(job_id, "analyzing", 25)
 
+    await report_progress(job_id, "analyzing", 35, detail="Generating thumbnails")
     try:
         await extract_thumbnails_strip(video, job_cache / "thumbs.png")
     except Exception:  # noqa: BLE001
         pass  # thumbs are nice-to-have, never block sync
-    await report_progress(job_id, "analyzing", 40)
 
     # === Stage: syncing ===
-    await report_progress(job_id, "syncing", 50)
+    await report_progress(
+        job_id,
+        "syncing",
+        50,
+        detail="Aligning audio (chroma + drift refinement)",
+    )
     result = await _run_cpu(sync_audio, ref_wav, audio)
     async with SessionLocal() as s:
         job = await s.get(Job, job_id)
@@ -85,17 +90,28 @@ async def run_sync_job(job_id: str) -> None:
             job.sync_drift_ratio = result.drift_ratio
             job.sync_warning = result.warning
             await s.commit()
-    await report_progress(job_id, "syncing", 70)
+    await report_progress(job_id, "syncing", 70, detail=f"Sync method: {result.method}")
 
     # === Stage: rendering ===
-    await report_progress(job_id, "rendering", 75)
+    await report_progress(job_id, "rendering", 75, detail="Encoding output mp4")
     out_path = job_render / "output.mp4"
+
+    async def _render_progress(fraction: float, eta: float | None) -> None:
+        # quick_render is mostly stream-copy on video — usually finishes in <2 s
+        # for a 3-min clip. Map fraction into 75..100 just like the edit-render does.
+        pct = 75.0 + 25.0 * max(0.0, min(1.0, fraction))
+        await report_progress(
+            job_id, "rendering", pct, detail="Encoding output mp4", eta_s=eta
+        )
+
     await quick_render(
         video_path=video,
         studio_audio_path=audio,
         offset_ms=result.offset_ms,
         out_path=out_path,
         drift_ratio=result.drift_ratio,
+        expected_duration_s=dur,
+        progress_cb=_render_progress,
     )
     size = out_path.stat().st_size if out_path.exists() else 0
     await mark_done(job_id, str(out_path), size)
@@ -122,8 +138,27 @@ async def run_edit_job(job_id: str) -> None:
     job_render = settings.renders_dir / job_id
     job_render.mkdir(parents=True, exist_ok=True)
 
-    await report_progress(job_id, "rendering", 10)
+    await report_progress(job_id, "rendering", 10, detail="Building filter graph")
     out_path = job_render / "output.mp4"
+
+    overlay_count = len(edit_spec.get("overlays") or [])
+    has_viz = bool(edit_spec.get("visualizer") and edit_spec["visualizer"].get("type"))
+    detail_label = (
+        "Encoding output mp4 (text overlays + visualizer)"
+        if overlay_count and has_viz
+        else "Encoding output mp4 (text overlays)"
+        if overlay_count
+        else "Encoding output mp4 (visualizer)"
+        if has_viz
+        else "Encoding output mp4"
+    )
+
+    def _on_render_progress(pct: float) -> None:
+        # render_edit calls this with cumulative pct in [0, 100].
+        asyncio.create_task(
+            report_progress(job_id, "rendering", pct, detail=detail_label)
+        )
+
     await edit_render(
         video_path=video,
         studio_audio_path=audio,
@@ -132,7 +167,7 @@ async def run_edit_job(job_id: str) -> None:
         edit_spec=edit_spec,
         out_path=out_path,
         cache_dir=job_cache,
-        progress_cb=lambda p: asyncio.create_task(report_progress(job_id, "rendering", p)),
+        progress_cb=_on_render_progress,
     )
     size = out_path.stat().st_size if out_path.exists() else 0
     await mark_done(job_id, str(out_path), size)

@@ -1,6 +1,13 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { ProgressBar, formatBytes, formatDuration } from "../components/ProgressBar";
+
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+  startedAt: number;
+}
 
 export default function Upload() {
   const navigate = useNavigate();
@@ -8,7 +15,9 @@ export default function Upload() {
   const [audio, setAudio] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const startedRef = useRef<number | null>(null);
 
   const ready = video !== null && audio !== null && !busy;
 
@@ -17,12 +26,21 @@ export default function Upload() {
     if (!video || !audio) return;
     setBusy(true);
     setErr(null);
+    startedRef.current = Date.now();
+    setProgress({ loaded: 0, total: video.size + audio.size, startedAt: startedRef.current });
     try {
-      const job = await api.uploadJob({ video, audio, title: title || undefined });
+      const job = await api.uploadJob({
+        video,
+        audio,
+        title: title || undefined,
+        onProgress: (loaded, total) =>
+          setProgress({ loaded, total, startedAt: startedRef.current! }),
+      });
       navigate(`/job/${job.id}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Upload failed");
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -56,6 +74,8 @@ export default function Upload() {
 
         {err && <p className="text-sm text-red-400">{err}</p>}
 
+        {progress && <UploadProgressCard progress={progress} />}
+
         <button
           type="submit"
           disabled={!ready}
@@ -65,6 +85,32 @@ export default function Upload() {
         </button>
       </form>
     </main>
+  );
+}
+
+export function UploadProgressCard({ progress }: { progress: UploadProgress }) {
+  const pct = progress.total > 0 ? (progress.loaded / progress.total) * 100 : 0;
+  const elapsedS = (Date.now() - progress.startedAt) / 1000;
+  const bps = elapsedS > 0.5 ? progress.loaded / elapsedS : 0;
+  const remaining = bps > 0 ? (progress.total - progress.loaded) / bps : NaN;
+
+  return (
+    <section className="bg-ink-800 rounded-2xl p-4 space-y-2">
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-white/70">Uploading</span>
+        <span className="tabular-nums">{Math.round(pct)}%</span>
+      </div>
+      <ProgressBar value={pct} />
+      <div className="flex items-center justify-between text-xs text-white/50 tabular-nums">
+        <span>
+          {formatBytes(progress.loaded)} / {formatBytes(progress.total)}
+        </span>
+        <span>
+          {bps > 0 && `${formatBytes(bps)}/s`}
+          {bps > 0 && isFinite(remaining) && ` · ETA ${formatDuration(remaining)}`}
+        </span>
+      </div>
+    </section>
   );
 }
 

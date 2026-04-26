@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from app.pipeline.ass import overlays_from_spec, write_ass_file
 from app.pipeline.energy import compute_energy_curves
-from app.pipeline.ffmpeg_util import ffmpeg, ffprobe, video_dims
+from app.pipeline.ffmpeg_util import duration_s, ffmpeg, ffmpeg_with_progress, ffprobe, video_dims
 
 
 _VISUALIZER_FILTERS: dict[str, Callable[[int, int], str]] = {
@@ -208,7 +208,20 @@ async def edit_render(
         "-movflags", "+faststart",
         str(out_path),
     ]
-    await ffmpeg(args)
+    # Output duration: sum of segments, or full input duration if no cuts.
+    out_dur = sum(
+        max(0.0, float(s.get("out", 0)) - float(s.get("in", 0))) for s in segments
+    )
+    if out_dur <= 0:
+        out_dur = duration_s(probe) or 0.0
+
+    if progress_cb is not None and out_dur > 0:
+        # Map ffmpeg's 0..1 fraction into the sub-range [45, 95].
+        async def _cb(fraction: float, _eta: float | None) -> None:
+            progress_cb(45.0 + 50.0 * max(0.0, min(1.0, fraction)))
+        await ffmpeg_with_progress(args, expected_duration_s=out_dur, on_progress=_cb)
+    else:
+        await ffmpeg(args)
     if progress_cb:
         progress_cb(95)
     return out_path

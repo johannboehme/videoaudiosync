@@ -64,6 +64,8 @@ class Job(Base):
 
     progress_pct: Mapped[float] = mapped_column(Float, default=0.0)
     progress_stage: Mapped[str] = mapped_column(String(64), default="queued")
+    progress_detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    progress_eta_s: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

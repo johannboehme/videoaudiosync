@@ -30,6 +30,8 @@ export interface Job {
   height: number | null;
   progress_pct: number;
   progress_stage: string;
+  progress_detail: string | null;
+  progress_eta_s: number | null;
   error: string | null;
   edit_spec: EditSpec | null;
   has_output: boolean;
@@ -143,21 +145,45 @@ export class ApiClient {
 
   // ---- jobs ----
 
-  async uploadJob(args: {
+  uploadJob(args: {
     video: File;
     audio: File;
     title?: string;
+    onProgress?: (loaded: number, total: number) => void;
   }): Promise<Job> {
     const fd = new FormData();
     fd.set("video", args.video);
     fd.set("audio", args.audio);
     if (args.title) fd.set("title", args.title);
-    const resp = await fetch(this.url("/api/jobs/upload"), {
-      method: "POST",
-      credentials: "same-origin",
-      body: fd,
+    return new Promise<Job>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", this.url("/api/jobs/upload"));
+      xhr.withCredentials = true;
+      if (args.onProgress) {
+        xhr.upload.onprogress = (e) => args.onProgress!(e.loaded, e.total);
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as Job);
+          } catch {
+            reject(new ApiError(xhr.status, "Malformed response"));
+          }
+          return;
+        }
+        let detail = xhr.statusText || `HTTP ${xhr.status}`;
+        try {
+          const body = JSON.parse(xhr.responseText);
+          if (body && typeof body.detail === "string") detail = body.detail;
+        } catch {
+          /* ignore */
+        }
+        reject(new ApiError(xhr.status, detail));
+      };
+      xhr.onerror = () => reject(new ApiError(0, "Network error"));
+      xhr.onabort = () => reject(new ApiError(0, "Upload aborted"));
+      xhr.send(fd);
     });
-    return asJson<Job>(resp);
   }
 
   async listJobs(): Promise<Job[]> {
@@ -210,7 +236,14 @@ export class ApiClient {
 
   subscribeJob(
     id: string,
-    onEvent: (event: { stage?: string; progress?: number; status?: string; error?: string }) => void,
+    onEvent: (event: {
+      stage?: string;
+      progress?: number;
+      status?: string;
+      error?: string;
+      detail?: string | null;
+      eta_s?: number | null;
+    }) => void,
   ): () => void {
     const es = new EventSource(this.url(`/api/jobs/${id}/events`), {
       withCredentials: true,

@@ -83,8 +83,20 @@ class JobQueue:
 queue = JobQueue()
 
 
-async def report_progress(job_id: str, stage: str, pct: float) -> None:
-    """Helper for pipeline functions to push progress to DB + SSE."""
+async def report_progress(
+    job_id: str,
+    stage: str,
+    pct: float,
+    *,
+    detail: str | None = None,
+    eta_s: float | None = None,
+) -> None:
+    """Helper for pipeline functions to push progress to DB + SSE.
+
+    `detail` is a free-form substep label (e.g. "Encoding output mp4");
+    `eta_s` is the estimated remaining seconds for the current stage when
+    derivable (currently: ffmpeg renders).
+    """
     async with SessionLocal() as s:
         job = await s.get(Job, job_id)
         if job is None:
@@ -92,8 +104,19 @@ async def report_progress(job_id: str, stage: str, pct: float) -> None:
         job.progress_stage = stage
         job.progress_pct = max(0.0, min(100.0, pct))
         job.status = stage if stage in {"analyzing", "syncing", "rendering"} else job.status
+        job.progress_detail = detail
+        job.progress_eta_s = eta_s
         await s.commit()
-    await bus.publish(job_id, {"stage": stage, "progress": pct, "status": stage})
+    await bus.publish(
+        job_id,
+        {
+            "stage": stage,
+            "progress": pct,
+            "status": stage,
+            "detail": detail,
+            "eta_s": eta_s,
+        },
+    )
 
 
 async def mark_done(job_id: str, output_path: str, bytes_out: int) -> None:
@@ -104,8 +127,13 @@ async def mark_done(job_id: str, output_path: str, bytes_out: int) -> None:
         job.status = "done"
         job.progress_pct = 100.0
         job.progress_stage = "done"
+        job.progress_detail = None
+        job.progress_eta_s = None
         job.output_path = output_path
         job.bytes_out = bytes_out
         job.finished_at = datetime.now(timezone.utc)
         await s.commit()
-    await bus.publish(job_id, {"status": "done", "progress": 100.0, "stage": "done"})
+    await bus.publish(
+        job_id,
+        {"status": "done", "progress": 100.0, "stage": "done", "detail": None, "eta_s": None},
+    )

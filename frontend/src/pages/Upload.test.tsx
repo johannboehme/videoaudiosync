@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
-import Upload from "./Upload";
+import Upload, { UploadProgressCard } from "./Upload";
 
 const uploadJobMock = vi.fn();
 vi.mock("../api", () => ({
@@ -72,5 +72,55 @@ describe("Upload page", () => {
     await waitFor(() =>
       expect(screen.getByText(/quota exceeded/i)).toBeInTheDocument(),
     );
+  });
+
+  it("passes an onProgress callback to api.uploadJob", async () => {
+    uploadJobMock.mockResolvedValueOnce({ id: "j-new" });
+    const user = userEvent.setup();
+    renderRouted();
+    await user.upload(
+      screen.getByLabelText(/video/i),
+      new File(["v"], "v.mp4", { type: "video/mp4" }),
+    );
+    await user.upload(
+      screen.getByLabelText(/audio/i),
+      new File(["a"], "a.wav", { type: "audio/wav" }),
+    );
+    await user.click(screen.getByRole("button", { name: /upload/i }));
+    await waitFor(() => expect(uploadJobMock).toHaveBeenCalled());
+    const arg = uploadJobMock.mock.calls[0][0] as { onProgress?: unknown };
+    expect(typeof arg.onProgress).toBe("function");
+  });
+});
+
+describe("UploadProgressCard", () => {
+  it("renders the bytes uploaded, percentage, and an ARIA progressbar", () => {
+    render(
+      <UploadProgressCard
+        progress={{
+          loaded: 25 * 1024 * 1024,
+          total: 100 * 1024 * 1024,
+          startedAt: Date.now(),
+        }}
+      />,
+    );
+    expect(screen.getByText(/25\s*%/)).toBeInTheDocument();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText(/25\.0 MB\s*\/\s*100\.0 MB/)).toBeInTheDocument();
+  });
+
+  it("shows speed and ETA once enough time has elapsed", () => {
+    // 8 MB uploaded over 2 seconds → 4 MB/s; 2 MB remaining → ETA ~0:01
+    render(
+      <UploadProgressCard
+        progress={{
+          loaded: 8 * 1024 * 1024,
+          total: 10 * 1024 * 1024,
+          startedAt: Date.now() - 2000,
+        }}
+      />,
+    );
+    expect(screen.getByText(/MB\/s/)).toBeInTheDocument();
+    expect(screen.getByText(/ETA\s+0:0\d/)).toBeInTheDocument();
   });
 });

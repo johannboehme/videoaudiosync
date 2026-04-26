@@ -43,6 +43,8 @@ class JobOut(BaseModel):
     height: int | None
     progress_pct: float
     progress_stage: str
+    progress_detail: str | None
+    progress_eta_s: float | None
     error: str | None
     edit_spec: dict[str, Any] | None
     has_output: bool
@@ -70,6 +72,8 @@ def _job_to_out(job: Job) -> JobOut:
         height=job.height,
         progress_pct=job.progress_pct,
         progress_stage=job.progress_stage,
+        progress_detail=job.progress_detail,
+        progress_eta_s=job.progress_eta_s,
         error=job.error,
         edit_spec=job.edit_spec,
         has_output=bool(job.output_path and Path(job.output_path).exists()),
