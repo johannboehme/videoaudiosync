@@ -1,6 +1,12 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Use host networking for the build stage so apt/npm can resolve DNS on
+      # hosts where nftables blocks the default docker bridge (e.g. our netcup
+      # VPS). Runtime networking is unaffected — the container still gets its
+      # own bridge IP for nginx → 127.0.0.1:8000 to reach.
+      network: host
     container_name: videoaudiosync
     restart: unless-stopped
     ports:
