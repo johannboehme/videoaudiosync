@@ -64,7 +64,6 @@ export default function Upload() {
             step="01"
             label="Video"
             accept="video/*"
-            capture="environment"
             file={video}
             onChange={setVideo}
             tall
@@ -119,7 +118,6 @@ function DropZone({
   step,
   label,
   accept,
-  capture,
   file,
   onChange,
   tall = false,
@@ -127,7 +125,6 @@ function DropZone({
   step: string;
   label: string;
   accept: string;
-  capture?: "environment" | "user";
   file: File | null;
   onChange: (f: File | null) => void;
   tall?: boolean;
@@ -183,7 +180,6 @@ function DropZone({
         id={id}
         type="file"
         accept={accept}
-        capture={capture}
         className="sr-only"
         onChange={(e) => onChange(e.target.files?.[0] || null)}
       />
