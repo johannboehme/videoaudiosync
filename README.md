@@ -162,8 +162,10 @@ in DE typically needs. If you fork and host your own:
   log format; the matching `map` and `log_format` directives must live
   at `http {}` scope in the host `/etc/nginx/nginx.conf` — see the
   comment block at the top of the vhost file.
-- **Log retention** — configure logrotate to drop
-  `/var/log/nginx/sync.access.log` after 7 days.
+- **Log retention** — `/etc/logrotate.d/nginx` already rotates
+  `/var/log/nginx/*.log` daily with `rotate 14`, so the access log
+  drops after 14 days. The privacy policy mirrors that number; if you
+  change retention, update `frontend/src/pages/Datenschutz.tsx`.
 - **Web fonts are bundled locally** via `@fontsource-variable/*` — do
   not re-introduce a `fonts.googleapis.com` import.
 - **No analytics, no tracking, no cookies.** Keep it that way; if you

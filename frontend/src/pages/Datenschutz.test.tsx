@@ -23,7 +23,7 @@ describe("Datenschutz page", () => {
     const text = document.body.textContent ?? "";
     expect(text).toMatch(/IP-Adresse/);
     expect(text).toMatch(/anonymisiert/i);
-    expect(text).toMatch(/7\s*Tage/);
+    expect(text).toMatch(/14\s*Tage/);
   });
 
   it("makes clear that media files never leave the browser", () => {

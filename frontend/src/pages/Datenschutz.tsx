@@ -34,7 +34,7 @@ export function Datenschutz() {
         <p className="leading-relaxed">
           Rechtsgrundlage ist Art. 6 Abs. 1 lit. f DSGVO (berechtigtes
           Interesse an der technisch fehlerfreien Bereitstellung). Die
-          Speicherdauer beträgt maximal 7 Tage; danach werden die Logs
+          Speicherdauer beträgt maximal 14 Tage; danach werden die Logs
           automatisch gelöscht. Eine Zusammenführung dieser Daten mit anderen
           Datenquellen findet nicht statt.
         </p>
