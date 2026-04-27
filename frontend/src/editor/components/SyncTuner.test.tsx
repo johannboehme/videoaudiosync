@@ -17,7 +17,18 @@ const meta = {
 describe("<SyncTuner />", () => {
   beforeEach(() => {
     useEditorStore.getState().reset();
-    useEditorStore.getState().loadJob(meta, { lastSyncOverrideMs: -120 });
+    useEditorStore.getState().loadJob(meta, {
+      lastSyncOverrideMs: -120,
+      clips: [
+        {
+          id: "cam-1",
+          filename: "cam-1.mp4",
+          color: "#3b6dff",
+          sourceDurationS: 60,
+          syncOffsetMs: 250,
+        },
+      ],
+    });
   });
 
   test("nudge buttons update the store", async () => {
