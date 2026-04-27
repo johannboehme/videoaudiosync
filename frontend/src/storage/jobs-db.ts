@@ -23,14 +23,22 @@ export interface SyncResult {
  * Sync-Versatz und seine eigene Cam-Farbe für die Timeline-Visualisierung.
  */
 export interface VideoAsset {
+  /** Stabile Cam-ID (cam-1, cam-2, …). Bleibt zwischen Sessions gleich. */
   id: string;
+  /** Original-Dateiname vom User (für Anzeige in der UI). */
   filename: string;
+  /** OPFS-Pfad der Mediadatei. Explizit gespeichert, weil Migration und neue
+   * Uploads unterschiedliche Konventionen nutzen. */
+  opfsPath: string;
+  /** Cam-Farbe für PROGRAM-Strip + Lane-Header (deterministisch beim Upload). */
   color: string;
   sync?: SyncResult;
   durationS?: number;
   width?: number;
   height?: number;
   fps?: number;
+  /** OPFS-Pfad zur extrahierten Thumbnail-Strip-Datei (frames.webp). */
+  framesPath?: string;
 }
 
 /**

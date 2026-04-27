@@ -28,6 +28,21 @@ describe("migrateV1ToV2", () => {
     expect(migrated.videos![0].filename).toBe("video.mp4");
   });
 
+  it("populates opfsPath for cam-1 from the legacy single-video naming convention", () => {
+    const migrated = migrateV1ToV2(v1Job({ id: "abc123", videoFilename: "rehearsal.mov" }));
+    expect(migrated.videos![0].opfsPath).toBe("jobs/abc123/video.mov");
+  });
+
+  it("populates framesPath when the legacy job has hasFrames=true", () => {
+    const migrated = migrateV1ToV2(v1Job({ id: "abc123", hasFrames: true }));
+    expect(migrated.videos![0].framesPath).toBe("jobs/abc123/frames.webp");
+  });
+
+  it("leaves framesPath undefined when hasFrames is false/absent", () => {
+    const migrated = migrateV1ToV2(v1Job({ hasFrames: false }));
+    expect(migrated.videos![0].framesPath).toBeUndefined();
+  });
+
   it("assigns a stable cam id (cam-1) to the first video", () => {
     const migrated = migrateV1ToV2(v1Job());
     expect(migrated.videos![0].id).toBe("cam-1");

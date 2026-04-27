@@ -83,35 +83,67 @@ describe("local jobs lifecycle", () => {
     const video = await fetchVideoFile();
     const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
 
-    const jobId = await createJob(video, audio, { title: "Test take" });
+    const jobId = await createJob([video], audio, { title: "Test take" });
     expect(jobId).toMatch(/^[a-f0-9]{12}$/);
 
-    // Files persisted in OPFS.
-    expect(await opfs.exists(`jobs/${jobId}/video.mp4`)).toBe(true);
+    // Files persisted in OPFS under the V2 cam-N naming convention.
+    expect(await opfs.exists(`jobs/${jobId}/cam-1.mp4`)).toBe(true);
     expect(await opfs.exists(`jobs/${jobId}/audio.wav`)).toBe(true);
 
     // Wait for sync to complete.
     await waitForJobStatus(jobId, "synced");
     const job = await jobsDb.getJob(jobId);
     expect(job!.status).toBe("synced");
+    expect(job!.schemaVersion).toBe(2);
+    expect(job!.videos).toHaveLength(1);
+    expect(job!.videos![0].id).toBe("cam-1");
+    expect(job!.videos![0].sync).toBeDefined();
+    expect(job!.videos![0].sync!.driftRatio).toBeCloseTo(1.0, 1);
+    // Legacy mirror still populated for backward compat.
     expect(job!.sync).toBeDefined();
     expect(typeof job!.sync!.offsetMs).toBe("number");
-    expect(job!.sync!.driftRatio).toBeCloseTo(1.0, 1);
     expect(job!.title).toBe("Test take");
     expect(job!.durationS).toBeCloseTo(3.0, 0);
-    // Pre-processing also extracted the timeline frame strip.
+    // Pre-processing also extracted the timeline frame strip — now per-cam.
     expect(job!.hasFrames).toBe(true);
-    expect(await opfs.exists(`jobs/${jobId}/frames.webp`)).toBe(true);
+    expect(await opfs.exists(`jobs/${jobId}/frames-cam-1.webp`)).toBe(true);
+    expect(job!.videos![0].framesPath).toBe(`jobs/${jobId}/frames-cam-1.webp`);
     const framesUrl = await resolveJobAssetUrl(jobId, "frames");
     expect(framesUrl).toMatch(/^blob:/);
     if (framesUrl) URL.revokeObjectURL(framesUrl);
   }, 120_000);
 
+  it("createJob persists multiple cams + syncs each against the master audio", async () => {
+    const v1 = await fetchVideoFile();
+    const v2 = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+
+    const jobId = await createJob([v1, v2], audio, { title: "Two cams" });
+
+    expect(await opfs.exists(`jobs/${jobId}/cam-1.mp4`)).toBe(true);
+    expect(await opfs.exists(`jobs/${jobId}/cam-2.mp4`)).toBe(true);
+
+    await waitForJobStatus(jobId, "synced");
+    const job = await jobsDb.getJob(jobId);
+    expect(job!.videos).toHaveLength(2);
+    expect(job!.videos![0].id).toBe("cam-1");
+    expect(job!.videos![1].id).toBe("cam-2");
+    // Each cam got its own sync result.
+    expect(job!.videos![0].sync).toBeDefined();
+    expect(job!.videos![1].sync).toBeDefined();
+    // Each cam got its own thumbnail strip.
+    expect(await opfs.exists(`jobs/${jobId}/frames-cam-1.webp`)).toBe(true);
+    expect(await opfs.exists(`jobs/${jobId}/frames-cam-2.webp`)).toBe(true);
+    // Cam-1 stats are mirrored to legacy top-level fields.
+    expect(job!.sync).toEqual(job!.videos![0].sync);
+    expect(job!.cuts).toEqual([]);
+  }, 180_000);
+
   it("runQuickRender produces an output file in OPFS", async () => {
     const video = await fetchVideoFile();
     const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
 
-    const jobId = await createJob(video, audio);
+    const jobId = await createJob([video], audio);
     await waitForJobStatus(jobId, "synced");
 
     await runQuickRender(jobId);
@@ -129,7 +161,7 @@ describe("local jobs lifecycle", () => {
   it("if runQuickRender throws, the job is marked failed in IDB and an event is emitted", async () => {
     const video = await fetchVideoFile();
     const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
-    const jobId = await createJob(video, audio);
+    const jobId = await createJob([video], audio);
     await waitForJobStatus(jobId, "synced");
 
     // Sabotage by deleting the audio file from OPFS — render will throw
@@ -165,12 +197,12 @@ describe("local jobs lifecycle", () => {
   it("deleteJob removes both OPFS files and the IndexedDB row", async () => {
     const video = await fetchVideoFile();
     const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
-    const jobId = await createJob(video, audio);
+    const jobId = await createJob([video], audio);
     await waitForJobStatus(jobId, "synced");
 
     await deleteJob(jobId);
     expect(await jobsDb.getJob(jobId)).toBeUndefined();
-    expect(await opfs.exists(`jobs/${jobId}/video.mp4`)).toBe(false);
+    expect(await opfs.exists(`jobs/${jobId}/cam-1.mp4`)).toBe(false);
     expect(await opfs.exists(`jobs/${jobId}/audio.wav`)).toBe(false);
   }, 120_000);
 });
