@@ -40,6 +40,14 @@ export interface EditWorkerInput {
   energy: EnergyCurves | null;
   offsetMs: number;
   driftRatio: number;
+  /** Output codec/dimension/bitrate overrides. Optional — the renderer
+   *  defaults to "source dimensions, H.264, AAC, 4 Mbps" when omitted. */
+  outputWidth?: number;
+  outputHeight?: number;
+  videoCodec?: "h264" | "h265";
+  audioCodec?: "aac" | "opus";
+  videoBitrateBps?: number;
+  audioBitrateBps?: number;
 }
 
 export type EditWorkerMessage =
@@ -81,6 +89,12 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
       visualizers,
       offsetMs: input.offsetMs,
       driftRatio: input.driftRatio,
+      outputWidth: input.outputWidth,
+      outputHeight: input.outputHeight,
+      videoCodec: input.videoCodec,
+      audioCodec: input.audioCodec,
+      videoBitrateBps: input.videoBitrateBps,
+      audioBitrateBps: input.audioBitrateBps,
       output: writable,
       onProgress: (p) => {
         const evt: EditWorkerEvent = { type: "progress", progress: p };

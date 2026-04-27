@@ -19,6 +19,7 @@ import {
 } from "../local/jobs";
 import { decodeAudioToMonoPcm } from "../local/codec";
 import { computeWaveformPeaks } from "../local/waveform-peaks";
+import { exportSpecToRenderOpts } from "../editor/exportPresets";
 import { opfs } from "../storage/opfs";
 
 interface WaveformData {
@@ -30,6 +31,7 @@ interface EditorAssets {
   videoUrl: string;
   audioUrl: string;
   wave: WaveformData | null;
+  framesUrl: string | null;
 }
 
 export default function Editor() {
@@ -49,6 +51,7 @@ export default function Editor() {
     let cancelled = false;
     let videoUrl: string | null = null;
     let audioUrl: string | null = null;
+    let framesUrl: string | null = null;
 
     (async () => {
       const j = await jobsDb.getJob(id);
@@ -57,6 +60,7 @@ export default function Editor() {
 
       videoUrl = await resolveJobAssetUrl(id, "video");
       audioUrl = await resolveJobAssetUrl(id, "audio");
+      framesUrl = await resolveJobAssetUrl(id, "frames");
       if (cancelled || !videoUrl || !audioUrl) return;
 
       // Compute waveform peaks locally from the studio audio.
@@ -79,7 +83,7 @@ export default function Editor() {
       }
       if (cancelled) return;
 
-      setAssets({ videoUrl, audioUrl, wave });
+      setAssets({ videoUrl, audioUrl, wave, framesUrl });
 
       loadJob(
         {
@@ -102,6 +106,7 @@ export default function Editor() {
       reset();
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (audioUrl) URL.revokeObjectURL(audioUrl);
+      if (framesUrl) URL.revokeObjectURL(framesUrl);
     };
   }, [id, loadJob, reset]);
 
@@ -113,6 +118,13 @@ export default function Editor() {
     setSubmitting(true);
     setErr(null);
     const spec = buildEditSpec();
+    const sourceDims = {
+      w: job.width ?? 1920,
+      h: job.height ?? 1080,
+    };
+    const exportOpts = spec.export
+      ? exportSpecToRenderOpts(spec.export, sourceDims)
+      : undefined;
     const local: EditSpecLocal = {
       segments: spec.segments,
       overlays: (spec.overlays ?? []).map((o) => ({
@@ -131,6 +143,8 @@ export default function Editor() {
       visualizers: spec.visualizer
         ? [{ type: spec.visualizer.type === "showfreqs" ? "showfreqs" : "showwaves" }]
         : undefined,
+      exportOpts,
+      outputFilename: spec.export?.filename,
     };
     // Fire-and-forget: the render screen owns the lifecycle from here.
     // Errors are surfaced via jobEvents, so we don't await — and we
@@ -170,7 +184,7 @@ export default function Editor() {
         timeline={
           assets.wave ? (
             <Timeline
-              thumbnailsUrl={null}
+              thumbnailsUrl={assets.framesUrl}
               peaks={assets.wave.peaks}
               audioDuration={assets.wave.duration}
             />

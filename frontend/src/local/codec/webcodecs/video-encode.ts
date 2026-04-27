@@ -1,12 +1,15 @@
 /**
- * Encodes a stream of `VideoFrame`s to H.264 chunks via WebCodecs
+ * Encodes a stream of `VideoFrame`s to H.264 or H.265 chunks via WebCodecs
  * `VideoEncoder`. Mirror of `audio-encode.ts` for video.
  *
- * Caller passes frames via `pushFrame` and finalises with `flush`. The
+ * Caller passes frames via `pushFrame` and finalises with `finish`. The
  * resulting chunks list is suitable for `mp4-muxer.addVideoChunkRaw`.
  */
 
 import { avcCodecForResolution } from "./avc-level";
+import { hevcCodecForResolution } from "./hevc-level";
+
+export type VideoEncodeCodec = "h264" | "h265";
 
 export interface EncodedVideoChunkRecord {
   type: "key" | "delta";
@@ -17,7 +20,10 @@ export interface EncodedVideoChunkRecord {
 
 export interface VideoEncodeResult {
   chunks: EncodedVideoChunkRecord[];
+  /** Codec string used by the encoder (e.g. "avc1.640028" or "hev1.1.6.L120.B0"). */
   codec: string;
+  /** Container codec key consumed by mp4-muxer. */
+  muxerCodec: "avc" | "hevc";
   width: number;
   height: number;
   description?: Uint8Array;
@@ -27,11 +33,43 @@ export interface VideoEncodeOptions {
   width: number;
   height: number;
   frameRate: number;
-  /** H.264 codec string. Default: Constrained Baseline at the lowest level
-   * that fits the requested resolution + framerate (computed at runtime —
-   * a hardcoded default like 3.1 caps out at 1280×720). */
+  /** "h264" (default) or "h265". The exact codec string is derived from the
+   *  resolution + framerate so the right level/profile is picked. */
+  videoCodec?: VideoEncodeCodec;
+  /** Override the auto-derived codec string (escape hatch for tests). */
   codec?: string;
   bitrateBps?: number;
+}
+
+/**
+ * Probe whether the runtime can encode H.265 at the requested resolution.
+ *
+ * `VideoEncoder.isConfigSupported` is the only authoritative way to check
+ * this — UA strings lie. We surface the result so the UI can fail loudly
+ * when a user picked H.265 on a browser that can't deliver it.
+ */
+export async function isVideoCodecSupported(
+  videoCodec: VideoEncodeCodec,
+  width: number,
+  height: number,
+  frameRate: number,
+): Promise<boolean> {
+  const codecString =
+    videoCodec === "h265"
+      ? hevcCodecForResolution(width, height, frameRate)
+      : avcCodecForResolution(width, height, frameRate);
+  try {
+    const result = await VideoEncoder.isConfigSupported({
+      codec: codecString,
+      width,
+      height,
+      framerate: frameRate,
+      bitrate: 4_000_000,
+    });
+    return result.supported === true;
+  } catch {
+    return false;
+  }
 }
 
 export class StreamingVideoEncoder {
@@ -39,13 +77,20 @@ export class StreamingVideoEncoder {
   private chunks: EncodedVideoChunkRecord[] = [];
   private description?: Uint8Array;
   private err: Error | null = null;
+  private codecString: string;
+  private muxerCodec: "avc" | "hevc";
   private opts: VideoEncodeOptions;
 
   constructor(opts: VideoEncodeOptions) {
-    this.opts = {
-      ...opts,
-      codec: opts.codec ?? avcCodecForResolution(opts.width, opts.height, opts.frameRate),
-    };
+    this.opts = opts;
+    const videoCodec: VideoEncodeCodec = opts.videoCodec ?? "h264";
+    this.muxerCodec = videoCodec === "h265" ? "hevc" : "avc";
+    this.codecString =
+      opts.codec ??
+      (videoCodec === "h265"
+        ? hevcCodecForResolution(opts.width, opts.height, opts.frameRate)
+        : avcCodecForResolution(opts.width, opts.height, opts.frameRate));
+
     this.encoder = new VideoEncoder({
       output: (chunk, metadata) => {
         const data = new Uint8Array(chunk.byteLength);
@@ -77,14 +122,26 @@ export class StreamingVideoEncoder {
       },
     });
 
-    this.encoder.configure({
-      codec: this.opts.codec!,
+    // The `avc: { format: "avc" }` hint tells WebCodecs to emit length-
+    // prefixed (AVCC) NAL units in the description, which is what
+    // mp4-muxer expects. The HEVC equivalent is `hevc: { format: "hevc" }`.
+    const config: VideoEncoderConfig = {
+      codec: this.codecString,
       width: opts.width,
       height: opts.height,
       bitrate: opts.bitrateBps ?? 4_000_000,
       framerate: opts.frameRate,
-      avc: { format: "avc" }, // emit AVCC in description (mp4-muxer expects this)
-    });
+    };
+    if (videoCodec === "h265") {
+      (config as VideoEncoderConfig & { hevc?: { format: "hevc" | "annexb" } }).hevc = {
+        format: "hevc",
+      };
+    } else {
+      (config as VideoEncoderConfig & { avc?: { format: "avc" | "annexb" } }).avc = {
+        format: "avc",
+      };
+    }
+    this.encoder.configure(config);
   }
 
   /**
@@ -108,7 +165,8 @@ export class StreamingVideoEncoder {
     this.encoder.close();
     return {
       chunks: this.chunks,
-      codec: this.opts.codec!,
+      codec: this.codecString,
+      muxerCodec: this.muxerCodec,
       width: this.opts.width,
       height: this.opts.height,
       description: this.description,

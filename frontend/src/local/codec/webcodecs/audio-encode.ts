@@ -1,8 +1,10 @@
 /**
- * Encodes a PCM Float32Array to AAC chunks via WebCodecs `AudioEncoder`.
- * Supports mono and stereo. Returns the encoder's resolved description so
- * the muxer can write the `esds` box correctly.
+ * Encodes a PCM Float32Array to AAC or Opus chunks via WebCodecs
+ * `AudioEncoder`. Supports mono and stereo. Returns the encoder's resolved
+ * description so the muxer can write the `esds` / `dOps` box correctly.
  */
+
+export type AudioEncodeCodec = "aac" | "opus";
 
 export interface EncodedAudioChunkRecord {
   type: "key" | "delta";
@@ -13,11 +15,13 @@ export interface EncodedAudioChunkRecord {
 
 export interface AudioEncodeResult {
   chunks: EncodedAudioChunkRecord[];
-  /** Codec ID (e.g. "mp4a.40.2"). */
+  /** Codec ID — either WebCodecs ("opus") or AAC ("mp4a.40.2"). */
   codec: string;
+  /** Container codec key consumed by mp4-muxer. */
+  muxerCodec: "aac" | "opus";
   sampleRate: number;
   numberOfChannels: number;
-  /** AudioSpecificConfig bytes — for the muxer's decoder config. */
+  /** AudioSpecificConfig (AAC) or DOps payload (Opus) bytes. */
   description?: Uint8Array;
 }
 
@@ -26,21 +30,25 @@ export interface AudioEncodeOptions {
   numberOfChannels: number;
   sampleRate: number;
   bitrateBps?: number;
-  /** Frame size for the encoder; AAC native frame is 1024. */
+  /** Frame size for the encoder; AAC native frame is 1024, Opus 960. */
   frameSize?: number;
+  /** Codec to encode with. Default: AAC (compat). */
+  codec?: AudioEncodeCodec;
 }
 
 /**
  * Input PCM is laid out as INTERLEAVED frames: [L0, R0, L1, R1, ...].
  * For mono pass a Float32Array of length samples_per_channel.
  */
-export async function encodeAacFromPcm(
+export async function encodeAudioFromPcm(
   pcm: Float32Array,
   opts: AudioEncodeOptions,
 ): Promise<AudioEncodeResult> {
   const { numberOfChannels, sampleRate } = opts;
+  const codec: AudioEncodeCodec = opts.codec ?? "aac";
   const bitrateBps = opts.bitrateBps ?? 192_000;
-  const frameSize = opts.frameSize ?? 1024;
+  // Opus's native frame is 960 samples (20 ms @ 48 kHz). AAC is 1024.
+  const frameSize = opts.frameSize ?? (codec === "opus" ? 960 : 1024);
   const samplesPerChannel = pcm.length / numberOfChannels;
 
   const chunks: EncodedAudioChunkRecord[] = [];
@@ -77,8 +85,9 @@ export async function encodeAacFromPcm(
     },
   });
 
+  const codecString = codec === "opus" ? "opus" : "mp4a.40.2";
   encoder.configure({
-    codec: "mp4a.40.2",
+    codec: codecString,
     sampleRate,
     numberOfChannels,
     bitrate: bitrateBps,
@@ -112,9 +121,21 @@ export async function encodeAacFromPcm(
 
   return {
     chunks,
-    codec: "mp4a.40.2",
+    codec: codecString,
+    muxerCodec: codec,
     sampleRate,
     numberOfChannels,
     description,
   };
+}
+
+/**
+ * @deprecated AAC-specific entry kept for callers that don't care about
+ *  the codec choice. New code should use `encodeAudioFromPcm`.
+ */
+export async function encodeAacFromPcm(
+  pcm: Float32Array,
+  opts: Omit<AudioEncodeOptions, "codec">,
+): Promise<AudioEncodeResult> {
+  return encodeAudioFromPcm(pcm, { ...opts, codec: "aac" });
 }

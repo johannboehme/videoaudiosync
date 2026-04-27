@@ -20,11 +20,49 @@ import { renderOverlays } from "./ass-renderer";
 import type { Visualizer } from "./visualizer/types";
 
 export interface CompositorOptions {
+  /** Output canvas dimensions — what's encoded. Overlays + visualizers are
+   *  laid out relative to these. */
   width: number;
   height: number;
+  /** Source video dimensions. Defaults to width/height when not provided
+   *  (i.e. pass-through, no scaling). When source ≠ output, the source frame
+   *  is fit aspect-preserving and any spare canvas is filled with black. */
+  sourceWidth?: number;
+  sourceHeight?: number;
   overlays: TextOverlay[];
   energy?: EnergyCurves | null;
   visualizers?: Visualizer[];
+}
+
+interface FitRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** True when source aspect matches output exactly — skips the letterbox fill. */
+  fillsCanvas: boolean;
+}
+
+function computeFitRect(
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number,
+): FitRect {
+  const srcAspect = srcW / srcH;
+  const dstAspect = dstW / dstH;
+  const aspectMatch = Math.abs(srcAspect - dstAspect) < 1e-3;
+  if (aspectMatch) {
+    return { x: 0, y: 0, w: dstW, h: dstH, fillsCanvas: true };
+  }
+  if (srcAspect > dstAspect) {
+    // Source is wider — fit to width, letterbox top/bottom.
+    const h = dstW / srcAspect;
+    return { x: 0, y: (dstH - h) / 2, w: dstW, h, fillsCanvas: false };
+  }
+  // Source is taller — fit to height, pillarbox left/right.
+  const w = dstH * srcAspect;
+  return { x: (dstW - w) / 2, y: 0, w, h: dstH, fillsCanvas: false };
 }
 
 export class Compositor {
@@ -32,6 +70,7 @@ export class Compositor {
   private ctx: OffscreenCanvasRenderingContext2D;
   private opts: CompositorOptions;
   private assBlob: string | null = null;
+  private fitRect: FitRect;
 
   constructor(opts: CompositorOptions) {
     this.opts = opts;
@@ -39,6 +78,12 @@ export class Compositor {
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("Compositor: OffscreenCanvas 2d context unavailable");
     this.ctx = ctx;
+    this.fitRect = computeFitRect(
+      opts.sourceWidth ?? opts.width,
+      opts.sourceHeight ?? opts.height,
+      opts.width,
+      opts.height,
+    );
   }
 
   /**
@@ -65,14 +110,27 @@ export class Compositor {
    * caller MUST `.close()` after encoding.
    */
   composite(frame: VideoFrame, timestampUs: number): VideoFrame {
-    this.ctx.clearRect(0, 0, this.opts.width, this.opts.height);
-    this.ctx.drawImage(
-      frame as unknown as CanvasImageSource,
-      0,
-      0,
-      this.opts.width,
-      this.opts.height,
-    );
+    if (this.fitRect.fillsCanvas) {
+      this.ctx.drawImage(
+        frame as unknown as CanvasImageSource,
+        0,
+        0,
+        this.opts.width,
+        this.opts.height,
+      );
+    } else {
+      // Fill the letterbox/pillarbox bands with black, then place the
+      // source frame in its fit-rect.
+      this.ctx.fillStyle = "#000";
+      this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
+      this.ctx.drawImage(
+        frame as unknown as CanvasImageSource,
+        this.fitRect.x,
+        this.fitRect.y,
+        this.fitRect.w,
+        this.fitRect.h,
+      );
+    }
 
     const t = timestampUs / 1_000_000;
 

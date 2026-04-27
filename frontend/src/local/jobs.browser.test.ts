@@ -99,6 +99,12 @@ describe("local jobs lifecycle", () => {
     expect(job!.sync!.driftRatio).toBeCloseTo(1.0, 1);
     expect(job!.title).toBe("Test take");
     expect(job!.durationS).toBeCloseTo(3.0, 0);
+    // Pre-processing also extracted the timeline frame strip.
+    expect(job!.hasFrames).toBe(true);
+    expect(await opfs.exists(`jobs/${jobId}/frames.webp`)).toBe(true);
+    const framesUrl = await resolveJobAssetUrl(jobId, "frames");
+    expect(framesUrl).toMatch(/^blob:/);
+    if (framesUrl) URL.revokeObjectURL(framesUrl);
   }, 120_000);
 
   it("runQuickRender produces an output file in OPFS", async () => {

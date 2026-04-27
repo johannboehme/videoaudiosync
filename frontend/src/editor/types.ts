@@ -36,13 +36,23 @@ export interface VisualizerConfig {
 
 export type ExportPreset = "web" | "archive" | "mobile" | "custom";
 
+export type QualityStep = "tiny" | "low" | "good" | "high" | "pristine" | "custom";
+
 export interface ExportSpec {
   preset: ExportPreset;
-  format?: "mp4" | "mov";
+  /** Output container. Currently only MP4 (mp4-muxer constraint). */
+  format?: "mp4";
+  /** Output dimensions, or "source" to keep the source's. */
   resolution?: { w: number; h: number } | "source";
   video_codec?: "h264" | "h265";
+  audio_codec?: "aac" | "opus";
   video_bitrate_kbps?: number;
   audio_bitrate_kbps?: number;
+  /** Snap-step the user picked on the quality slider. "custom" means they
+   *  edited a bitrate manually so the slider visualises a free position. */
+  quality?: QualityStep;
+  /** Output filename (without extension — extension is derived from format). */
+  filename?: string;
 }
 
 export interface EditSpec {

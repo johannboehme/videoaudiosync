@@ -57,8 +57,10 @@ const DEFAULT_EXPORT: ExportSpec = {
   format: "mp4",
   resolution: "source",
   video_codec: "h264",
-  video_bitrate_kbps: 5000,
+  audio_codec: "aac",
+  video_bitrate_kbps: 3500,
   audio_bitrate_kbps: 128,
+  quality: "good",
 };
 
 interface EditorState {

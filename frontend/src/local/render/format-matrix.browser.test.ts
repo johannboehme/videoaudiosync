@@ -3,6 +3,7 @@ import { quickRender } from "./quick";
 import { editRender } from "./edit";
 import { demuxVideoTrack } from "../codec/webcodecs/demux";
 import { decodeAudioToMonoPcm } from "../codec/webcodecs/audio-decode";
+import { isVideoCodecSupported } from "../codec/webcodecs/video-encode";
 
 /**
  * End-to-end matrix: every combination of (input video resolution × input
@@ -94,4 +95,121 @@ describe("render format matrix — every supported video × audio combination ro
       }
     });
   }
+});
+
+/**
+ * Export options matrix: validates the user-facing axes — resolution
+ * scaling, H.265, Opus — that the new export panel exposes. Uses a small
+ * fixed video × audio pair to keep the suite in single-digit minutes.
+ */
+describe("editRender export options — resolution × video codec × audio codec", () => {
+  const VIDEO = "/__test_fixtures__/video-720p.mp4"; // 1280×720, ~3s
+  const AUDIO = "/__test_fixtures__/studio-aac.m4a";
+
+  it(
+    "down-scales 720p source to 480p output",
+    async () => {
+      const [video, audio] = await Promise.all([fetchBlob(VIDEO), fetchBlob(AUDIO)]);
+      const result = await editRender({
+        videoFile: video,
+        audioFile: audio,
+        segments: [],
+        overlays: [],
+        offsetMs: 0,
+        driftRatio: 1.0,
+        outputWidth: 854,
+        outputHeight: 480,
+      });
+      expect(result.width).toBe(854);
+      expect(result.height).toBe(480);
+      await assertOutputIsValidMp4(result.output!, 854, 480);
+    },
+    180_000,
+  );
+
+  it(
+    "up-scales 720p source to 1080p output (aspect-preserving)",
+    async () => {
+      const [video, audio] = await Promise.all([fetchBlob(VIDEO), fetchBlob(AUDIO)]);
+      const result = await editRender({
+        videoFile: video,
+        audioFile: audio,
+        segments: [],
+        overlays: [],
+        offsetMs: 0,
+        driftRatio: 1.0,
+        outputWidth: 1920,
+        outputHeight: 1080,
+      });
+      expect(result.width).toBe(1920);
+      expect(result.height).toBe(1080);
+      await assertOutputIsValidMp4(result.output!, 1920, 1080);
+    },
+    180_000,
+  );
+
+  it(
+    "H.265 either renders to hev1/hvc1 or throws a clear capability error (no silent fallback)",
+    async () => {
+      const [video, audio] = await Promise.all([fetchBlob(VIDEO), fetchBlob(AUDIO)]);
+      const supported = await isVideoCodecSupported("h265", 1280, 720, 30);
+      if (!supported) {
+        // The "no silent fallback" contract: when H.265 is unavailable we
+        // throw with a UI-presentable message. Test that path explicitly so
+        // the contract can't quietly drift into a fallback.
+        await expect(
+          editRender({
+            videoFile: video,
+            audioFile: audio,
+            segments: [],
+            overlays: [],
+            offsetMs: 0,
+            driftRatio: 1.0,
+            videoCodec: "h265",
+          }),
+        ).rejects.toThrow(/H\.265/);
+        return;
+      }
+      const result = await editRender({
+        videoFile: video,
+        audioFile: audio,
+        segments: [],
+        overlays: [],
+        offsetMs: 0,
+        driftRatio: 1.0,
+        videoCodec: "h265",
+      });
+      expect(result.videoCodec.startsWith("hev1") || result.videoCodec.startsWith("hvc1")).toBe(true);
+      const reparsed = await demuxVideoTrack(new Blob([result.output! as BlobPart]));
+      expect(reparsed).not.toBeNull();
+      expect(reparsed!.info.width).toBe(1280);
+      expect(reparsed!.info.height).toBe(720);
+      expect(reparsed!.info.codec.startsWith("hev1") || reparsed!.info.codec.startsWith("hvc1"))
+        .toBe(true);
+    },
+    180_000,
+  );
+
+  it(
+    "renders Opus audio — output decodes back to non-empty PCM",
+    async () => {
+      const [video, audio] = await Promise.all([fetchBlob(VIDEO), fetchBlob(AUDIO)]);
+      const result = await editRender({
+        videoFile: video,
+        audioFile: audio,
+        segments: [],
+        overlays: [],
+        offsetMs: 0,
+        driftRatio: 1.0,
+        audioCodec: "opus",
+      });
+      expect(result.output).not.toBeNull();
+      // Audio decode must round-trip (decodeAudioToMonoPcm handles the
+      // fallback to ffmpeg.wasm if WebCodecs's decoder for Opus-in-MP4
+      // ever rejects, so this is also a fallback-path smoke).
+      const pcm = await decodeAudioToMonoPcm(new Blob([result.output! as BlobPart]), 22050);
+      expect(pcm.pcm.length).toBeGreaterThan(0);
+    },
+    180_000,
+  );
 });

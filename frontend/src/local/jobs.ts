@@ -30,6 +30,7 @@ import type {
 } from "./render/edit.worker";
 import { decodeAudioToMonoPcm } from "./codec";
 import { computeEnergyCurves } from "./render/energy";
+import { extractTimelineFrames } from "./render/frames";
 import type { TextOverlay } from "./render/ass-builder";
 import {
   installRenderUnloadGuard,
@@ -44,6 +45,7 @@ export { jobEvents };
 const VIDEO_NAME = "video";
 const AUDIO_NAME = "audio";
 const OUTPUT_NAME = "output.mp4";
+const FRAMES_NAME = "frames.webp";
 
 function videoPath(jobId: string, ext: string): string {
   return `jobs/${jobId}/${VIDEO_NAME}.${ext}`;
@@ -53,6 +55,9 @@ function audioPath(jobId: string, ext: string): string {
 }
 function outputPath(jobId: string): string {
   return `jobs/${jobId}/${OUTPUT_NAME}`;
+}
+function framesPath(jobId: string): string {
+  return `jobs/${jobId}/${FRAMES_NAME}`;
 }
 
 function generateJobId(): string {
@@ -169,13 +174,13 @@ async function runSync(
   const videoFile = await opfs.readFile(videoPath(jobId, videoExt));
   const audioFile = await opfs.readFile(audioPath(jobId, audioExt));
 
-  await reportProgress(jobId, { pct: 20, stage: "decoding-video-audio" });
+  await reportProgress(jobId, { pct: 10, stage: "decoding-video-audio" });
   const videoMonoPcm = await decodeAudioToMonoPcm(videoFile, 22050);
 
-  await reportProgress(jobId, { pct: 50, stage: "decoding-studio-audio" });
+  await reportProgress(jobId, { pct: 30, stage: "decoding-studio-audio" });
   const studioMonoPcm = await decodeAudioToMonoPcm(audioFile, 22050);
 
-  await reportProgress(jobId, { pct: 70, stage: "syncing" });
+  await reportProgress(jobId, { pct: 50, stage: "syncing" });
   const result = await syncAudio({
     refSource: videoMonoPcm.pcm,
     querySource: studioMonoPcm.pcm,
@@ -188,19 +193,48 @@ async function runSync(
     warning: result.warning ?? undefined,
   };
 
-  // Probe video for duration / size if possible — best-effort.
+  // Probe video for duration / dimensions. Used for the editor preview and
+  // for the frame-strip extraction below.
   let durationS: number | undefined;
+  let videoWidth: number | undefined;
+  let videoHeight: number | undefined;
   try {
     const { demuxVideoTrack } = await import("./codec/webcodecs/demux");
     const v = await demuxVideoTrack(videoFile);
-    if (v) durationS = v.info.durationS;
+    if (v) {
+      durationS = v.info.durationS;
+      videoWidth = v.info.width;
+      videoHeight = v.info.height;
+    }
   } catch {
-    // ignore — duration is nice-to-have
+    // ignore — duration / dims are nice-to-have
+  }
+
+  // Pre-processing step: extract a thumbnail strip for the timeline.
+  // Failure is non-blocking — the editor degrades gracefully to spectrogram
+  // only when no strip exists.
+  let hasFrames = false;
+  await reportProgress(jobId, { pct: 65, stage: "extracting-frames" });
+  try {
+    const result = await extractTimelineFrames(videoFile, {
+      onProgress: (frac) => {
+        const pct = 65 + Math.floor(frac * 30); // 65 → 95
+        void reportProgress(jobId, { pct, stage: "extracting-frames" });
+      },
+    });
+    await opfs.writeFile(framesPath(jobId), result.blob);
+    hasFrames = true;
+  } catch (err) {
+    // Log but keep going — the editor still works without the strip.
+    console.warn(`Frame strip extraction failed for ${jobId}:`, err);
   }
 
   const updated = await jobsDb.updateJob(jobId, {
     sync,
     durationS,
+    width: videoWidth,
+    height: videoHeight,
+    hasFrames,
     status: "synced",
     progress: { pct: 100, stage: "synced" },
     finishedAt: Date.now(),
@@ -270,6 +304,21 @@ export interface EditSpecLocal {
    * expand it here.
    */
   visualizers?: VisualizerDescriptor[];
+  /** Resolved encoder/output options. Built by the editor's submit handler
+   *  from the user's `ExportSpec` (UI layer) — this stays raw kbps/codec so
+   *  the worker doesn't need to know about presets. */
+  exportOpts?: ExportRenderOpts;
+  /** Output filename (without extension). Used purely for download UX. */
+  outputFilename?: string;
+}
+
+export interface ExportRenderOpts {
+  width?: number;
+  height?: number;
+  videoCodec: "h264" | "h265";
+  audioCodec: "aac" | "opus";
+  videoBitrateBps: number;
+  audioBitrateBps: number;
 }
 
 export type VisualizerDescriptor =
@@ -355,6 +404,12 @@ export async function runEditRender(
       energy,
       offsetMs: totalOffsetMs,
       driftRatio: job.sync.driftRatio,
+      outputWidth: spec.exportOpts?.width,
+      outputHeight: spec.exportOpts?.height,
+      videoCodec: spec.exportOpts?.videoCodec,
+      audioCodec: spec.exportOpts?.audioCodec,
+      videoBitrateBps: spec.exportOpts?.videoBitrateBps,
+      audioBitrateBps: spec.exportOpts?.audioBitrateBps,
     };
 
     // Collect transferables: every Float32Array buffer we hand to the
@@ -459,12 +514,17 @@ export async function cancelEditRender(jobId: string): Promise<void> {
  */
 export async function resolveJobAssetUrl(
   jobId: string,
-  kind: "video" | "audio" | "output",
+  kind: "video" | "audio" | "output" | "frames",
 ): Promise<string | null> {
   if (kind === "output") {
     const exists = await opfs.exists(outputPath(jobId));
     if (!exists) return null;
     return opfs.objectUrl(outputPath(jobId));
+  }
+  if (kind === "frames") {
+    const exists = await opfs.exists(framesPath(jobId));
+    if (!exists) return null;
+    return opfs.objectUrl(framesPath(jobId));
   }
   const job = await jobsDb.getJob(jobId);
   if (!job) return null;

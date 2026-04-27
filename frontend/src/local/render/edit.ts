@@ -28,9 +28,16 @@ import {
 } from "mp4-muxer";
 
 type MuxTarget = ArrayBufferTarget | FileSystemWritableFileStreamTarget;
-import { encodeAacFromPcm } from "../codec/webcodecs/audio-encode";
+import {
+  encodeAudioFromPcm,
+  type AudioEncodeCodec,
+} from "../codec/webcodecs/audio-encode";
 import { demuxVideoTrack } from "../codec/webcodecs/demux";
-import { StreamingVideoEncoder } from "../codec/webcodecs/video-encode";
+import {
+  StreamingVideoEncoder,
+  isVideoCodecSupported,
+  type VideoEncodeCodec,
+} from "../codec/webcodecs/video-encode";
 import {
   applyAudioOffsetInterleaved,
   applyDriftStretchInterleaved,
@@ -68,6 +75,15 @@ export interface EditRenderInput {
   driftRatio: number;
   videoBitrateBps?: number;
   audioBitrateBps?: number;
+  /** Output video codec. Default: h264. */
+  videoCodec?: VideoEncodeCodec;
+  /** Output audio codec. Default: aac. */
+  audioCodec?: AudioEncodeCodec;
+  /** Output dimensions. Defaults to the source's. Aspect-mismatched values
+   *  result in a letterboxed render — the source is fit aspect-preserving
+   *  and the spare canvas is filled with black. */
+  outputWidth?: number;
+  outputHeight?: number;
   /** Stream the muxed MP4 directly into this writable. When present the
    *  caller owns the stream's lifecycle (close on success, abort on error). */
   output?: FileSystemWritableFileStream;
@@ -171,10 +187,12 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
 
   // Step 3: encode audio.
   input.onProgress?.({ stage: "audio-encode", framesDone: 0, framesTotal: 0 });
-  const encodedAudio = await encodeAacFromPcm(pcm, {
+  const audioCodec: AudioEncodeCodec = input.audioCodec ?? "aac";
+  const encodedAudio = await encodeAudioFromPcm(pcm, {
     numberOfChannels: audio.channels,
     sampleRate: audio.sampleRate,
     bitrateBps: input.audioBitrateBps ?? 192_000,
+    codec: audioCodec,
   });
   if (!encodedAudio.description) {
     throw new Error("Audio encoder produced no description");
@@ -185,9 +203,33 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
 
   // Step 4: streaming video composite + encode.
   const fps = Math.max(1, Math.round(video.info.fps));
+  const outputWidth = input.outputWidth ?? video.info.width;
+  const outputHeight = input.outputHeight ?? video.info.height;
+  const videoCodec: VideoEncodeCodec = input.videoCodec ?? "h264";
+
+  // Validate codec capability up front. Failing here surfaces a clear UI
+  // error before we've decoded a single frame; without the probe we would
+  // get a cryptic NotSupportedError from VideoEncoder.configure deep in
+  // the pipeline (and the half-written MP4 to clean up).
+  if (videoCodec === "h265") {
+    const supported = await isVideoCodecSupported(
+      "h265",
+      outputWidth,
+      outputHeight,
+      fps,
+    );
+    if (!supported) {
+      throw new Error(
+        "This browser cannot encode H.265 at the requested resolution. Please choose H.264.",
+      );
+    }
+  }
+
   const compositor = new Compositor({
-    width: video.info.width,
-    height: video.info.height,
+    width: outputWidth,
+    height: outputHeight,
+    sourceWidth: video.info.width,
+    sourceHeight: video.info.height,
     overlays: input.overlays,
     energy: input.energy ?? null,
     visualizers: input.visualizers ?? [],
@@ -195,9 +237,10 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   await compositor.ensureSubtitleEngine();
 
   const encoder = new StreamingVideoEncoder({
-    width: video.info.width,
-    height: video.info.height,
+    width: outputWidth,
+    height: outputHeight,
     frameRate: fps,
+    videoCodec,
     bitrateBps: input.videoBitrateBps ?? 4_000_000,
   });
 
@@ -321,13 +364,13 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   const muxer = new Muxer({
     target,
     video: {
-      codec: "avc",
-      width: video.info.width,
-      height: video.info.height,
+      codec: encodedVideo.muxerCodec,
+      width: outputWidth,
+      height: outputHeight,
       frameRate: fps,
     },
     audio: {
-      codec: "aac",
+      codec: encodedAudio.muxerCodec,
       numberOfChannels: encodedAudio.numberOfChannels,
       sampleRate: encodedAudio.sampleRate,
     },
@@ -377,8 +420,8 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
 
   return {
     output: outputBytes,
-    width: video.info.width,
-    height: video.info.height,
+    width: outputWidth,
+    height: outputHeight,
     videoCodec: encodedVideo.codec,
     audioBackend: "webcodecs",
     audioSampleRate: encodedAudio.sampleRate,

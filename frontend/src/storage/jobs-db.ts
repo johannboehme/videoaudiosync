@@ -49,6 +49,11 @@ export interface LocalJob {
   height?: number;
   fps?: number;
 
+  /** Set when a timeline thumbnail strip has been generated for this job
+   *  (file at `jobs/{id}/frames.webp`). Layout details are reproducible from
+   *  the source duration + dimensions, so we don't persist the full manifest. */
+  hasFrames?: boolean;
+
   /** EditSpec (typisiert in einem späteren Modul). Bewusst unknown hier, um
    * Coupling zu vermeiden. */
   editSpec?: unknown;

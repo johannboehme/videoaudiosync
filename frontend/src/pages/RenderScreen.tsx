@@ -14,6 +14,7 @@ const STAGE_LABELS: Record<string, string> = {
   "render-prep": "Vorbereiten",
   "audio-decode": "Audio dekodieren",
   "energy-curves": "Audio-Energie analysieren",
+  "extracting-frames": "Vorschaubilder extrahieren",
   encoding: "Video kodieren",
   writing: "MP4 schreiben",
   rendered: "Fertig",
