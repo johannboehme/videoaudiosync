@@ -45,9 +45,9 @@ export const tokens = {
     hot: "0 4px 8px -2px rgba(255,87,34,0.45)",
   },
   font: {
-    display: '"Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif',
-    body: '"Geist", ui-sans-serif, system-ui, -apple-system, sans-serif',
-    mono: '"JetBrains Mono", ui-monospace, "SFMono-Regular", "Menlo", monospace',
+    display: '"Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif',
+    body: '"Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif',
+    mono: '"JetBrains Mono Variable", ui-monospace, "SFMono-Regular", "Menlo", monospace',
   },
 } as const;
 

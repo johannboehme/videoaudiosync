@@ -3,8 +3,11 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-route
 import { detectCapabilities, meetsMinRequirements } from "./local/capabilities";
 import { markInterruptedJobsOnLoad } from "./local/lifecycle";
 import { RegistrationMark } from "./editor/components/RuleStrip";
+import { Footer } from "./components/Footer";
+import { Datenschutz } from "./pages/Datenschutz";
 import Editor from "./pages/Editor";
 import History from "./pages/History";
+import { Impressum } from "./pages/Impressum";
 import JobPage from "./pages/JobPage";
 import RenderScreen from "./pages/RenderScreen";
 import { Settings } from "./pages/Settings";
@@ -60,8 +63,11 @@ export default function App() {
         <Route path="/job/:id/edit" element={<Editor />} />
         <Route path="/job/:id/render" element={<RenderScreen />} />
         <Route path="/settings" element={<Settings caps={caps} />} />
+        <Route path="/impressum" element={<Impressum />} />
+        <Route path="/datenschutz" element={<Datenschutz />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <Footer overlay={isFullBleed} />
     </div>
   );
 }

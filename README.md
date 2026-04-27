@@ -146,3 +146,29 @@ on a failed readiness check.
   `crossOriginIsolated === false`, check that both the host nginx vhost and
   the container's `nginx.conf` keep `Cross-Origin-Opener-Policy: same-origin`
   and `Cross-Origin-Embedder-Policy: require-corp` intact.
+
+## Hosting in Germany — compliance checklist
+
+The published instance ships with what a private, non-commercial tool
+in DE typically needs. If you fork and host your own:
+
+- **Edit the imprint** — `frontend/src/pages/Impressum.tsx` hardcodes
+  the operator's name, postal address and e-mail. Replace before
+  deploying. The address must be capable of receiving registered mail.
+- **Update the supervisory authority** in
+  `frontend/src/pages/Datenschutz.tsx` to the data-protection authority
+  of *your* federal state if you are not in Bavaria.
+- **Anonymise nginx logs.** `deploy/nginx-vhost.conf` enables an `anon`
+  log format; the matching `map` and `log_format` directives must live
+  at `http {}` scope in the host `/etc/nginx/nginx.conf` — see the
+  comment block at the top of the vhost file.
+- **Log retention** — configure logrotate to drop
+  `/var/log/nginx/sync.access.log` after 7 days.
+- **Web fonts are bundled locally** via `@fontsource-variable/*` — do
+  not re-introduce a `fonts.googleapis.com` import.
+- **No analytics, no tracking, no cookies.** Keep it that way; if you
+  add any, the privacy policy must change accordingly.
+
+Not legal advice. For a forked deployment that goes beyond a personal
+hobby project, have a lawyer review the imprint and privacy policy
+texts.
