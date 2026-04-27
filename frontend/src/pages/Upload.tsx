@@ -4,53 +4,39 @@ import { ChunkyButton } from "../editor/components/ChunkyButton";
 import { RuleStrip } from "../editor/components/RuleStrip";
 import { formatBytes } from "../components/ProgressBar";
 import { createJob } from "../local/jobs";
-import { camColorAt } from "../storage/migrations";
 
 export default function Upload() {
   const navigate = useNavigate();
-  const [videos, setVideos] = useState<(File | null)[]>([null]);
   const [audio, setAudio] = useState<File | null>(null);
+  const [videos, setVideos] = useState<File[]>([]);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const filledVideos = videos.filter((v): v is File => v !== null);
-  const ready = filledVideos.length > 0 && audio !== null && !busy;
-
-  function setVideoAt(idx: number, file: File | null) {
-    setVideos((prev) => {
-      const next = [...prev];
-      next[idx] = file;
-      return next;
-    });
-  }
-
-  function addVideoSlot() {
-    setVideos((prev) => [...prev, null]);
-  }
-
-  function removeVideoAt(idx: number) {
-    setVideos((prev) => {
-      // Always keep at least one slot.
-      const next = prev.filter((_, i) => i !== idx);
-      return next.length === 0 ? [null] : next;
-    });
-  }
+  const ready = audio !== null && videos.length > 0 && !busy;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!audio || filledVideos.length === 0) return;
+    if (!audio || videos.length === 0) return;
     setBusy(true);
     setErr(null);
     try {
-      const jobId = await createJob(filledVideos, audio, {
-        title: title || null,
-      });
+      const jobId = await createJob(videos, audio, { title: title || null });
       navigate(`/job/${jobId}`);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not start the job");
+      setErr(e instanceof Error ? e.message : "Could not start the project");
       setBusy(false);
     }
+  }
+
+  function addVideos(files: FileList | null) {
+    if (!files) return;
+    const next = Array.from(files);
+    setVideos((prev) => [...prev, ...next]);
+  }
+
+  function removeVideo(idx: number) {
+    setVideos((prev) => prev.filter((_, i) => i !== idx));
   }
 
   return (
@@ -59,61 +45,34 @@ export default function Upload() {
         <div>
           <div className="flex items-center gap-3 mb-3">
             <span className="font-mono text-xs tracking-label uppercase text-ink-2">
-              NEW · JOB · LOCAL
+              NEW · CLIP-STUDIO · LOCAL
             </span>
             <RuleStrip count={32} className="text-rule flex-1 max-w-[220px]" />
           </div>
           <h1 className="font-display font-semibold text-[clamp(40px,6vw,80px)] leading-[0.95] tracking-tight text-ink">
-            Drop master audio.<br />
-            Drop your cams.<br />
-            <span className="text-hot">Get sync.</span>
+            Drop the song.<br />
+            Drop your videos.<br />
+            <span className="text-hot">Build the cut.</span>
           </h1>
         </div>
         <aside className="lg:pt-12 flex flex-col gap-3 text-sm text-ink-2 lg:max-w-xs">
           <p className="leading-relaxed">
-            Everything runs in your browser — your files never leave the device.
-            One studio audio + as many cams as you want; we line them all up
-            for the editor.
+            One master audio file. As many video angles, takes, or B-roll
+            clips as you have. We'll sync them all to the song and open the
+            multi-track editor.
           </p>
           <p className="leading-relaxed">
-            Tip: any modern Chromium browser (Chrome, Edge, Brave, Arc) works
-            best. Firefox + Safari fall back to ffmpeg.wasm for some codecs.
+            Everything stays in your browser. Modern Chromium browsers (Chrome,
+            Edge, Brave, Arc) are fastest; Firefox + Safari fall back to
+            ffmpeg.wasm for some codecs.
           </p>
         </aside>
       </header>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-6">
-        <div className="grid lg:grid-cols-[1.6fr_1fr] gap-3 items-start">
-          <div className="flex flex-col gap-3">
-            {videos.map((file, idx) => (
-              <DropZone
-                key={idx}
-                step={String(idx + 1).padStart(2, "0")}
-                label={`Cam ${idx + 1}`}
-                accept="video/*"
-                file={file}
-                color={camColorAt(idx)}
-                onChange={(f) => setVideoAt(idx, f)}
-                onRemove={idx === 0 ? undefined : () => removeVideoAt(idx)}
-                tall={idx === 0}
-              />
-            ))}
-            <button
-              type="button"
-              onClick={addVideoSlot}
-              className="self-start font-mono text-[11px] tracking-label uppercase text-ink-2 hover:text-ink border border-dashed border-rule hover:border-ink-2 rounded-md px-3 py-2 transition-colors"
-            >
-              + Add cam
-            </button>
-          </div>
-          <DropZone
-            step="A"
-            label="Master Audio"
-            accept="audio/*"
-            file={audio}
-            color="#ffb020"
-            onChange={setAudio}
-          />
+        <div className="grid lg:grid-cols-[1fr_1.6fr] gap-3 items-stretch">
+          <AudioDropZone file={audio} onChange={setAudio} />
+          <VideoDropList files={videos} onAdd={addVideos} onRemove={removeVideo} />
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-1">
@@ -137,11 +96,7 @@ export default function Upload() {
         )}
 
         <div className="grid sm:grid-cols-[1fr_auto] gap-3 items-stretch border-t border-rule pt-5 mt-2">
-          <ReadinessStatus
-            videoCount={filledVideos.length}
-            audio={audio}
-            busy={busy}
-          />
+          <ReadinessStatus audio={audio} videos={videos} busy={busy} />
           <ChunkyButton
             type="submit"
             variant="primary"
@@ -149,7 +104,7 @@ export default function Upload() {
             disabled={!ready}
             className="sm:min-w-[200px]"
           >
-            {busy ? "Preparing…" : "Sync locally"}
+            {busy ? "Preparing…" : "Sync & open editor"}
           </ChunkyButton>
         </div>
       </form>
@@ -157,151 +112,157 @@ export default function Upload() {
   );
 }
 
-function DropZone({
-  step,
-  label,
-  accept,
+function AudioDropZone({
   file,
-  color,
   onChange,
-  onRemove,
-  tall = false,
 }: {
-  step: string;
-  label: string;
-  accept: string;
   file: File | null;
-  color: string;
   onChange: (f: File | null) => void;
-  onRemove?: () => void;
-  tall?: boolean;
 }) {
-  const id = `picker-${label.toLowerCase().replace(/\s+/g, "-")}`;
   const filled = file !== null;
   return (
-    <div className="relative">
-      <label
-        htmlFor={id}
-        className={[
-          "relative block rounded-lg cursor-pointer transition-colors group overflow-hidden",
-          "border-2 border-dashed",
-          filled
-            ? "bg-paper-hi border-transparent text-ink"
-            : "bg-paper-hi border-rule hover:border-ink-2 hover:bg-paper-deep",
-          tall ? "min-h-[180px] sm:min-h-[220px]" : "min-h-[110px] sm:min-h-[130px]",
-        ].join(" ")}
-        style={
-          filled
-            ? { borderColor: color, boxShadow: `inset 4px 0 0 ${color}` }
-            : undefined
-        }
-      >
-        <div className="absolute top-4 left-5 right-5 flex items-center justify-between">
-          <span
-            className="font-display tracking-label uppercase text-[11px]"
-            style={{ color: filled ? color : undefined }}
-          >
-            {step} · {label}
+    <label
+      htmlFor="picker-audio"
+      className={[
+        "relative block rounded-lg cursor-pointer transition-colors group",
+        "border-2 border-dashed min-h-[220px]",
+        filled ? "bg-hot/10 border-hot text-ink" : "bg-paper-hi border-rule hover:border-ink-2 hover:bg-paper-deep",
+      ].join(" ")}
+    >
+      <div className="absolute top-4 left-5 right-5 flex items-center justify-between">
+        <span className="font-display tracking-label uppercase text-[11px] text-ink-2">
+          01 · Master audio
+        </span>
+        {filled && (
+          <span className="font-mono text-[10px] tracking-label uppercase text-hot">
+            ● READY
           </span>
-          {filled && (
-            <span
-              className="font-mono text-[10px] tracking-label uppercase"
-              style={{ color }}
-            >
-              ● READY
-            </span>
+        )}
+      </div>
+      <div className="absolute inset-0 flex items-end justify-between p-5 pt-14">
+        <div className="min-w-0 flex-1">
+          {filled ? (
+            <>
+              <div className="font-mono text-base sm:text-lg text-ink truncate">
+                {file!.name}
+              </div>
+              <div className="mt-1 font-mono text-xs text-ink-2 tabular">
+                {formatBytes(file!.size)}
+              </div>
+            </>
+          ) : (
+            <div className="font-display text-2xl sm:text-3xl font-semibold text-ink-3 leading-tight">
+              Drop song
+              <br />
+              <span className="text-base sm:text-lg font-normal text-ink-3">
+                or tap to pick
+              </span>
+            </div>
           )}
         </div>
-        <div className="absolute inset-0 flex items-end justify-between p-5">
-          <div className="min-w-0 flex-1">
-            {filled ? (
-              <>
-                <div className="font-mono text-base sm:text-lg text-ink truncate">
-                  {file!.name}
-                </div>
-                <div className="mt-1 font-mono text-xs text-ink-2 tabular">
-                  {formatBytes(file!.size)}
-                </div>
-              </>
-            ) : (
-              <div className="font-display text-2xl sm:text-3xl font-semibold text-ink-3 leading-tight">
-                Drop {label.toLowerCase()}
-                <br />
-                <span className="text-base sm:text-lg font-normal text-ink-3">
-                  or tap to pick
-                </span>
-              </div>
-            )}
-          </div>
-          <BigStepDigit n={step} muted={!filled} color={color} />
-        </div>
-        <input
-          id={id}
-          type="file"
-          accept={accept}
-          className="sr-only"
-          onChange={(e) => onChange(e.target.files?.[0] || null)}
-        />
+      </div>
+      <input
+        id="picker-audio"
+        type="file"
+        accept="audio/*"
+        className="sr-only"
+        onChange={(e) => onChange(e.target.files?.[0] || null)}
+      />
+    </label>
+  );
+}
+
+function VideoDropList({
+  files,
+  onAdd,
+  onRemove,
+}: {
+  files: File[];
+  onAdd: (list: FileList | null) => void;
+  onRemove: (idx: number) => void;
+}) {
+  return (
+    <div className="rounded-lg border-2 border-dashed border-rule bg-paper-hi p-3 sm:p-4 flex flex-col gap-2 min-h-[220px]">
+      <div className="flex items-center justify-between mb-1">
+        <span className="font-display tracking-label uppercase text-[11px] text-ink-2">
+          02 · Video sources
+        </span>
+        {files.length > 0 && (
+          <span className="font-mono text-[10px] tracking-label uppercase text-hot">
+            ● {files.length} READY
+          </span>
+        )}
+      </div>
+
+      <ul className="flex flex-col gap-2">
+        {files.map((f, i) => (
+          <li
+            key={`${f.name}-${i}`}
+            className="flex items-center gap-3 px-3 h-11 bg-paper-deep border border-rule rounded-md"
+          >
+            <span className="font-mono text-xs text-ink-3 tabular w-8">
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            <span className="font-mono text-sm text-ink truncate flex-1">{f.name}</span>
+            <span className="font-mono text-xs text-ink-3 tabular hidden sm:inline">
+              {formatBytes(f.size)}
+            </span>
+            <button
+              type="button"
+              onClick={() => onRemove(i)}
+              className="font-mono text-[11px] text-ink-3 hover:text-danger uppercase tracking-label"
+              aria-label={`Remove ${f.name}`}
+            >
+              remove
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <label
+        htmlFor="picker-videos"
+        className={[
+          "mt-auto flex items-center justify-center gap-3 h-12 rounded-md cursor-pointer transition-colors",
+          "border border-dashed",
+          files.length === 0
+            ? "border-rule text-ink-3 bg-transparent hover:border-ink-2 hover:text-ink-2"
+            : "border-rule text-ink-2 hover:border-ink-2 hover:text-ink",
+        ].join(" ")}
+      >
+        <span className="text-xl leading-none">+</span>
+        <span className="font-mono text-xs tracking-label uppercase">
+          {files.length === 0 ? "Add videos (multi-select ok)" : "Add another"}
+        </span>
       </label>
-      {onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove ${label}`}
-          className="absolute top-2 right-2 w-7 h-7 rounded-full bg-paper-deep border border-rule text-ink-2 hover:text-danger hover:border-danger flex items-center justify-center font-mono text-sm leading-none transition-colors"
-        >
-          ×
-        </button>
-      )}
+      <input
+        id="picker-videos"
+        type="file"
+        accept="video/*"
+        multiple
+        className="sr-only"
+        onChange={(e) => onAdd(e.target.files)}
+      />
     </div>
   );
 }
 
-function BigStepDigit({
-  n,
-  muted,
-  color,
-}: {
-  n: string;
-  muted: boolean;
-  color: string;
-}) {
-  return (
-    <span
-      aria-hidden
-      className={[
-        "select-none font-display font-semibold leading-none",
-        "text-[64px] sm:text-[88px]",
-      ].join(" ")}
-      style={{
-        letterSpacing: "-0.04em",
-        color: muted ? undefined : color,
-        opacity: muted ? 0.18 : 1,
-      }}
-    >
-      {n}
-    </span>
-  );
-}
-
 function ReadinessStatus({
-  videoCount,
   audio,
+  videos,
   busy,
 }: {
-  videoCount: number;
   audio: File | null;
+  videos: File[];
   busy: boolean;
 }) {
-  const ready = videoCount > 0 && audio !== null;
   return (
     <div className="bg-paper-hi border border-rule rounded-md px-4 py-2.5 flex items-center justify-between">
       <div className="flex items-center gap-4">
-        <Dot ok={videoCount > 0} label={videoCount > 1 ? `${videoCount} CAMS` : "VIDEO"} />
         <Dot ok={audio !== null} label="AUDIO" />
+        <Dot ok={videos.length > 0} label={`VIDEO · ${videos.length}`} />
       </div>
       <span className="font-mono text-[10px] tracking-label uppercase text-ink-3">
-        {busy ? "PREPARING" : ready ? "READY → SYNC" : "WAITING"}
+        {busy ? "PREPARING" : audio && videos.length > 0 ? "READY → SYNC" : "WAITING"}
       </span>
     </div>
   );
