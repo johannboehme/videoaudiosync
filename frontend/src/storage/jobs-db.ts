@@ -7,12 +7,41 @@
  */
 
 import { openDB, type IDBPDatabase } from "idb";
+import { migrateV1ToV2 } from "./migrations";
 
 export interface SyncResult {
   offsetMs: number;
   driftRatio: number;
   confidence: number;
   warning?: string;
+}
+
+/**
+ * Eine Video-Quelle innerhalb eines Multi-Video-Jobs (V2-Schema).
+ *
+ * Mehrere Videos teilen sich ein Master-Audio. Jedes Video hat seinen eigenen
+ * Sync-Versatz und seine eigene Cam-Farbe für die Timeline-Visualisierung.
+ */
+export interface VideoAsset {
+  id: string;
+  filename: string;
+  color: string;
+  sync?: SyncResult;
+  durationS?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}
+
+/**
+ * Multi-Cam-Cut: ab `atTimeS` wird auf `camId` umgeschaltet.
+ *
+ * Cuts sind nach `atTimeS` aufsteigend geordnet. Active-Cam an einem
+ * Zeitpunkt = letzter Cut mit `atTimeS ≤ t` (siehe `editor/cuts.ts`).
+ */
+export interface Cut {
+  atTimeS: number;
+  camId: string;
 }
 
 export interface JobProgress {
@@ -35,6 +64,9 @@ export type JobStatus =
 export interface LocalJob {
   id: string;
   title: string | null;
+
+  /** V1-Feld: Pfad des (ersten) Videos. Bleibt für Legacy-Consumer erhalten;
+   * der kanonische Pfad ist ab V2 `videos[i].filename`. */
   videoFilename: string;
   audioFilename: string;
 
@@ -42,6 +74,8 @@ export interface LocalJob {
   progress: JobProgress;
   error?: string;
 
+  /** V1-Feld: Sync-Result für das (eine) Video. Ab V2 lebt das pro Video in
+   * `videos[i].sync`. Wird zur Backward-Compat hier gespiegelt. */
   sync?: SyncResult;
 
   durationS?: number;
@@ -64,10 +98,22 @@ export interface LocalJob {
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
+
+  // ---- V2 (Multi-Video) ----
+
+  /** Persistierte Schema-Version. Fehlt bei Jobs, die vor der V2-Migration
+   * geschrieben wurden. */
+  schemaVersion?: 2;
+
+  /** Multi-Cam-Quellen. Bei V1-Jobs nach Migration genau ein Element. */
+  videos?: VideoAsset[];
+
+  /** Multi-Cam-Cuts auf der Master-Timeline. Leer bei Single-Cam-Jobs. */
+  cuts?: Cut[];
 }
 
 const DB_NAME = "videoaudiosync";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = "jobs";
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -75,10 +121,23 @@ let dbPromise: Promise<IDBPDatabase> | null = null;
 function db(): Promise<IDBPDatabase> {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(database) {
+      async upgrade(database, oldVersion, _newVersion, tx) {
         if (!database.objectStoreNames.contains(STORE)) {
           const store = database.createObjectStore(STORE, { keyPath: "id" });
           store.createIndex("by-createdAt", "createdAt");
+        }
+
+        // V1 → V2: jeden Job in-place auf das Multi-Video-Schema heben.
+        // Läuft in der vom upgrade-Callback gelieferten Transaktion, also
+        // atomar mit dem schema-bump.
+        if (oldVersion > 0 && oldVersion < 2) {
+          const store = tx.objectStore(STORE);
+          let cursor = await store.openCursor();
+          while (cursor) {
+            const migrated = migrateV1ToV2(cursor.value as LocalJob);
+            await cursor.update(migrated);
+            cursor = await cursor.continue();
+          }
         }
       },
     });
