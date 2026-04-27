@@ -8,8 +8,17 @@
  */
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import { EditSpec, ExportSpec, TextOverlay, VisualizerConfig } from "./types";
+import {
+  EditSpec,
+  ExportSpec,
+  TextOverlay,
+  VideoClip,
+  VisualizerConfig,
+  clipRangeS,
+} from "./types";
 import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
+import { activeCamAt, type CamRange } from "./cuts";
+import type { Cut } from "../storage/jobs-db";
 
 export interface JobMeta {
   id: string;
@@ -63,6 +72,17 @@ const DEFAULT_EXPORT: ExportSpec = {
   quality: "good",
 };
 
+/** Initial-bare data needed to construct in-memory clips when loading a job. */
+export interface ClipInit {
+  id: string;
+  filename: string;
+  color: string;
+  sourceDurationS: number;
+  syncOffsetMs: number;
+  syncOverrideMs?: number;
+  startOffsetS?: number;
+}
+
 interface EditorState {
   jobMeta: JobMeta | null;
   playback: PlaybackSlice;
@@ -73,9 +93,21 @@ interface EditorState {
   exportSpec: ExportSpec;
   ui: UiSlice;
 
+  // ---- Multi-cam ----
+  clips: VideoClip[];
+  cuts: Cut[];
+  selectedClipId: string | null;
+
   // actions
   reset(): void;
-  loadJob(meta: JobMeta, opts?: { lastSyncOverrideMs?: number | null }): void;
+  loadJob(
+    meta: JobMeta,
+    opts?: {
+      lastSyncOverrideMs?: number | null;
+      clips?: ClipInit[];
+      cuts?: Cut[];
+    },
+  ): void;
 
   setCurrentTime(t: number): void;
   setPlaying(playing: boolean): void;
@@ -100,8 +132,20 @@ interface EditorState {
   setZoom(z: number): void;
   setScrollX(x: number): void;
 
+  // ---- Multi-cam actions ----
+  setSelectedClipId(id: string | null): void;
+  setClipSyncOverride(camId: string, ms: number): void;
+  nudgeClipSyncOverride(camId: string, deltaMs: number): void;
+  setClipStartOffset(camId: string, startOffsetS: number): void;
+  addCut(cut: Cut): void;
+  removeCutAt(atTimeS: number, camId?: string): void;
+  clearCuts(): void;
+
+  // ---- Selectors ----
   totalOffsetMs(): number;
   buildEditSpec(): EditSpec;
+  camRanges(): CamRange[];
+  activeCamId(t?: number): string | null;
 }
 
 const TRIM_EPS = 0.05; // seconds — minimum trim window length
@@ -124,6 +168,20 @@ const initialUi: UiSlice = {
   scrollX: 0,
 };
 
+function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): VideoClip[] {
+  if (!inits || inits.length === 0) return [];
+  return inits.map((init, i) => ({
+    id: init.id,
+    filename: init.filename,
+    color: init.color,
+    sourceDurationS: init.sourceDurationS,
+    syncOffsetMs: init.syncOffsetMs,
+    syncOverrideMs:
+      init.syncOverrideMs ?? (i === 0 ? fallbackOverrideMs : 0),
+    startOffsetS: init.startOffsetS ?? 0,
+  }));
+}
+
 export const useEditorStore = create<EditorState>()(
   subscribeWithSelector((set, get) => ({
     jobMeta: null,
@@ -134,6 +192,9 @@ export const useEditorStore = create<EditorState>()(
     visualizer: null,
     exportSpec: DEFAULT_EXPORT,
     ui: initialUi,
+    clips: [],
+    cuts: [],
+    selectedClipId: null,
 
     reset() {
       set({
@@ -145,15 +206,25 @@ export const useEditorStore = create<EditorState>()(
         visualizer: null,
         exportSpec: DEFAULT_EXPORT,
         ui: initialUi,
+        clips: [],
+        cuts: [],
+        selectedClipId: null,
       });
     },
 
     loadJob(meta, opts) {
+      const fallbackOverride = opts?.lastSyncOverrideMs ?? 0;
+      const clips = buildClips(opts?.clips, fallbackOverride);
+      // Mirror cam-1's override into the legacy offset slice so existing
+      // OffsetScheduler / SyncTuner consumers see the same number.
+      const legacyOverrideMs = clips[0]?.syncOverrideMs ?? fallbackOverride;
+      // Auto-select the only cam if there's just one — bequem für Single-Video-Use.
+      const selectedClipId = clips.length === 1 ? clips[0].id : null;
       set({
         jobMeta: meta,
         playback: initialPlayback,
         offset: {
-          userOverrideMs: opts?.lastSyncOverrideMs ?? 0,
+          userOverrideMs: legacyOverrideMs,
           abBypass: false,
         },
         trim: { in: 0, out: meta.duration },
@@ -161,6 +232,9 @@ export const useEditorStore = create<EditorState>()(
         visualizer: null,
         exportSpec: DEFAULT_EXPORT,
         ui: initialUi,
+        clips,
+        cuts: opts?.cuts ?? [],
+        selectedClipId,
       });
     },
 
@@ -195,7 +269,16 @@ export const useEditorStore = create<EditorState>()(
     },
 
     setOffset(ms) {
+      // Backward-shim: also writes through to cam-1's override, so the
+      // multi-cam clips slice and the legacy offset slice stay in sync.
       set({ offset: { ...get().offset, userOverrideMs: ms } });
+      const clips = get().clips;
+      if (clips.length > 0) {
+        const next = clips.map((c, i) =>
+          i === 0 ? { ...c, syncOverrideMs: ms } : c,
+        );
+        set({ clips: next });
+      }
     },
     nudgeOffset(deltaMs) {
       const cur = get().offset.userOverrideMs;
@@ -203,6 +286,13 @@ export const useEditorStore = create<EditorState>()(
       // sub-ms for the knob (we'll add that later).
       const next = Math.round((cur + deltaMs) * 1000) / 1000;
       set({ offset: { ...get().offset, userOverrideMs: next } });
+      const clips = get().clips;
+      if (clips.length > 0) {
+        const updated = clips.map((c, i) =>
+          i === 0 ? { ...c, syncOverrideMs: next } : c,
+        );
+        set({ clips: updated });
+      }
     },
 
     setTrim(t) {
@@ -255,6 +345,49 @@ export const useEditorStore = create<EditorState>()(
       set({ ui: { ...get().ui, scrollX: Math.max(0, x) } });
     },
 
+    setSelectedClipId(id) {
+      set({ selectedClipId: id });
+    },
+    setClipSyncOverride(camId, ms) {
+      const clips = get().clips.map((c) =>
+        c.id === camId ? { ...c, syncOverrideMs: ms } : c,
+      );
+      set({ clips });
+      // Mirror cam-1 changes into legacy offset slice.
+      if (clips[0]?.id === camId) {
+        set({ offset: { ...get().offset, userOverrideMs: ms } });
+      }
+    },
+    nudgeClipSyncOverride(camId, deltaMs) {
+      const cur = get().clips.find((c) => c.id === camId)?.syncOverrideMs ?? 0;
+      const next = Math.round((cur + deltaMs) * 1000) / 1000;
+      get().setClipSyncOverride(camId, next);
+    },
+    setClipStartOffset(camId, startOffsetS) {
+      const clips = get().clips.map((c) =>
+        c.id === camId ? { ...c, startOffsetS } : c,
+      );
+      set({ clips });
+    },
+    addCut(cut) {
+      // Dedupe at the same time on the same cam; replace with the latest.
+      const existing = get().cuts.filter(
+        (c) => !(c.atTimeS === cut.atTimeS && c.camId === cut.camId),
+      );
+      const next = [...existing, cut].sort((a, b) => a.atTimeS - b.atTimeS);
+      set({ cuts: next });
+    },
+    removeCutAt(atTimeS, camId) {
+      const next = get().cuts.filter(
+        (c) =>
+          c.atTimeS !== atTimeS || (camId !== undefined && c.camId !== camId),
+      );
+      set({ cuts: next });
+    },
+    clearCuts() {
+      set({ cuts: [] });
+    },
+
     totalOffsetMs() {
       const { jobMeta, offset } = get();
       const algo = jobMeta?.algoOffsetMs ?? 0;
@@ -271,6 +404,22 @@ export const useEditorStore = create<EditorState>()(
         sync_override_ms: s.offset.userOverrideMs,
         export: s.exportSpec,
       };
+    },
+
+    camRanges() {
+      return get().clips.map((c) => {
+        const range = clipRangeS(c);
+        return { id: c.id, startS: range.startS, endS: range.endS };
+      });
+    },
+    activeCamId(t) {
+      const s = get();
+      const time = t ?? s.playback.currentTime;
+      const ranges = s.clips.map((c) => {
+        const range = clipRangeS(c);
+        return { id: c.id, startS: range.startS, endS: range.endS };
+      });
+      return activeCamAt(s.cuts, time, ranges);
     },
   })),
 );

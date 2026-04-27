@@ -63,3 +63,38 @@ export interface EditSpec {
   sync_override_ms?: number;
   export?: ExportSpec;
 }
+
+/**
+ * In-memory representation of one video clip on the master timeline.
+ *
+ * Built from the persisted `VideoAsset` plus user-editable bits
+ * (per-cam nudge, drag-on-timeline offset). The derived position on the
+ * master timeline is `clipRangeS(clip)` — the single place that knows the
+ * sign convention between the sync algorithm and the master clock.
+ */
+export interface VideoClip {
+  id: string;
+  filename: string;
+  color: string;
+  sourceDurationS: number;
+  /** Algorithm-derived sync offset (ms) of this cam vs. the master audio. */
+  syncOffsetMs: number;
+  /** Per-cam user nudge (ms) — added on top of syncOffsetMs. */
+  syncOverrideMs: number;
+  /** Additional drag-on-timeline offset (seconds). 0 = positioned purely by sync. */
+  startOffsetS: number;
+}
+
+/**
+ * Compute the [startS, endS) range a clip occupies on the master timeline.
+ *
+ * Sign convention: `syncOffsetMs` is the delay applied to the master audio
+ * to align with this video's audio. When positive, the master audio starts
+ * later than the video → the video begins *before* master t=0, so its
+ * startS is negative. `syncOverrideMs` and `startOffsetS` add to this.
+ */
+export function clipRangeS(clip: VideoClip): { startS: number; endS: number } {
+  const totalSyncS = (clip.syncOffsetMs + clip.syncOverrideMs) / 1000;
+  const startS = -totalSyncS + clip.startOffsetS;
+  return { startS, endS: startS + clip.sourceDurationS };
+}

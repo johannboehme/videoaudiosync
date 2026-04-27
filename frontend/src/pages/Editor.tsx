@@ -13,6 +13,7 @@ import { useEditorStore } from "../editor/store";
 import {
   jobsDb,
   resolveJobAssetUrl,
+  resolveCamAssetUrl,
   runEditRender,
   type LocalJob,
   type EditSpecLocal,
@@ -21,17 +22,28 @@ import { decodeAudioToMonoPcm } from "../local/codec";
 import { computeWaveformPeaks } from "../local/waveform-peaks";
 import { exportSpecToRenderOpts } from "../editor/exportPresets";
 import { opfs } from "../storage/opfs";
+import type { ClipInit } from "../editor/store";
 
 interface WaveformData {
   peaks: [number, number][];
   duration: number;
 }
 
+/** Per-cam OPFS URLs resolved when the editor opens. Keyed by camId. */
+export interface CamAssets {
+  videoUrl: string;
+  framesUrl: string | null;
+}
+
 interface EditorAssets {
+  /** cam-1's video URL — kept for the existing single-source preview path. */
   videoUrl: string;
   audioUrl: string;
   wave: WaveformData | null;
   framesUrl: string | null;
+  /** All cams' assets, keyed by camId, for the multi-lane timeline + future
+   *  multi-cam preview. cam-1's videoUrl here equals the top-level videoUrl. */
+  cams: Record<string, CamAssets>;
 }
 
 export default function Editor() {
@@ -49,19 +61,33 @@ export default function Editor() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    let videoUrl: string | null = null;
     let audioUrl: string | null = null;
-    let framesUrl: string | null = null;
+    // Per-cam URLs are tracked in a single map so cleanup can revoke them all.
+    const camUrls: Record<string, CamAssets> = {};
 
     (async () => {
       const j = await jobsDb.getJob(id);
       if (cancelled || !j) return;
       setJob(j);
 
-      videoUrl = await resolveJobAssetUrl(id, "video");
+      // Resolve audio (singular master).
       audioUrl = await resolveJobAssetUrl(id, "audio");
-      framesUrl = await resolveJobAssetUrl(id, "frames");
-      if (cancelled || !videoUrl || !audioUrl) return;
+      if (cancelled || !audioUrl) return;
+
+      // Resolve every cam's video + frames URL up front. The timeline needs
+      // each cam's frames; the preview will switch between videos in Schritt 8.
+      const videos = j.videos ?? [];
+      for (const cam of videos) {
+        const videoUrl = await resolveCamAssetUrl(id, cam.id, "video");
+        const framesUrl = await resolveCamAssetUrl(id, cam.id, "frames");
+        if (cancelled) return;
+        if (videoUrl) {
+          camUrls[cam.id] = { videoUrl, framesUrl };
+        }
+      }
+      const cam1Url = camUrls[videos[0]?.id]?.videoUrl;
+      const cam1Frames = camUrls[videos[0]?.id]?.framesUrl ?? null;
+      if (cancelled || !cam1Url) return;
 
       // Compute waveform peaks locally from the studio audio.
       let wave: WaveformData | null = null;
@@ -83,7 +109,21 @@ export default function Editor() {
       }
       if (cancelled) return;
 
-      setAssets({ videoUrl, audioUrl, wave, framesUrl });
+      setAssets({
+        videoUrl: cam1Url,
+        audioUrl,
+        wave,
+        framesUrl: cam1Frames,
+        cams: camUrls,
+      });
+
+      const clipInits: ClipInit[] = videos.map((v) => ({
+        id: v.id,
+        filename: v.filename,
+        color: v.color,
+        sourceDurationS: v.durationS ?? 0,
+        syncOffsetMs: v.sync?.offsetMs ?? 0,
+      }));
 
       loadJob(
         {
@@ -95,7 +135,11 @@ export default function Editor() {
           algoOffsetMs: j.sync?.offsetMs ?? 0,
           driftRatio: j.sync?.driftRatio ?? 1,
         },
-        { lastSyncOverrideMs: null },
+        {
+          lastSyncOverrideMs: null,
+          clips: clipInits,
+          cuts: j.cuts ?? [],
+        },
       );
     })().catch((e) => {
       if (!cancelled) setErr(e instanceof Error ? e.message : "Could not load job");
@@ -104,9 +148,11 @@ export default function Editor() {
     return () => {
       cancelled = true;
       reset();
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (audioUrl) URL.revokeObjectURL(audioUrl);
-      if (framesUrl) URL.revokeObjectURL(framesUrl);
+      for (const { videoUrl, framesUrl } of Object.values(camUrls)) {
+        URL.revokeObjectURL(videoUrl);
+        if (framesUrl) URL.revokeObjectURL(framesUrl);
+      }
     };
   }, [id, loadJob, reset]);
 
