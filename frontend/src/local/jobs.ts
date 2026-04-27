@@ -324,6 +324,7 @@ export async function runQuickRender(
   try {
     await reportProgress(jobId, { pct: 5, stage: "render-prep" }, "rendering");
 
+    // V1 limitation (same as runEditRender): renders cam-1 only.
     const cam1Path = job.videos?.[0]?.opfsPath;
     if (!cam1Path) throw new Error("No video found for this job.");
     const audioExt = fileExtension(new File([], job.audioFilename), "wav");
@@ -422,6 +423,10 @@ export async function runEditRender(
   try {
     await reportProgress(jobId, { pct: 5, stage: "render-prep" }, "rendering");
 
+    // V1 limitation: the editor records multi-cam cuts in `job.cuts`, but
+    // the render pipeline still only encodes cam-1. Honoring cuts in the
+    // exported MP4 needs a multi-source frame pipeline (per-cam decoders
+    // + activeCamAt walk per output frame) — tracked as a separate task.
     const cam1Path = job.videos?.[0]?.opfsPath;
     if (!cam1Path) throw new Error("No video found for this job.");
     const audioExt = fileExtension(new File([], job.audioFilename), "wav");
