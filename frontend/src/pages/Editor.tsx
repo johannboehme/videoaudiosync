@@ -230,7 +230,14 @@ export default function Editor() {
         timeline={
           assets.wave ? (
             <Timeline
-              thumbnailsUrl={assets.framesUrl}
+              cams={Object.fromEntries(
+                Object.entries(assets.cams).map(([camId, ca]) => {
+                  const cam = job.videos?.find((v) => v.id === camId);
+                  const aspect =
+                    cam?.width && cam?.height ? cam.width / cam.height : 16 / 9;
+                  return [camId, { framesUrl: ca.framesUrl, aspect }];
+                }),
+              )}
               peaks={assets.wave.peaks}
               audioDuration={assets.wave.duration}
             />

@@ -1,33 +1,73 @@
-// Canvas timeline: thumbnail strip + waveform + trim handles + loop region + playhead.
-import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+/**
+ * Multi-lane Timeline.
+ *
+ * Layout (left → right): one column of HTML headers (PROGRAM label, per-cam
+ * Lane-Headers, MASTER AUDIO label), then a single full-height canvas that
+ * draws every lane in horizontal bands. The PROGRAM strip on top and the
+ * custom hardware-mixer scrollbar at the bottom are HTML — they need rich
+ * skeuomorph styling and live above/below the canvas.
+ *
+ * The canvas hosts: video-lane thumbnail tiles + clip pills + audio waveform
+ * + trim handles + loop region + the global playhead. One canvas keeps the
+ * playhead a single straight line spanning every lane.
+ */
+import {
+  PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useEditorStore } from "../store";
+import { clipRangeS, type VideoClip } from "../types";
+import { LaneHeader, type CamStatus } from "./timeline/LaneHeader";
+import { ProgramStrip } from "./timeline/ProgramStrip";
 
-interface Props {
-  /** URL of the thumbnail strip image, or null when none exists (skips the thumbnail layer). */
-  thumbnailsUrl: string | null;
-  peaks: [number, number][];
-  /** Duration of the studio audio file (peaks span). */
-  audioDuration: number;
-  height?: number;
+interface CamAssetInfo {
+  /** OPFS object URL for this cam's thumbnail strip (may be null). */
+  framesUrl: string | null;
+  /** Source aspect ratio (width / height) — drives thumbnail tile geometry. */
+  aspect: number;
 }
 
-type DragKind = "playhead" | "trim-in" | "trim-out" | "loop" | null;
+interface Props {
+  /** Per-cam asset info, keyed by camId. */
+  cams: Record<string, CamAssetInfo>;
+  peaks: [number, number][];
+  audioDuration: number;
+  /** Audio-lane height in px. Defaults to the legacy 88 to keep the waveform familiar. */
+  audioLaneHeight?: number;
+  /** Per-video-lane height in px. */
+  videoLaneHeight?: number;
+}
 
-const HANDLE_HIT = 14; // px tolerance for trim handle hit-testing
+type DragKind =
+  | { kind: "playhead" }
+  | { kind: "trim-in" }
+  | { kind: "trim-out" }
+  | { kind: "loop"; offset: number }
+  | { kind: "clip-move"; camId: string; grabT: number; origStartOffsetS: number }
+  | { kind: "scrollbar"; offsetX: number };
 
-export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: Props) {
+const HANDLE_HIT = 14;
+const TARGET_TILE_W = 64;
+const HEADER_W = 132;
+const SCROLLBAR_H = 14;
+
+export function Timeline({
+  cams,
+  peaks,
+  audioDuration,
+  audioLaneHeight = 88,
+  videoLaneHeight = 80,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const thumbsImg = useRef<HTMLImageElement | null>(null);
-  const [thumbsReady, setThumbsReady] = useState(false);
-  const [width, setWidth] = useState(800);
-  const dragRef = useRef<DragKind>(null);
-  const dragStartRef = useRef<{ x: number; t: number; loopOffset: number }>({
-    x: 0,
-    t: 0,
-    loopOffset: 0,
-  });
+  const [canvasWidth, setCanvasWidth] = useState(800);
+  const dragRef = useRef<DragKind | null>(null);
 
+  // Store reads — narrow selectors to keep re-renders cheap.
   const jobMeta = useEditorStore((s) => s.jobMeta);
   const trim = useEditorStore((s) => s.trim);
   const setTrim = useEditorStore((s) => s.setTrim);
@@ -38,106 +78,158 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
   const scrollX = useEditorStore((s) => s.ui.scrollX);
   const setZoom = useEditorStore((s) => s.setZoom);
   const setScrollX = useEditorStore((s) => s.setScrollX);
+  const clips = useEditorStore((s) => s.clips);
+  const cuts = useEditorStore((s) => s.cuts);
+  const selectedClipId = useEditorStore((s) => s.selectedClipId);
+  const setSelectedClipId = useEditorStore((s) => s.setSelectedClipId);
+  const setClipStartOffset = useEditorStore((s) => s.setClipStartOffset);
+  const currentTime = useEditorStore((s) => s.playback.currentTime);
 
-  // Time axis is the VIDEO duration. Trim/loop/playhead all live in video time.
-  // The audio peaks are mapped relative to the audio file's own duration, so a
-  // peak at audio time t is drawn at video time t (1:1) — close enough for
-  // visual reference. Algorithm offset is applied at render, not here.
   const duration = jobMeta?.duration || audioDuration || 0;
-  // Visible window in seconds
   const visibleDur = duration / zoom;
   const viewStart = Math.min(scrollX, Math.max(0, duration - visibleDur));
   const viewEnd = viewStart + visibleDur;
 
-  // Resize observer
+  // ---- Layout offsets (canvas y-coordinates per lane) ----
+  const videoBands = clips.map((_, i) => ({
+    top: i * videoLaneHeight,
+    bottom: (i + 1) * videoLaneHeight,
+  }));
+  const audioBand = {
+    top: clips.length * videoLaneHeight,
+    bottom: clips.length * videoLaneHeight + audioLaneHeight,
+  };
+  const canvasH = audioBand.bottom;
+
+  // ---- Resize observer ----
   useEffect(() => {
     if (!wrapRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0].contentRect.width;
-      setWidth(w);
+      setCanvasWidth(Math.max(0, w - HEADER_W));
     });
     ro.observe(wrapRef.current);
     return () => ro.disconnect();
   }, []);
 
-  // Load thumbs
+  // ---- Per-cam thumbnail Image objects ----
+  const camImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const [camImagesReady, setCamImagesReady] = useState(0);
   useEffect(() => {
-    if (!thumbnailsUrl) {
-      thumbsImg.current = null;
-      setThumbsReady(false);
-      return;
+    let cancelled = false;
+    const map = new Map<string, HTMLImageElement>();
+    let pending = 0;
+    for (const clip of clips) {
+      const url = cams[clip.id]?.framesUrl;
+      if (!url) continue;
+      pending++;
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = url;
+      img.onload = () => {
+        if (cancelled) return;
+        map.set(clip.id, img);
+        camImagesRef.current = map;
+        setCamImagesReady((n) => n + 1);
+      };
+      img.onerror = () => {
+        if (!cancelled) setCamImagesReady((n) => n + 1);
+      };
     }
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = thumbnailsUrl;
-    img.onload = () => {
-      thumbsImg.current = img;
-      setThumbsReady(true);
+    if (pending === 0) {
+      camImagesRef.current = map;
+      setCamImagesReady((n) => n + 1);
+    }
+    return () => {
+      cancelled = true;
     };
-    img.onerror = () => setThumbsReady(false);
-  }, [thumbnailsUrl]);
+  }, [clips, cams]);
 
+  // ---- t↔x helpers ----
   const tToX = useCallback(
-    (t: number) => ((t - viewStart) / visibleDur) * width,
-    [viewStart, visibleDur, width],
+    (t: number) => ((t - viewStart) / visibleDur) * canvasWidth,
+    [viewStart, visibleDur, canvasWidth],
   );
   const xToT = useCallback(
-    (x: number) => viewStart + (x / width) * visibleDur,
-    [viewStart, visibleDur, width],
+    (x: number) => viewStart + (x / canvasWidth) * visibleDur,
+    [viewStart, visibleDur, canvasWidth],
   );
 
-  // Subscribe to currentTime via selector (re-renders Timeline only when t changes)
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
+  // ---- Active-cam status per lane (drives LED color) ----
+  const camStatusByCamId = useMemo(() => {
+    const result: Record<string, CamStatus> = {};
+    const ranges = clips.map((c) => {
+      const r = clipRangeS(c);
+      return { id: c.id, startS: r.startS, endS: r.endS };
+    });
+    const activeId = (() => {
+      const s = useEditorStore.getState();
+      return s.activeCamId(currentTime);
+    })();
+    for (const cam of clips) {
+      const range = ranges.find((r) => r.id === cam.id)!;
+      const hasMaterial = currentTime >= range.startS && currentTime < range.endS;
+      const status: CamStatus =
+        cam.id === activeId
+          ? "on-air"
+          : hasMaterial
+            ? "available"
+            : "off";
+      result[cam.id] = status;
+    }
+    return result;
+  }, [clips, cuts, currentTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Drawing
+  // ---- Canvas drawing ----
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || canvasWidth === 0) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.floor(width * dpr));
-    canvas.height = Math.max(1, Math.floor(height * dpr));
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
+    canvas.width = Math.max(1, Math.floor(canvasWidth * dpr));
+    canvas.height = Math.max(1, Math.floor(canvasH * dpr));
+    canvas.style.width = `${canvasWidth}px`;
+    canvas.style.height = `${canvasH}px`;
     const ctx2d = canvas.getContext("2d");
     if (!ctx2d) return;
     const ctx: CanvasRenderingContext2D = ctx2d;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // background
+    // Background — warm paper.
     ctx.fillStyle = "#E8E1D0";
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, canvasWidth, canvasH);
 
-    // thumbnails strip
-    const thumbAreaTop = 0;
-    const thumbAreaH = Math.floor(height * 0.55);
-    if (thumbsReady && thumbsImg.current && duration > 0) {
-      const img = thumbsImg.current;
-      // The strip has N tiles spanning the full duration. Compute source x
-      // for the visible window.
-      const sxStart = (viewStart / duration) * img.width;
-      const sxEnd = (viewEnd / duration) * img.width;
-      const sw = Math.max(1, sxEnd - sxStart);
-      ctx.drawImage(img, sxStart, 0, sw, img.height, 0, thumbAreaTop, width, thumbAreaH);
-    } else {
-      ctx.fillStyle = "#DDD4BE";
-      ctx.fillRect(0, thumbAreaTop, width, thumbAreaH);
+    // Per-video-lane: thumbnails + clip pill.
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i];
+      const band = videoBands[i];
+      drawVideoLane({
+        ctx,
+        clip,
+        bandTop: band.top,
+        bandH: videoLaneHeight,
+        canvasWidth,
+        viewStart,
+        visibleDur,
+        img: camImagesRef.current.get(clip.id) ?? null,
+        aspect: cams[clip.id]?.aspect ?? 16 / 9,
+        selected: clip.id === selectedClipId,
+      });
+      // Lane separator line below each video lane
+      ctx.fillStyle = "#C9BFA6";
+      ctx.fillRect(0, band.bottom - 1, canvasWidth, 1);
     }
 
-    // waveform
-    const wfTop = thumbAreaH;
-    const wfH = height - wfTop;
-    ctx.fillStyle = "rgba(26,24,22,0.06)";
-    ctx.fillRect(0, wfTop, width, wfH);
-    // Peaks are sampled across the full audio duration, but the timeline X
-    // axis uses video duration. Map audio-time → video-time 1:1.
+    // Audio lane background.
+    ctx.fillStyle = "#DDD4BE";
+    ctx.fillRect(0, audioBand.top, canvasWidth, audioLaneHeight);
+
+    // Audio waveform — same logic as before.
     if (peaks.length > 0 && audioDuration > 0) {
-      const wfMid = wfTop + wfH / 2;
+      const wfMid = audioBand.top + audioLaneHeight / 2;
       const peaksPerSec = peaks.length / audioDuration;
       const startIdx = Math.max(0, Math.floor(viewStart * peaksPerSec));
       const endIdx = Math.min(peaks.length, Math.ceil(viewEnd * peaksPerSec));
       ctx.fillStyle = "#5C544A";
-      // Aggregate peaks per pixel column for a clean filled-bar look (cheaper
-      // to read than thin strokes when peaks-per-pixel > 1).
       let prevX = -1;
       let colMin = 0;
       let colMax = 0;
@@ -147,8 +239,8 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
         const [mn, mx] = peaks[i];
         if (x !== prevX) {
           if (prevX >= 0) {
-            const yMax = wfMid - (Math.max(0, colMax) * wfH) / 2;
-            const yMin = wfMid + (Math.max(0, -colMin) * wfH) / 2;
+            const yMax = wfMid - (Math.max(0, colMax) * audioLaneHeight) / 2;
+            const yMin = wfMid + (Math.max(0, -colMin) * audioLaneHeight) / 2;
             ctx.fillRect(prevX, yMax, 1, Math.max(1, yMin - yMax));
           }
           prevX = x;
@@ -159,56 +251,51 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
           if (mx > colMax) colMax = mx;
         }
       }
-      // flush last column
       if (prevX >= 0) {
-        const yMax = wfMid - (Math.max(0, colMax) * wfH) / 2;
-        const yMin = wfMid + (Math.max(0, -colMin) * wfH) / 2;
+        const yMax = wfMid - (Math.max(0, colMax) * audioLaneHeight) / 2;
+        const yMin = wfMid + (Math.max(0, -colMin) * audioLaneHeight) / 2;
         ctx.fillRect(prevX, yMax, 1, Math.max(1, yMin - yMax));
       }
     }
 
-    // dim outside trim
+    // Trim dim — shading on AUDIO lane only, since trim still refers to the
+    // master-audio render bounds.
     const xIn = tToX(trim.in);
     const xOut = tToX(trim.out);
     ctx.fillStyle = "rgba(232,225,208,0.78)";
-    if (xIn > 0) ctx.fillRect(0, 0, xIn, height);
-    if (xOut < width) ctx.fillRect(xOut, 0, width - xOut, height);
+    if (xIn > 0) ctx.fillRect(0, audioBand.top, xIn, audioLaneHeight);
+    if (xOut < canvasWidth)
+      ctx.fillRect(xOut, audioBand.top, canvasWidth - xOut, audioLaneHeight);
 
-    // loop band
+    // Loop band on audio lane.
     if (loop) {
       const xs = tToX(loop.start);
       const xe = tToX(loop.end);
       ctx.fillStyle = "rgba(255,87,34,0.18)";
-      ctx.fillRect(xs, 0, Math.max(1, xe - xs), height);
+      ctx.fillRect(xs, audioBand.top, Math.max(1, xe - xs), audioLaneHeight);
       ctx.strokeStyle = "rgba(255,87,34,0.6)";
       ctx.lineWidth = 1;
-      ctx.strokeRect(xs + 0.5, 0.5, Math.max(0, xe - xs - 1), height - 1);
+      ctx.strokeRect(
+        xs + 0.5,
+        audioBand.top + 0.5,
+        Math.max(0, xe - xs - 1),
+        audioLaneHeight - 1,
+      );
     }
 
-    // trim handles (top + bottom brackets)
-    function drawHandle(x: number) {
-      ctx.fillStyle = "#1A1816";
-      ctx.fillRect(x - 1, 0, 2, height);
-      // brackets
-      ctx.fillStyle = "#1A1816";
-      ctx.fillRect(x - 6, 0, 12, 8);
-      ctx.fillRect(x - 6, height - 8, 12, 8);
-      ctx.fillStyle = "#F2EDE2";
-      ctx.fillRect(x - 1, 2, 2, 4);
-      ctx.fillRect(x - 1, height - 6, 2, 4);
-    }
-    drawHandle(xIn);
-    drawHandle(xOut);
+    // Trim handles on the audio lane (top + bottom brackets).
+    drawHandle(ctx, xIn, audioBand.top, audioLaneHeight);
+    drawHandle(ctx, xOut, audioBand.top, audioLaneHeight);
 
-    // playhead
+    // Playhead — spans all lanes.
     const xp = tToX(currentTime);
     ctx.strokeStyle = "#FF5722";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(xp, 0);
-    ctx.lineTo(xp, height);
+    ctx.lineTo(xp, canvasH);
     ctx.stroke();
-    // playhead grip
+    // Playhead grip (top).
     ctx.fillStyle = "#FF5722";
     ctx.beginPath();
     ctx.moveTo(xp - 6, 0);
@@ -217,21 +304,44 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
     ctx.closePath();
     ctx.fill();
   }, [
-    width,
-    height,
-    thumbsReady,
+    canvasWidth,
+    canvasH,
+    audioBand.top,
+    audioLaneHeight,
+    videoLaneHeight,
     viewStart,
     viewEnd,
+    visibleDur,
     duration,
     peaks,
+    audioDuration,
     trim.in,
     trim.out,
     loop,
     currentTime,
+    clips,
+    cams,
+    selectedClipId,
+    camImagesReady,
     tToX,
+    videoBands,
   ]);
 
-  function classifyHit(x: number): DragKind {
+  // ---- Hit-testing & drag ----
+  function findClipAt(x: number, y: number): { clip: VideoClip; band: { top: number; bottom: number } } | null {
+    for (let i = 0; i < clips.length; i++) {
+      const band = videoBands[i];
+      if (y < band.top || y >= band.bottom) continue;
+      const range = clipRangeS(clips[i]);
+      const x1 = tToX(range.startS);
+      const x2 = tToX(range.endS);
+      if (x >= x1 && x <= x2) return { clip: clips[i], band };
+      return null; // hit the lane but missed the pill → no clip selected
+    }
+    return null;
+  }
+
+  function classifyAudioHit(x: number): "trim-in" | "trim-out" | "playhead" | "loop" | null {
     const xp = tToX(currentTime);
     const xIn = tToX(trim.in);
     const xOut = tToX(trim.out);
@@ -251,20 +361,41 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
     const t = xToT(x);
-    const kind = classifyHit(x);
-    if (kind === null) {
-      // click outside any handle = seek + start playhead drag
-      seek(t);
-      dragRef.current = "playhead";
-      dragStartRef.current = { x, t, loopOffset: 0 };
-    } else {
-      dragRef.current = kind;
-      dragStartRef.current = {
-        x,
-        t,
-        loopOffset: kind === "loop" && loop ? t - loop.start : 0,
+
+    // Audio lane → existing trim/loop/playhead/seek behavior.
+    if (y >= audioBand.top) {
+      const k = classifyAudioHit(x);
+      if (k === null) {
+        seek(t);
+        dragRef.current = { kind: "playhead" };
+      } else if (k === "trim-in") {
+        dragRef.current = { kind: "trim-in" };
+      } else if (k === "trim-out") {
+        dragRef.current = { kind: "trim-out" };
+      } else if (k === "playhead") {
+        dragRef.current = { kind: "playhead" };
+      } else if (k === "loop" && loop) {
+        dragRef.current = { kind: "loop", offset: t - loop.start };
+      }
+      return;
+    }
+
+    // Video lane → click pill = select + start drag-move; click empty = deselect + seek.
+    const hit = findClipAt(x, y);
+    if (hit) {
+      setSelectedClipId(hit.clip.id);
+      dragRef.current = {
+        kind: "clip-move",
+        camId: hit.clip.id,
+        grabT: t,
+        origStartOffsetS: hit.clip.startOffsetS,
       };
+    } else {
+      setSelectedClipId(null);
+      seek(t);
+      dragRef.current = { kind: "playhead" };
     }
   };
 
@@ -273,16 +404,20 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const t = Math.max(0, Math.min(duration, xToT(x)));
-    if (dragRef.current === "playhead") {
+    const drag = dragRef.current;
+    if (drag.kind === "playhead") {
       seek(t);
-    } else if (dragRef.current === "trim-in") {
+    } else if (drag.kind === "trim-in") {
       setTrim({ in: t, out: trim.out });
-    } else if (dragRef.current === "trim-out") {
+    } else if (drag.kind === "trim-out") {
       setTrim({ in: trim.in, out: t });
-    } else if (dragRef.current === "loop" && loop) {
+    } else if (drag.kind === "loop" && loop) {
       const len = loop.end - loop.start;
-      const newStart = Math.max(trim.in, Math.min(trim.out - len, t - dragStartRef.current.loopOffset));
+      const newStart = Math.max(trim.in, Math.min(trim.out - len, t - drag.offset));
       setLoop({ start: newStart, end: newStart + len });
+    } else if (drag.kind === "clip-move") {
+      const deltaT = xToT(x) - drag.grabT;
+      setClipStartOffset(drag.camId, drag.origStartOffsetS + deltaT);
     }
   };
 
@@ -290,7 +425,7 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
     dragRef.current = null;
   };
 
-  // Wheel zoom: cursor stays anchored at the same time-position
+  // Wheel zoom — same anchored-zoom behavior as before.
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -299,33 +434,78 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
     const newZoom = Math.max(1, Math.min(64, zoom * factor));
     if (newZoom === zoom) return;
     const newVisible = duration / newZoom;
-    const newScroll = Math.max(0, Math.min(duration - newVisible, tAtCursor - (x / width) * newVisible));
+    const newScroll = Math.max(0, Math.min(duration - newVisible, tAtCursor - (x / canvasWidth) * newVisible));
     setZoom(newZoom);
     setScrollX(newScroll);
   };
 
-  // Pinch zoom (touch): handled via two-pointer tracking in the parent gesture lib
-  // — simplified: skip pinch for now, two-finger scroll still works via wheel events on iOS Safari.
+  // ---- Custom hardware-mixer scrollbar (cherry-picked from feature/clip-studio) ----
+  const scrollbarVisible = zoom > 1.001 && duration > 0;
+  const thumbW = scrollbarVisible
+    ? Math.max(28, (visibleDur / duration) * canvasWidth)
+    : canvasWidth;
+  const thumbX = scrollbarVisible ? (viewStart / duration) * canvasWidth : 0;
+
+  const onScrollPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!scrollbarVisible) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (x < thumbX || x > thumbX + thumbW) {
+      // Jump-scroll so the thumb centers under the click.
+      const newThumbX = Math.max(0, Math.min(canvasWidth - thumbW, x - thumbW / 2));
+      setScrollX((newThumbX / canvasWidth) * duration);
+      dragRef.current = { kind: "scrollbar", offsetX: thumbW / 2 };
+    } else {
+      dragRef.current = { kind: "scrollbar", offsetX: x - thumbX };
+    }
+  };
+  const onScrollPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current || dragRef.current.kind !== "scrollbar") return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const newThumbX = Math.max(0, Math.min(canvasWidth - thumbW, x - dragRef.current.offsetX));
+    setScrollX((newThumbX / canvasWidth) * duration);
+  };
+  const onScrollPointerUp = () => {
+    if (dragRef.current?.kind === "scrollbar") dragRef.current = null;
+  };
 
   // Cursor hint
-  const [hoverCursor, setHoverCursor] = useState<string>("crosshair");
+  const [hoverCursor, setHoverCursor] = useState<string>("default");
   const onPointerHover = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     if (dragRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const k = classifyHit(x);
-    setHoverCursor(
-      k === "trim-in" || k === "trim-out"
-        ? "ew-resize"
-        : k === "playhead"
-          ? "grab"
-          : k === "loop"
-            ? "move"
-            : "crosshair",
-    );
+    const y = e.clientY - rect.top;
+    if (y >= audioBand.top) {
+      const k = classifyAudioHit(x);
+      setHoverCursor(
+        k === "trim-in" || k === "trim-out"
+          ? "ew-resize"
+          : k === "playhead"
+            ? "grab"
+            : k === "loop"
+              ? "move"
+              : "crosshair",
+      );
+    } else {
+      setHoverCursor(findClipAt(x, y) ? "grab" : "crosshair");
+    }
   };
 
   const zoomPercent = useMemo(() => Math.round(zoom * 100), [zoom]);
+
+  // Build CamLookups for the PROGRAM strip.
+  const camLookupsForStrip = useMemo(
+    () =>
+      clips.map((c) => ({
+        id: c.id,
+        color: c.color,
+        range: clipRangeS(c),
+      })),
+    [clips],
+  );
 
   return (
     <div ref={wrapRef} className="w-full select-none">
@@ -340,20 +520,269 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
           {viewStart.toFixed(1)}s — {viewEnd.toFixed(1)}s
         </div>
       </div>
+
       <div className="rounded-md overflow-hidden border border-rule shadow-panel bg-paper-deep">
-        <canvas
-          ref={canvasRef}
-          onPointerDown={onPointerDown}
-          onPointerMove={(e) => {
-            onPointerMove(e);
-            onPointerHover(e);
-          }}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          onWheel={onWheel}
-          style={{ cursor: hoverCursor, touchAction: "none", display: "block" }}
-        />
+        {/* PROGRAM-Strip row */}
+        <div className="flex">
+          <div
+            className="shrink-0 flex items-center px-3 border-r border-b border-rule bg-paper-panel"
+            style={{ width: HEADER_W, height: 32 }}
+          >
+            <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
+              PROGRAM
+            </span>
+          </div>
+          <div className="flex-1 relative" style={{ width: canvasWidth }}>
+            <ProgramStrip
+              cuts={cuts}
+              cams={camLookupsForStrip}
+              duration={duration}
+              viewStartS={viewStart}
+              viewEndS={viewEnd}
+              width={canvasWidth}
+            />
+          </div>
+        </div>
+
+        {/* Lanes row: HTML headers on the left, single canvas on the right */}
+        <div className="flex">
+          <div className="shrink-0 flex flex-col" style={{ width: HEADER_W }}>
+            {clips.map((clip, i) => (
+              <LaneHeader
+                key={clip.id}
+                name={`Cam ${i + 1}`}
+                filename={clip.filename}
+                color={clip.color}
+                status={camStatusByCamId[clip.id] ?? "off"}
+                hotkeyLabel={i < 9 ? String(i + 1) : undefined}
+                selected={clip.id === selectedClipId}
+                onSelectClip={() => setSelectedClipId(clip.id)}
+                height={videoLaneHeight}
+              />
+            ))}
+            {/* MASTER · AUDIO header */}
+            <div
+              className="shrink-0 flex items-center px-3 border-r border-t border-rule bg-paper-panel"
+              style={{ height: audioLaneHeight }}
+            >
+              <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
+                MASTER · AUDIO
+              </span>
+            </div>
+          </div>
+          <div className="flex-1 relative" style={{ width: canvasWidth }}>
+            <canvas
+              ref={canvasRef}
+              onPointerDown={onPointerDown}
+              onPointerMove={(e) => {
+                onPointerMove(e);
+                onPointerHover(e);
+              }}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              onWheel={onWheel}
+              style={{ cursor: hoverCursor, touchAction: "none", display: "block" }}
+            />
+          </div>
+        </div>
+
+        {/* Custom scrollbar — hardware mixer fader feel */}
+        <div className="flex">
+          <div
+            className="shrink-0 border-r border-t border-rule bg-paper-panel"
+            style={{ width: HEADER_W, height: SCROLLBAR_H }}
+          />
+          <div
+            onPointerDown={onScrollPointerDown}
+            onPointerMove={onScrollPointerMove}
+            onPointerUp={onScrollPointerUp}
+            onPointerCancel={onScrollPointerUp}
+            className="flex-1 relative border-t border-rule"
+            style={{
+              width: canvasWidth,
+              height: SCROLLBAR_H,
+              touchAction: "none",
+              cursor: scrollbarVisible ? "pointer" : "default",
+              background:
+                "linear-gradient(180deg, #C9BFA6 0%, #DDD4BE 50%, #C9BFA6 100%)",
+              boxShadow: "inset 0 1px 2px rgba(0,0,0,0.18)",
+            }}
+          >
+            {/* Tick row in the track for a fader-rail feel */}
+            <div className="absolute inset-y-[3px] left-0 right-0 flex items-center justify-between pointer-events-none">
+              {Array.from({ length: 24 }).map((_, i) => (
+                <span
+                  key={i}
+                  className="w-px h-[6px] block"
+                  style={{ background: "rgba(0,0,0,0.18)" }}
+                />
+              ))}
+            </div>
+            <div
+              className="absolute top-[2px] bottom-[2px] rounded-sm transition-opacity"
+              style={{
+                left: thumbX,
+                width: thumbW,
+                background:
+                  "linear-gradient(180deg, #FAF6EC 0%, #DDD4BE 50%, #C9BFA6 100%)",
+                boxShadow:
+                  "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 -1px 0 rgba(0,0,0,0.15), 0 1px 2px rgba(0,0,0,0.12)",
+                opacity: scrollbarVisible ? 1 : 0,
+                pointerEvents: scrollbarVisible ? "auto" : "none",
+              }}
+            >
+              {/* Knurled grip lines on the thumb */}
+              <span
+                className="absolute inset-y-1 left-1/2 -translate-x-1/2 flex gap-[1px]"
+                style={{ width: 14 }}
+              >
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <span
+                    key={i}
+                    className="w-[1px] h-full block"
+                    style={{ background: "rgba(0,0,0,0.22)" }}
+                  />
+                ))}
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
+}
+
+// ---- helpers ----
+
+interface DrawVideoLaneArgs {
+  ctx: CanvasRenderingContext2D;
+  clip: VideoClip;
+  bandTop: number;
+  bandH: number;
+  canvasWidth: number;
+  viewStart: number;
+  visibleDur: number;
+  img: HTMLImageElement | null;
+  aspect: number;
+  selected: boolean;
+}
+
+function drawVideoLane({
+  ctx,
+  clip,
+  bandTop,
+  bandH,
+  canvasWidth,
+  viewStart,
+  visibleDur,
+  img,
+  aspect,
+  selected,
+}: DrawVideoLaneArgs) {
+  // Lane background (slightly recessed paper).
+  ctx.fillStyle = "#DDD4BE";
+  ctx.fillRect(0, bandTop, canvasWidth, bandH);
+
+  // Clip range on the master timeline.
+  const range = clipRangeS(clip);
+  const xStart = ((range.startS - viewStart) / visibleDur) * canvasWidth;
+  const xEnd = ((range.endS - viewStart) / visibleDur) * canvasWidth;
+  if (xEnd <= 0 || xStart >= canvasWidth) return;
+  const pillX = Math.max(0, xStart);
+  const pillW = Math.min(canvasWidth, xEnd) - pillX;
+  if (pillW <= 0) return;
+
+  // Thumbnails — only inside the clip's pill region, with target tile width.
+  if (img && img.width > 0 && img.height > 0) {
+    const sourceTileW = img.height * aspect;
+    const tilesShown = Math.max(2, Math.round(pillW / TARGET_TILE_W));
+    const tileWDest = pillW / tilesShown;
+    const inset = 4; // padding inside pill so the rounded corners look clean
+    const drawTop = bandTop + inset;
+    const drawH = bandH - inset * 2;
+    ctx.save();
+    // Round-rect clip so thumbnails respect the pill boundaries.
+    roundRectPath(ctx, pillX, bandTop + 2, pillW, bandH - 4, 6);
+    ctx.clip();
+    for (let i = 0; i < tilesShown; i++) {
+      const tFrac = (i + 0.5) / tilesShown; // sample mid-tile
+      const tInClip = range.startS + tFrac * (range.endS - range.startS);
+      const sourceFrac = (tInClip - range.startS) / (range.endS - range.startS);
+      const sx = Math.max(0, Math.min(img.width - sourceTileW, sourceFrac * img.width - sourceTileW / 2));
+      ctx.drawImage(
+        img,
+        sx,
+        0,
+        sourceTileW,
+        img.height,
+        pillX + i * tileWDest,
+        drawTop,
+        tileWDest,
+        drawH,
+      );
+    }
+    ctx.restore();
+  }
+
+  // Pill border + cam-color tint overlay (very subtle so thumbs stay visible).
+  ctx.save();
+  roundRectPath(ctx, pillX + 0.5, bandTop + 2.5, Math.max(0, pillW - 1), bandH - 5, 6);
+  ctx.fillStyle = hexToRgba(clip.color, 0.1);
+  ctx.fill();
+  ctx.lineWidth = selected ? 2 : 1;
+  ctx.strokeStyle = selected ? clip.color : hexToRgba(clip.color, 0.6);
+  ctx.stroke();
+  if (selected) {
+    // Inner glow.
+    ctx.shadowColor = hexToRgba(clip.color, 0.5);
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Top color stripe — strong cam-color tab so the lane is identifiable
+  // even when the pill is compressed.
+  ctx.fillStyle = clip.color;
+  ctx.fillRect(pillX, bandTop, pillW, 3);
+}
+
+function drawHandle(ctx: CanvasRenderingContext2D, x: number, top: number, h: number) {
+  ctx.fillStyle = "#1A1816";
+  ctx.fillRect(x - 1, top, 2, h);
+  ctx.fillRect(x - 6, top, 12, 8);
+  ctx.fillRect(x - 6, top + h - 8, 12, 8);
+  ctx.fillStyle = "#F2EDE2";
+  ctx.fillRect(x - 1, top + 2, 2, 4);
+  ctx.fillRect(x - 1, top + h - 6, 2, 4);
+}
+
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+  ctx.closePath();
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const c = hex.replace("#", "");
+  if (c.length !== 6) return `rgba(0,0,0,${alpha})`;
+  const r = parseInt(c.slice(0, 2), 16);
+  const g = parseInt(c.slice(2, 4), 16);
+  const b = parseInt(c.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
