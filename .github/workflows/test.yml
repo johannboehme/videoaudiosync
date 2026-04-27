@@ -50,6 +50,12 @@ jobs:
         working-directory: frontend/wasm/sync-core
         run: cargo test --quiet
 
+      - name: Install wasm-pack
+        run: cargo install --locked wasm-pack
+
+      - name: Build sync-core WASM (lint + tests import its generated .d.ts)
+        run: npm run wasm:build
+
       - name: Type-check
         run: npm run lint
 
