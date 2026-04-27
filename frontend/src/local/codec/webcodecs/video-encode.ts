@@ -6,6 +6,8 @@
  * resulting chunks list is suitable for `mp4-muxer.addVideoChunkRaw`.
  */
 
+import { avcCodecForResolution } from "./avc-level";
+
 export interface EncodedVideoChunkRecord {
   type: "key" | "delta";
   timestampUs: number;
@@ -25,7 +27,9 @@ export interface VideoEncodeOptions {
   width: number;
   height: number;
   frameRate: number;
-  /** H.264 profile codec string. Default: Constrained Baseline @ Level 4.0 */
+  /** H.264 codec string. Default: Constrained Baseline at the lowest level
+   * that fits the requested resolution + framerate (computed at runtime —
+   * a hardcoded default like 3.1 caps out at 1280×720). */
   codec?: string;
   bitrateBps?: number;
 }
@@ -38,7 +42,10 @@ export class StreamingVideoEncoder {
   private opts: VideoEncodeOptions;
 
   constructor(opts: VideoEncodeOptions) {
-    this.opts = opts;
+    this.opts = {
+      ...opts,
+      codec: opts.codec ?? avcCodecForResolution(opts.width, opts.height, opts.frameRate),
+    };
     this.encoder = new VideoEncoder({
       output: (chunk, metadata) => {
         const data = new Uint8Array(chunk.byteLength);
@@ -71,7 +78,7 @@ export class StreamingVideoEncoder {
     });
 
     this.encoder.configure({
-      codec: opts.codec ?? "avc1.42E01F",
+      codec: this.opts.codec!,
       width: opts.width,
       height: opts.height,
       bitrate: opts.bitrateBps ?? 4_000_000,
@@ -95,7 +102,7 @@ export class StreamingVideoEncoder {
     this.encoder.close();
     return {
       chunks: this.chunks,
-      codec: this.opts.codec ?? "avc1.42E01F",
+      codec: this.opts.codec!,
       width: this.opts.width,
       height: this.opts.height,
       description: this.description,
