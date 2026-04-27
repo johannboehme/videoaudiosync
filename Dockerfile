@@ -16,7 +16,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     && /root/.cargo/bin/cargo install --locked wasm-pack
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# Copy package manifests AND the scripts directory first — `npm ci` runs
+# our postinstall (`scripts/copy-runtime-assets.mjs`) which needs the
+# script file to exist. Keeping the heavy `frontend/` copy after `npm ci`
+# preserves Docker layer caching for the slow node_modules step.
 COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend/scripts ./scripts
 RUN npm ci --no-audit --no-fund --legacy-peer-deps && \
     test -x node_modules/.bin/tsc || (echo "tsc missing after npm ci" && exit 1)
 COPY frontend/ ./
