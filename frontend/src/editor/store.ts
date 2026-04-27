@@ -8,7 +8,7 @@
  */
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import { EditSpec, ExportSpec, TextOverlay, VisualizerConfig } from "../api";
+import { EditSpec, ExportSpec, TextOverlay, VisualizerConfig } from "./types";
 import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
 
 export interface JobMeta {

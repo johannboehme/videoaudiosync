@@ -1,5 +1,5 @@
 // Output preset selector with pinch-yourself custom mode.
-import { ExportPreset, ExportSpec } from "../../api";
+import { ExportPreset, ExportSpec } from "../types";
 import { useEditorStore } from "../store";
 import { ChunkyButton } from "./ChunkyButton";
 import { MonoReadout } from "./MonoReadout";

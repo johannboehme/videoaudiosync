@@ -1,43 +1,41 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, Job } from "../api";
 import { ChunkyButton } from "../editor/components/ChunkyButton";
 import { RuleStrip } from "../editor/components/RuleStrip";
 import { TrashIcon } from "../editor/components/icons";
 import { formatDuration } from "../components/ProgressBar";
+import { jobsDb, deleteJob, jobEvents, type LocalJob } from "../local/jobs";
 
-const ACTIVE_STATUSES: Job["status"][] = ["queued", "analyzing", "syncing", "rendering"];
+const ACTIVE_STATUSES: LocalJob["status"][] = ["queued", "syncing", "rendering"];
 
 export default function History() {
-  const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [jobs, setJobs] = useState<LocalJob[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    let timer: number | undefined;
-
     const load = async () => {
       try {
-        const next = await api.listJobs();
-        if (cancelled) return;
-        setJobs(next);
-        if (next.some((j) => ACTIVE_STATUSES.includes(j.status))) {
-          timer = window.setTimeout(load, 3000);
-        }
+        const next = await jobsDb.listJobs();
+        if (!cancelled) setJobs(next);
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : "Failed to load");
       }
     };
     load();
+
+    // Auto-refresh on any job event so progress bars tick during active jobs.
+    const onUpdate = () => load();
+    jobEvents.addEventListener("update", onUpdate);
     return () => {
       cancelled = true;
-      if (timer) window.clearTimeout(timer);
+      jobEvents.removeEventListener("update", onUpdate);
     };
   }, []);
 
   async function remove(id: string) {
     if (!window.confirm("Delete this job and its files?")) return;
-    await api.deleteJob(id);
+    await deleteJob(id);
     setJobs((curr) => (curr ? curr.filter((j) => j.id !== id) : curr));
   }
 
@@ -90,43 +88,32 @@ export default function History() {
   );
 }
 
-function JobCard({ job, onDelete }: { job: Job; onDelete: () => void }) {
+function JobCard({ job, onDelete }: { job: LocalJob; onDelete: () => void }) {
   const isActive = ACTIVE_STATUSES.includes(job.status);
   return (
     <li className="group relative bg-paper-hi border border-rule rounded-lg overflow-hidden hover:border-ink-2 transition-colors">
       <Link to={`/job/${job.id}`} className="block">
-        {/* thumbnail strip — falls back to ink panel if not ready */}
         <div className="aspect-[16/7] bg-sunken overflow-hidden relative">
-          <img
-            src={api.thumbnailsUrl(job.id)}
-            alt=""
-            className="w-full h-full object-cover object-left"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = "none";
-            }}
-          />
           <div className="absolute top-2 left-2 flex items-center gap-1.5">
             <StatusBadge status={job.status} />
           </div>
-          {job.duration_s != null && (
+          {job.durationS != null && (
             <span className="absolute bottom-2 right-2 font-mono text-[10px] tabular tracking-label uppercase text-paper-hi bg-sunken/70 px-1.5 py-0.5 rounded-sm">
-              {formatDuration(job.duration_s)}
+              {formatDuration(job.durationS)}
             </span>
           )}
         </div>
 
         <div className="p-3 flex flex-col gap-2">
-          <div className="flex items-start justify-between gap-2">
-            <h2 className="font-display font-semibold text-base text-ink truncate">
-              {job.title || job.id.slice(0, 12)}
-            </h2>
-          </div>
+          <h2 className="font-display font-semibold text-base text-ink truncate">
+            {job.title || job.id.slice(0, 12)}
+          </h2>
           <div className="flex items-center justify-between font-mono text-[11px] tabular text-ink-2">
-            <span>{new Date(job.created_at).toLocaleString()}</span>
-            {job.sync_offset_ms != null && (
+            <span>{new Date(job.createdAt).toLocaleString()}</span>
+            {job.sync?.offsetMs != null && (
               <span className="text-hot">
-                {job.sync_offset_ms > 0 ? "+" : ""}
-                {job.sync_offset_ms.toFixed(0)}ms
+                {job.sync.offsetMs > 0 ? "+" : ""}
+                {job.sync.offsetMs.toFixed(0)}ms
               </span>
             )}
           </div>
@@ -137,16 +124,16 @@ function JobCard({ job, onDelete }: { job: Job; onDelete: () => void }) {
                 role="progressbar"
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={Math.round(job.progress_pct)}
+                aria-valuenow={Math.round(job.progress.pct)}
                 className="flex-1 h-1 bg-paper-deep rounded-full overflow-hidden"
               >
                 <div
                   className="h-full bg-hot transition-all"
-                  style={{ width: `${job.progress_pct}%` }}
+                  style={{ width: `${job.progress.pct}%` }}
                 />
               </div>
               <span className="font-mono text-[10px] tabular text-ink-2 shrink-0">
-                {Math.round(job.progress_pct)}%
+                {Math.round(job.progress.pct)}%
               </span>
             </div>
           )}
@@ -166,17 +153,16 @@ function JobCard({ job, onDelete }: { job: Job; onDelete: () => void }) {
   );
 }
 
-function StatusBadge({ status }: { status: Job["status"] }) {
+function StatusBadge({ status }: { status: LocalJob["status"] }) {
   const map: Record<string, { bg: string; text: string }> = {
-    done: { bg: "bg-success/90 text-paper-hi", text: "DONE" },
-    failed: { bg: "bg-danger/90 text-paper-hi", text: "FAIL" },
     queued: { bg: "bg-ink/80 text-paper-hi", text: "QUEUED" },
-    analyzing: { bg: "bg-hot/90 text-paper-hi", text: "PROBE" },
-    syncing: { bg: "bg-hot/90 text-paper-hi", text: "ALIGN" },
+    syncing: { bg: "bg-hot/90 text-paper-hi", text: "SYNC" },
+    synced: { bg: "bg-success/80 text-paper-hi", text: "SYNCED" },
     rendering: { bg: "bg-hot/90 text-paper-hi", text: "RENDER" },
-    expired: { bg: "bg-ink-2/80 text-paper-hi", text: "EXPIRED" },
+    rendered: { bg: "bg-success/90 text-paper-hi", text: "DONE" },
+    failed: { bg: "bg-danger/90 text-paper-hi", text: "FAIL" },
   };
-  const it = map[status] || map.queued;
+  const it = map[status] ?? map.queued;
   return (
     <span
       className={[
@@ -201,42 +187,13 @@ function EmptyState() {
         </h2>
         <p className="text-ink-2 max-w-sm mb-5">
           Upload your first phone-or-glasses video plus the matching studio
-          audio. Auto-sync runs in seconds.
+          audio. Sync runs locally in seconds.
         </p>
         <Link to="/">
           <ChunkyButton variant="primary" size="md">
             + Upload
           </ChunkyButton>
         </Link>
-      </div>
-      {/* Decorative TE-style mark */}
-      <div className="hidden sm:block">
-        <svg viewBox="0 0 200 200" className="w-full max-w-[260px] mx-auto">
-          <rect
-            x="2"
-            y="2"
-            width="196"
-            height="196"
-            stroke="#C9BFA6"
-            strokeDasharray="4 6"
-            fill="none"
-          />
-          <circle cx="100" cy="100" r="60" stroke="#1A1816" strokeWidth="1.5" fill="none" />
-          <circle cx="100" cy="100" r="6" fill="#FF5722" />
-          <line x1="20" y1="100" x2="180" y2="100" stroke="#1A1816" strokeWidth="0.5" />
-          <line x1="100" y1="20" x2="100" y2="180" stroke="#1A1816" strokeWidth="0.5" />
-          <text
-            x="100"
-            y="195"
-            textAnchor="middle"
-            fontFamily='"JetBrains Mono", monospace'
-            fontSize="9"
-            fill="#5C544A"
-            letterSpacing="2"
-          >
-            DROP HERE
-          </text>
-        </svg>
       </div>
     </div>
   );

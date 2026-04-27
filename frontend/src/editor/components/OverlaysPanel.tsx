@@ -1,5 +1,5 @@
 // Re-skin of the existing overlays UI: card-based, TE-typed.
-import { TextOverlay, VisualizerConfig } from "../../api";
+import { TextOverlay, VisualizerConfig } from "../types";
 import { useEditorStore } from "../store";
 import { ChunkyButton } from "./ChunkyButton";
 import { SegmentedControl } from "./SegmentedControl";

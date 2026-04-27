@@ -1,0 +1,7 @@
+node_modules
+dist
+public/ffmpeg-core
+wasm/sync-core/pkg
+wasm/sync-core/target
+*.log
+.DS_Store

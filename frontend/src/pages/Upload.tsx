@@ -1,16 +1,9 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api";
 import { ChunkyButton } from "../editor/components/ChunkyButton";
-import { MonoReadout } from "../editor/components/MonoReadout";
 import { RuleStrip } from "../editor/components/RuleStrip";
-import { formatBytes, formatDuration } from "../components/ProgressBar";
-
-export interface UploadProgress {
-  loaded: number;
-  total: number;
-  startedAt: number;
-}
+import { formatBytes } from "../components/ProgressBar";
+import { createJob } from "../local/jobs";
 
 export default function Upload() {
   const navigate = useNavigate();
@@ -18,9 +11,7 @@ export default function Upload() {
   const [audio, setAudio] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const startedRef = useRef<number | null>(null);
 
   const ready = video !== null && audio !== null && !busy;
 
@@ -29,32 +20,22 @@ export default function Upload() {
     if (!video || !audio) return;
     setBusy(true);
     setErr(null);
-    startedRef.current = Date.now();
-    setProgress({ loaded: 0, total: video.size + audio.size, startedAt: startedRef.current });
     try {
-      const job = await api.uploadJob({
-        video,
-        audio,
-        title: title || undefined,
-        onProgress: (loaded, total) =>
-          setProgress({ loaded, total, startedAt: startedRef.current! }),
-      });
-      navigate(`/job/${job.id}`);
+      const jobId = await createJob(video, audio, { title: title || null });
+      navigate(`/job/${jobId}`);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Upload failed");
+      setErr(e instanceof Error ? e.message : "Could not start the job");
       setBusy(false);
-      setProgress(null);
     }
   }
 
   return (
     <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10">
-      {/* Hero: bold display + meta */}
       <header className="grid lg:grid-cols-[1.4fr_1fr] gap-6 lg:gap-12 mb-8 lg:mb-12">
         <div>
           <div className="flex items-center gap-3 mb-3">
             <span className="font-mono text-xs tracking-label uppercase text-ink-2">
-              NEW · JOB
+              NEW · JOB · LOCAL
             </span>
             <RuleStrip count={32} className="text-rule flex-1 max-w-[220px]" />
           </div>
@@ -66,18 +47,18 @@ export default function Upload() {
         </div>
         <aside className="lg:pt-12 flex flex-col gap-3 text-sm text-ink-2 lg:max-w-xs">
           <p className="leading-relaxed">
-            Upload the recording from your phone (or Ray-Ban) plus the clean
-            studio audio. We align them automatically.
+            Everything runs in your browser — your files never leave the device.
+            We align the studio audio to the video and let you fine-tune in
+            the editor.
           </p>
           <p className="leading-relaxed">
-            After auto-sync you can fine-tune offset, trim, and pick an export
-            preset in the editor.
+            Tip: any modern Chromium browser (Chrome, Edge, Brave, Arc) works
+            best. Firefox + Safari fall back to ffmpeg.wasm for some codecs.
           </p>
         </aside>
       </header>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-6">
-        {/* Asymmetric drop zones: video larger, audio narrower */}
         <div className="grid lg:grid-cols-[1.6fr_1fr] gap-3">
           <DropZone
             step="01"
@@ -97,12 +78,8 @@ export default function Upload() {
           />
         </div>
 
-        {/* Title — inline, full width, with label on left */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-1">
-          <label
-            htmlFor="job-title"
-            className="label sm:w-32 sm:shrink-0 sm:pt-0"
-          >
+          <label htmlFor="job-title" className="label sm:w-32 sm:shrink-0 sm:pt-0">
             03 / Title <span className="text-ink-3 normal-case tracking-normal">(opt.)</span>
           </label>
           <input
@@ -121,11 +98,8 @@ export default function Upload() {
           </div>
         )}
 
-        {progress && <UploadProgressCard progress={progress} />}
-
-        {/* Submit strip: big asymmetric block, status on left, button on right */}
         <div className="grid sm:grid-cols-[1fr_auto] gap-3 items-stretch border-t border-rule pt-5 mt-2">
-          <ReadinessStatus video={video} audio={audio} />
+          <ReadinessStatus video={video} audio={audio} busy={busy} />
           <ChunkyButton
             type="submit"
             variant="primary"
@@ -133,7 +107,7 @@ export default function Upload() {
             disabled={!ready}
             className="sm:min-w-[200px]"
           >
-            {busy ? "Uploading…" : "Upload + Sync"}
+            {busy ? "Preparing…" : "Sync locally"}
           </ChunkyButton>
         </div>
       </form>
@@ -233,7 +207,15 @@ function BigStepDigit({ n, muted }: { n: string; muted: boolean }) {
   );
 }
 
-function ReadinessStatus({ video, audio }: { video: File | null; audio: File | null }) {
+function ReadinessStatus({
+  video,
+  audio,
+  busy,
+}: {
+  video: File | null;
+  audio: File | null;
+  busy: boolean;
+}) {
   return (
     <div className="bg-paper-hi border border-rule rounded-md px-4 py-2.5 flex items-center justify-between">
       <div className="flex items-center gap-4">
@@ -241,7 +223,7 @@ function ReadinessStatus({ video, audio }: { video: File | null; audio: File | n
         <Dot ok={audio !== null} label="AUDIO" />
       </div>
       <span className="font-mono text-[10px] tracking-label uppercase text-ink-3">
-        {video && audio ? "READY → UPLOAD" : "WAITING"}
+        {busy ? "PREPARING" : video && audio ? "READY → SYNC" : "WAITING"}
       </span>
     </div>
   );
@@ -258,51 +240,5 @@ function Dot({ ok, label }: { ok: boolean; label: string }) {
       />
       <span className={ok ? "text-ink" : "text-ink-3"}>{label}</span>
     </span>
-  );
-}
-
-export function UploadProgressCard({ progress }: { progress: UploadProgress }) {
-  const pct = progress.total > 0 ? (progress.loaded / progress.total) * 100 : 0;
-  const elapsedS = (Date.now() - progress.startedAt) / 1000;
-  const bps = elapsedS > 0.5 ? progress.loaded / elapsedS : 0;
-  const remaining = bps > 0 ? (progress.total - progress.loaded) / bps : NaN;
-
-  return (
-    <section className="grid sm:grid-cols-[auto_1fr_auto] gap-3 sm:gap-4 items-center bg-ink text-paper-hi rounded-md p-4">
-      <MonoReadout
-        label="UPLOADING"
-        size="lg"
-        tone="hot"
-        align="center"
-        value={`${Math.round(pct)}%`}
-      />
-      <div
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(pct)}
-        className="h-2 rounded-full overflow-hidden bg-sunken-soft"
-      >
-        <div
-          className="h-full bg-hot transition-all"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="font-mono text-[11px] tabular tracking-label uppercase text-paper-hi/60 sm:text-right">
-        {formatBytes(progress.loaded)} / {formatBytes(progress.total)}
-        {bps > 0 && (
-          <>
-            {" · "}
-            {formatBytes(bps)}/s
-          </>
-        )}
-        {bps > 0 && isFinite(remaining) && (
-          <>
-            {" · "}
-            ETA {formatDuration(remaining)}
-          </>
-        )}
-      </div>
-    </section>
   );
 }

@@ -1,0 +1,134 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { createJob, jobEvents, runQuickRender, deleteJob, resolveJobAssetUrl } from "./jobs";
+import { jobsDb } from "../storage/jobs-db";
+import { opfs } from "../storage/opfs";
+
+const VIDEO_FIXTURE_URL = "/__test_fixtures__/tone-3s.mp4";
+
+function makeWavBlob(): Blob {
+  const sr = 48000;
+  const n = sr * 3;
+  const samples = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    samples[i] = 0.5 * Math.sin((2 * Math.PI * 880 * i) / sr);
+  }
+  const dataLen = n * 2;
+  const buf = new ArrayBuffer(44 + dataLen);
+  const dv = new DataView(buf);
+  dv.setUint32(0, 0x52494646, false);
+  dv.setUint32(4, 36 + dataLen, true);
+  dv.setUint32(8, 0x57415645, false);
+  dv.setUint32(12, 0x666d7420, false);
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true);
+  dv.setUint32(24, sr, true);
+  dv.setUint32(28, sr * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  dv.setUint32(36, 0x64617461, false);
+  dv.setUint32(40, dataLen, true);
+  let off = 44;
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    dv.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += 2;
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function fetchVideoFile(): Promise<File> {
+  const blob = await (await fetch(VIDEO_FIXTURE_URL)).blob();
+  return new File([blob], "tone-3s.mp4", { type: "video/mp4" });
+}
+
+function waitForJobStatus(
+  jobId: string,
+  target: string,
+  timeoutMs = 60_000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const onUpdate = (e: Event) => {
+      const detail = (e as CustomEvent<{ jobId: string; job: { status: string } }>).detail;
+      if (detail.jobId !== jobId) return;
+      if (detail.job.status === target) {
+        jobEvents.removeEventListener("update", onUpdate);
+        resolve();
+      } else if (detail.job.status === "failed") {
+        jobEvents.removeEventListener("update", onUpdate);
+        reject(new Error("Job failed"));
+      }
+    };
+    jobEvents.addEventListener("update", onUpdate);
+    const tick = () => {
+      if (Date.now() - start > timeoutMs) {
+        jobEvents.removeEventListener("update", onUpdate);
+        reject(new Error(`Timed out waiting for status=${target}`));
+        return;
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+describe("local jobs lifecycle", () => {
+  beforeEach(async () => {
+    await jobsDb.wipeAll();
+    await opfs.wipeAll();
+  });
+
+  it("createJob persists files in OPFS, sync runs end-to-end", async () => {
+    const video = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+
+    const jobId = await createJob(video, audio, { title: "Test take" });
+    expect(jobId).toMatch(/^[a-f0-9]{12}$/);
+
+    // Files persisted in OPFS.
+    expect(await opfs.exists(`jobs/${jobId}/video.mp4`)).toBe(true);
+    expect(await opfs.exists(`jobs/${jobId}/audio.wav`)).toBe(true);
+
+    // Wait for sync to complete.
+    await waitForJobStatus(jobId, "synced");
+    const job = await jobsDb.getJob(jobId);
+    expect(job!.status).toBe("synced");
+    expect(job!.sync).toBeDefined();
+    expect(typeof job!.sync!.offsetMs).toBe("number");
+    expect(job!.sync!.driftRatio).toBeCloseTo(1.0, 1);
+    expect(job!.title).toBe("Test take");
+    expect(job!.durationS).toBeCloseTo(3.0, 0);
+  }, 120_000);
+
+  it("runQuickRender produces an output file in OPFS", async () => {
+    const video = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+
+    const jobId = await createJob(video, audio);
+    await waitForJobStatus(jobId, "synced");
+
+    await runQuickRender(jobId);
+    const job = await jobsDb.getJob(jobId);
+    expect(job!.status).toBe("rendered");
+    expect(job!.hasOutput).toBe(true);
+    expect(job!.outputBytes).toBeGreaterThan(1000);
+    expect(await opfs.exists(`jobs/${jobId}/output.mp4`)).toBe(true);
+
+    const url = await resolveJobAssetUrl(jobId, "output");
+    expect(url).toMatch(/^blob:/);
+    if (url) URL.revokeObjectURL(url);
+  }, 120_000);
+
+  it("deleteJob removes both OPFS files and the IndexedDB row", async () => {
+    const video = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+    const jobId = await createJob(video, audio);
+    await waitForJobStatus(jobId, "synced");
+
+    await deleteJob(jobId);
+    expect(await jobsDb.getJob(jobId)).toBeUndefined();
+    expect(await opfs.exists(`jobs/${jobId}/video.mp4`)).toBe(false);
+    expect(await opfs.exists(`jobs/${jobId}/audio.wav`)).toBe(false);
+  }, 120_000);
+});

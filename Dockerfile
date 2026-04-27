@@ -1,52 +1,31 @@
-# --- Stage 1: build the React frontend ---
-# Use bookworm-slim instead of alpine — Vite's native deps (rollup, esbuild,
-# lightningcss) ship glibc binaries by default; the alpine/musl variants need
-# extra optionalDependencies that aren't always in the lockfile.
+# Build the React app and serve it from a tiny nginx image. Everything that
+# used to be Python (sync, render, ffmpeg, librosa, scipy) now runs in the
+# user's browser via WebCodecs / WASM. The container is just static hosting.
+
+# --- Stage 1: build the React frontend (incl. Rust → WASM sync core) ---
 FROM node:20-bookworm-slim AS frontend
 WORKDIR /fe
+
+# Rust + wasm-pack to compile the sync-core WASM module that the frontend
+# loads at runtime. Pinned to stable for reproducible builds.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal \
+    && /root/.cargo/bin/rustup target add wasm32-unknown-unknown \
+    && /root/.cargo/bin/cargo install --locked wasm-pack
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund && \
+RUN npm ci --no-audit --no-fund --legacy-peer-deps && \
     test -x node_modules/.bin/tsc || (echo "tsc missing after npm ci" && exit 1)
 COPY frontend/ ./
 RUN npm run build
 
-# --- Stage 2: Python runtime ---
-FROM python:3.12-slim AS runtime
+# --- Stage 2: nginx static hosting with COOP/COEP ---
+FROM nginx:1.27-alpine
 
-# ffmpeg + libsndfile (for soundfile) + minimal build deps for argon2-cffi/numpy/scipy
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg \
-        libsndfile1 \
-        libgomp1 \
-        ca-certificates \
-        tini \
-    && rm -rf /var/lib/apt/lists/*
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=frontend /fe/dist/ /usr/share/nginx/html/
 
-WORKDIR /app
-
-# Install Python deps first (heavy, rarely changes). pyproject.toml alone is
-# enough for pip to resolve dependencies, but the actual `app` package will
-# be installed editable from /app in the next step so the `vasync` entry-point
-# script can find it.
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --no-deps -e . || true && \
-    pip install --no-cache-dir .
-
-COPY app/ ./app/
-COPY --from=frontend /fe/dist/ ./app/static/
-
-# Re-install editable now that app/ exists, so vasync entry point resolves
-# `from app.cli import cli` correctly regardless of cwd.
-RUN pip install --no-cache-dir --no-deps -e .
-
-ENV DATA_DIR=/data \
-    PORT=8000 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
-
-VOLUME ["/data"]
-EXPOSE 8000
-
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+EXPOSE 80

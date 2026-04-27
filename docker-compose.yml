@@ -2,19 +2,15 @@ services:
   app:
     build:
       context: .
-      # Use host networking for the build stage so apt/npm can resolve DNS on
-      # hosts where nftables blocks the default docker bridge (e.g. our netcup
-      # VPS). Runtime networking is unaffected — the container still gets its
-      # own bridge IP for nginx → 127.0.0.1:8000 to reach.
+      # Use host networking for the build stage so apt/npm/cargo can resolve
+      # DNS on hosts where nftables blocks the default docker bridge (e.g.
+      # netcup VPS). Runtime networking is unaffected — the container still
+      # gets its own bridge IP for the host nginx to proxy into.
       network: host
     container_name: videoaudiosync
     restart: unless-stopped
+    # The container only serves the static SPA bundle; no /data volume,
+    # no env secrets — everything user-state lives in the browser (OPFS +
+    # IndexedDB). The host nginx terminates TLS and proxies to port 80.
     ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      SECRET_KEY: ${SECRET_KEY:-change-me-please}
-      BASE_URL: ${BASE_URL:-http://localhost:8000}
-      MAX_USER_QUOTA_GB: ${MAX_USER_QUOTA_GB:-5}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
-    volumes:
-      - ./data:/data
+      - "127.0.0.1:8000:80"

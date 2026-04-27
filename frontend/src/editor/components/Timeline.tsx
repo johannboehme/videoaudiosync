@@ -3,7 +3,8 @@ import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, use
 import { useEditorStore } from "../store";
 
 interface Props {
-  thumbnailsUrl: string;
+  /** URL of the thumbnail strip image, or null when none exists (skips the thumbnail layer). */
+  thumbnailsUrl: string | null;
   peaks: [number, number][];
   /** Duration of the studio audio file (peaks span). */
   audioDuration: number;
@@ -61,6 +62,11 @@ export function Timeline({ thumbnailsUrl, peaks, audioDuration, height = 88 }: P
 
   // Load thumbs
   useEffect(() => {
+    if (!thumbnailsUrl) {
+      thumbsImg.current = null;
+      setThumbsReady(false);
+      return;
+    }
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.src = thumbnailsUrl;
