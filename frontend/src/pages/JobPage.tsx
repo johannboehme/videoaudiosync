@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ChunkyButton } from "../editor/components/ChunkyButton";
-import { MonoReadout } from "../editor/components/MonoReadout";
 import { RuleStrip } from "../editor/components/RuleStrip";
 import { DownloadIcon } from "../editor/components/icons";
 import {
@@ -115,9 +114,7 @@ export default function JobPage() {
         <h1 className="font-display font-semibold text-3xl sm:text-4xl text-ink truncate">
           {job.title || job.id}
         </h1>
-        <p className="font-mono text-xs text-ink-2">
-          {job.videoFilename} · {job.audioFilename}
-        </p>
+        <JobSubtitle job={job} />
       </header>
 
       <section className="mb-6">
@@ -208,31 +205,29 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /**
- * Sync Patch Panel — one row per cam, hardware-patchbay look.
+ * Subtitle — one line under the title summarising the job at a glance.
+ * Uniform across cam counts: "{N} cam{s} · {audioFilename}". The cam
+ * filenames live in the Sync Patch Panel below.
+ */
+function JobSubtitle({ job }: { job: LocalJob }) {
+  const camCount = job.videos?.length ?? (job.videoFilename ? 1 : 0);
+  return (
+    <p className="font-mono text-xs text-ink-2 truncate">
+      {camCount} cam{camCount === 1 ? "" : "s"} · {job.audioFilename}
+    </p>
+  );
+}
+
+/**
+ * Sync Patch Panel — uniform per-cam patchbay, regardless of cam count.
  *
- * Each cam keeps its own SyncResult (offset/drift/confidence) under
- * `job.videos[i].sync`. The panel reads from there as the single source of
- * truth so the values agree with what the editor's per-clip Sync Tuner
- * uses — no mirror-staleness possible.
- *
- * Single-cam jobs still get the compact 3-readout look they had before.
+ * One row per cam, hardware look that matches the timeline's Lane-Headers:
+ * cam-color stripe + cam name + filename + OFFSET + DRIFT + a 3-LED
+ * confidence bar matching the Tally aesthetic. Reads each cam's sync from
+ * `job.videos[i].sync` directly — single source of truth, no mirror layer.
  */
 function SyncPatchPanel({ job }: { job: LocalJob }) {
-  const videos: VideoAsset[] =
-    job.videos ?? (job.videoFilename
-      ? [
-          {
-            id: "cam-1",
-            filename: job.videoFilename,
-            opfsPath: `jobs/${job.id}/video`,
-            color: "#3b6dff",
-            sync: job.sync,
-            durationS: job.durationS,
-            width: job.width,
-            height: job.height,
-          },
-        ]
-      : []);
+  const videos: VideoAsset[] = job.videos ?? [];
 
   if (videos.length === 0) {
     return (
@@ -242,50 +237,27 @@ function SyncPatchPanel({ job }: { job: LocalJob }) {
     );
   }
 
-  // Single-cam: keep the compact look familiar from the original page.
-  if (videos.length === 1) {
-    const cam = videos[0];
-    return (
-      <div className="grid sm:grid-cols-3 gap-3">
-        <MonoReadout
-          label="OFFSET"
-          value={cam.sync ? `${cam.sync.offsetMs.toFixed(1)} ms` : "—"}
-          align="left"
-        />
-        <MonoReadout
-          label="CONFIDENCE"
-          value={cam.sync ? `${(cam.sync.confidence * 100).toFixed(0)}%` : "—"}
-          align="left"
-        />
-        <MonoReadout
-          label="DRIFT"
-          value={
-            cam.sync
-              ? `${((cam.sync.driftRatio - 1) * 100).toFixed(3)}%`
-              : "—"
-          }
-          align="left"
-        />
-      </div>
-    );
-  }
-
   return (
     <div className="rounded-md border border-rule overflow-hidden bg-paper-hi shadow-panel">
       <div className="bg-paper-panel border-b border-rule px-3 py-2 flex items-center gap-2">
         <span className="font-display tracking-label uppercase text-[10px] text-ink-2">
-          Sync · {videos.length} cams
+          {videos.length === 1 ? "Sync" : `Sync · ${videos.length} cams`}
         </span>
         <RuleStrip count={20} className="text-rule flex-1 max-w-[180px]" />
       </div>
-      <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-4 gap-y-0 text-sm">
+      <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-4">
         <HeaderCell>CAM</HeaderCell>
         <HeaderCell>SOURCE</HeaderCell>
         <HeaderCell align="right">OFFSET</HeaderCell>
         <HeaderCell align="right">DRIFT</HeaderCell>
         <HeaderCell align="right">CONF</HeaderCell>
         {videos.map((cam, i) => (
-          <SyncRow key={cam.id} cam={cam} index={i} last={i === videos.length - 1} />
+          <SyncRow
+            key={cam.id}
+            cam={cam}
+            index={i}
+            last={i === videos.length - 1}
+          />
         ))}
       </div>
     </div>
@@ -311,7 +283,15 @@ function HeaderCell({
   );
 }
 
-function SyncRow({ cam, index, last }: { cam: VideoAsset; index: number; last: boolean }) {
+function SyncRow({
+  cam,
+  index,
+  last,
+}: {
+  cam: VideoAsset;
+  index: number;
+  last: boolean;
+}) {
   const sync = cam.sync;
   const border = last ? "" : "border-b border-rule/50";
   return (
@@ -331,7 +311,7 @@ function SyncRow({ cam, index, last }: { cam: VideoAsset; index: number; last: b
       </div>
       {/* SOURCE cell — filename */}
       <div
-        className={`px-3 py-3 ${border} font-mono text-xs text-ink-2 truncate self-center`}
+        className={`px-3 py-3 ${border} font-mono text-xs text-ink-2 truncate self-center min-w-0`}
         title={cam.filename}
       >
         {cam.filename}
@@ -346,7 +326,11 @@ function SyncRow({ cam, index, last }: { cam: VideoAsset; index: number; last: b
       </div>
       {/* CONFIDENCE — three-LED bar like a hardware tally */}
       <div className={`px-3 py-3 ${border} text-right self-center`}>
-        {sync ? <ConfidenceLeds value={sync.confidence} /> : <span className="font-mono text-ink-3">—</span>}
+        {sync ? (
+          <ConfidenceLeds value={sync.confidence} />
+        ) : (
+          <span className="font-mono text-ink-3">—</span>
+        )}
       </div>
     </>
   );
