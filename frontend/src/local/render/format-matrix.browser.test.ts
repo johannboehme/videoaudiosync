@@ -86,7 +86,8 @@ describe("render format matrix — every supported video × audio combination ro
             });
             expect(result.width).toBe(v.width);
             expect(result.height).toBe(v.height);
-            await assertOutputIsValidMp4(result.output, v.width, v.height);
+            expect(result.output).not.toBeNull();
+            await assertOutputIsValidMp4(result.output!, v.width, v.height);
           },
           180_000,
         );

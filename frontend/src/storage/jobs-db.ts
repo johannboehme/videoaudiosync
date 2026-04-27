@@ -20,6 +20,8 @@ export interface JobProgress {
   stage: string;
   detail?: string;
   etaS?: number;
+  framesDone?: number;
+  framesTotal?: number;
 }
 
 export type JobStatus =

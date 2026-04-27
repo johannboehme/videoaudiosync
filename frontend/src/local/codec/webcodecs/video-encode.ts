@@ -96,6 +96,12 @@ export class StreamingVideoEncoder {
     this.encoder.encode(frame, options);
   }
 
+  /** Number of frames queued internally by the WebCodecs encoder. Used by
+   * the render pipeline to apply backpressure and avoid runaway memory. */
+  get encodeQueueSize(): number {
+    return this.encoder.encodeQueueSize;
+  }
+
   async finish(): Promise<VideoEncodeResult> {
     await this.encoder.flush();
     if (this.err) throw this.err;

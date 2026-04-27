@@ -18,11 +18,19 @@ import { jobsDb, type JobProgress, type LocalJob, type SyncResult } from "../sto
 import { opfs } from "../storage/opfs";
 import { syncAudio } from "./sync";
 import { quickRender } from "./render/quick";
-import { editRender, type Segment } from "./render/edit";
+import {
+  decodeStudioAudioInterleaved,
+  type Segment,
+} from "./render/edit";
+import type {
+  EditWorkerEvent,
+  EditWorkerInput,
+  EditWorkerMessage,
+  VisualizerWorkerDescriptor,
+} from "./render/edit.worker";
 import { decodeAudioToMonoPcm } from "./codec";
 import { computeEnergyCurves } from "./render/energy";
 import type { TextOverlay } from "./render/ass-builder";
-import type { Visualizer } from "./render/visualizer/types";
 import {
   installRenderUnloadGuard,
   pruneIfQuotaTight,
@@ -268,6 +276,21 @@ export type VisualizerDescriptor =
   | { type: "showwaves" }
   | { type: "showfreqs" };
 
+/**
+ * Tracks renders that are currently running so cancelEditRender can
+ * terminate the underlying worker. One entry per active job; renders
+ * for different jobs run concurrently with their own workers.
+ */
+const activeRenders = new Map<string, Worker>();
+
+/**
+ * Start the edit-render. Returns a promise that resolves when the worker
+ * reports `done` or rejects on `error`. The caller is free to ignore the
+ * promise — the function emits jobEvents along the way, so the UI can
+ * subscribe through that channel instead.
+ *
+ * Cancel by calling `cancelEditRender(jobId)`.
+ */
 export async function runEditRender(
   jobId: string,
   spec: EditSpecLocal,
@@ -275,62 +298,115 @@ export async function runEditRender(
   const job = await jobsDb.getJob(jobId);
   if (!job) throw new Error(`Job not found: ${jobId}`);
   if (!job.sync) throw new Error("Cannot render before sync completes.");
+  if (activeRenders.has(jobId)) {
+    throw new Error("Render already in progress for this job.");
+  }
 
   installRenderUnloadGuard(jobId);
+  let workerOwned: Worker | null = null;
   try {
     await reportProgress(jobId, { pct: 5, stage: "render-prep" }, "rendering");
 
     const videoExt = fileExtension(new File([], job.videoFilename), "mp4");
     const audioExt = fileExtension(new File([], job.audioFilename), "wav");
-    const videoFile = await opfs.readFile(videoPath(jobId, videoExt));
+    const videoOpfsPath = videoPath(jobId, videoExt);
     const audioFile = await opfs.readFile(audioPath(jobId, audioExt));
 
-    // For visualizers + reactive overlays we need PCM + energy curves up front.
-    let pcm: Float32Array | null = null;
+    // Audio decode + energy curves run on the main thread because
+    // AudioContext.decodeAudioData isn't available in workers. Both are
+    // fast (a few seconds for a 3-min file) and the produced Float32Arrays
+    // are transferred zero-copy into the worker.
+    await reportProgress(jobId, { pct: 10, stage: "audio-decode" });
+    const audio = await decodeStudioAudioInterleaved(audioFile);
+
+    let monoPcm: Float32Array | null = null;
     let energy: ReturnType<typeof computeEnergyCurves> | null = null;
     const needsPcm =
       (spec.visualizers && spec.visualizers.length > 0) ||
       spec.overlays.some((o) => o.reactiveBand);
     if (needsPcm) {
-      await reportProgress(jobId, { pct: 15, stage: "energy-curves" });
+      await reportProgress(jobId, { pct: 18, stage: "energy-curves" });
       const decoded = await decodeAudioToMonoPcm(audioFile, 22050);
-      pcm = decoded.pcm;
-      energy = computeEnergyCurves(pcm, 22050, 30);
+      monoPcm = decoded.pcm;
+      energy = computeEnergyCurves(monoPcm, 22050, 30);
     }
 
-    const visualizers: Visualizer[] = [];
-    if (spec.visualizers && pcm && energy) {
-      const { ShowwavesVisualizer } = await import("./render/visualizer/showwaves");
-      const { ShowfreqsVisualizer } = await import("./render/visualizer/showfreqs");
+    const visualizerDescs: VisualizerWorkerDescriptor[] = [];
+    if (spec.visualizers && monoPcm && energy) {
       for (const desc of spec.visualizers) {
         if (desc.type === "showwaves") {
-          visualizers.push(new ShowwavesVisualizer({ pcm, sampleRate: 22050 }));
+          visualizerDescs.push({ type: "showwaves", pcm: monoPcm, sampleRate: 22050 });
         } else if (desc.type === "showfreqs") {
-          visualizers.push(new ShowfreqsVisualizer({ energy }));
+          visualizerDescs.push({ type: "showfreqs", energy });
         }
       }
     }
 
-    await reportProgress(jobId, { pct: 30, stage: "encoding" });
+    await reportProgress(jobId, { pct: 25, stage: "encoding" });
     const totalOffsetMs = job.sync.offsetMs + (spec.offsetOverrideMs ?? 0);
-    const result = await editRender({
-      videoFile,
-      audioFile,
+
+    const workerInput: EditWorkerInput = {
+      videoPath: videoOpfsPath,
+      outputPath: outputPath(jobId),
+      audioPcm: audio,
       segments: spec.segments,
       overlays: spec.overlays,
+      visualizers: visualizerDescs,
       energy,
-      visualizers,
       offsetMs: totalOffsetMs,
       driftRatio: job.sync.driftRatio,
+    };
+
+    // Collect transferables: every Float32Array buffer we hand to the
+    // worker is detached on the main side, freeing memory immediately.
+    const transferables: Transferable[] = [audio.pcm.buffer];
+    for (const d of visualizerDescs) {
+      if (d.type === "showwaves") transferables.push(d.pcm.buffer);
+    }
+
+    const worker = new Worker(new URL("./render/edit.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    workerOwned = worker;
+    activeRenders.set(jobId, worker);
+
+    let lastDispatchedPct = 25;
+    await new Promise<void>((resolve, reject) => {
+      worker.addEventListener("message", (e: MessageEvent<EditWorkerEvent>) => {
+        const msg = e.data;
+        if (msg.type === "progress") {
+          const p = msg.progress;
+          if (p.stage !== "video-encode" || p.framesTotal <= 0) return;
+          const pct = 25 + Math.floor((p.framesDone / p.framesTotal) * 65);
+          if (pct === lastDispatchedPct) return;
+          lastDispatchedPct = pct;
+          void reportProgress(jobId, {
+            pct: Math.min(89, pct),
+            stage: "encoding",
+            framesDone: p.framesDone,
+            framesTotal: p.framesTotal,
+          });
+        } else if (msg.type === "done") {
+          resolve();
+        } else if (msg.type === "error") {
+          reject(new Error(msg.message));
+        }
+      });
+      worker.addEventListener("error", (e) => {
+        reject(new Error(e.message || "Render worker crashed"));
+      });
+      const startMsg: EditWorkerMessage = { type: "start", input: workerInput };
+      worker.postMessage(startMsg, transferables);
     });
 
-    await reportProgress(jobId, { pct: 90, stage: "writing" });
-    await opfs.writeFile(outputPath(jobId), result.output);
+    await reportProgress(jobId, { pct: 95, stage: "writing" });
+    const outputFile = await opfs.readFile(outputPath(jobId));
+    const outputBytes = outputFile.size;
 
     const updated = await jobsDb.updateJob(jobId, {
       status: "rendered",
       hasOutput: true,
-      outputBytes: result.output.byteLength,
+      outputBytes,
       progress: { pct: 100, stage: "rendered" },
       finishedAt: Date.now(),
       editSpec: spec,
@@ -340,8 +416,41 @@ export async function runEditRender(
     await markFailed(jobId, err);
     throw err;
   } finally {
+    if (workerOwned) {
+      workerOwned.terminate();
+      activeRenders.delete(jobId);
+    }
     removeRenderUnloadGuard(jobId);
   }
+}
+
+/**
+ * Cancel an in-progress edit render. Hard-terminates the worker, deletes
+ * the partial OPFS output, and marks the job as failed with a "cancelled"
+ * sentinel so the UI can distinguish it from a real failure.
+ *
+ * Safe to call when no render is active for the given job — it's a no-op.
+ */
+export async function cancelEditRender(jobId: string): Promise<void> {
+  const worker = activeRenders.get(jobId);
+  if (!worker) return;
+  worker.terminate();
+  activeRenders.delete(jobId);
+  // Remove the half-written output file so a future render isn't fooled
+  // by leftovers. Best-effort — the file may not exist yet.
+  await opfs.deleteFile(outputPath(jobId)).catch(() => undefined);
+  try {
+    const updated = await jobsDb.updateJob(jobId, {
+      status: "failed",
+      error: "cancelled",
+      progress: { pct: 100, stage: "cancelled" },
+      finishedAt: Date.now(),
+    });
+    emitJobUpdate(updated);
+  } catch {
+    // ignore — job may have been deleted already
+  }
+  removeRenderUnloadGuard(jobId);
 }
 
 /**

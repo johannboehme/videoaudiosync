@@ -73,6 +73,12 @@ async function writeFile(path: string, data: WritablePayload): Promise<void> {
   }
 }
 
+async function createWritable(path: string): Promise<FileSystemWritableFileStream> {
+  const handle = await getFileHandle(path, { create: true });
+  if (!handle) throw new Error(`Failed to create file handle for "${path}"`);
+  return await handle.createWritable({ keepExistingData: false });
+}
+
 async function readFile(path: string): Promise<File> {
   const handle = await getFileHandle(path, { create: false });
   if (!handle) throw new Error(`File not found: "${path}"`);
@@ -153,6 +159,7 @@ async function wipeAll(): Promise<void> {
 
 export const opfs = {
   writeFile,
+  createWritable,
   readFile,
   exists,
   deleteFile,

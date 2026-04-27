@@ -107,6 +107,9 @@ export default function Editor() {
 
   async function onSubmit() {
     if (!id || !job) return;
+    // Pause playback before we navigate away — the player would otherwise
+    // keep the audio element alive on the editor page in the background.
+    useEditorStore.getState().setPlaying(false);
     setSubmitting(true);
     setErr(null);
     const spec = buildEditSpec();
@@ -129,13 +132,11 @@ export default function Editor() {
         ? [{ type: spec.visualizer.type === "showfreqs" ? "showfreqs" : "showwaves" }]
         : undefined,
     };
-    try {
-      await runEditRender(id, local);
-      navigate(`/job/${id}`);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Render failed");
-      setSubmitting(false);
-    }
+    // Fire-and-forget: the render screen owns the lifecycle from here.
+    // Errors are surfaced via jobEvents, so we don't await — and we
+    // navigate immediately to free the editor's heap.
+    void runEditRender(id, local);
+    navigate(`/job/${id}/render`);
   }
 
   if (err) {

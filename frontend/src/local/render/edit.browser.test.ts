@@ -60,18 +60,20 @@ describe("editRender (real Chromium WebCodecs + mp4-muxer)", () => {
         driftRatio: 1.0,
       });
 
-      expect(result.output.byteLength).toBeGreaterThan(1000);
+      expect(result.output).not.toBeNull();
+      const outBytes = result.output!;
+      expect(outBytes.byteLength).toBeGreaterThan(1000);
       expect(result.width).toBe(320);
       expect(result.height).toBe(240);
 
       // Output is a re-encoded MP4 — re-parse it and verify dimensions.
-      const reparsed = await demuxVideoTrack(new Blob([result.output as BlobPart]));
+      const reparsed = await demuxVideoTrack(new Blob([outBytes as BlobPart]));
       expect(reparsed).not.toBeNull();
       expect(reparsed!.info.width).toBe(320);
       expect(reparsed!.info.height).toBe(240);
 
       // Audio is the studio tone (zero-crossing rate ≈ 1760/s).
-      const audio = await decodeAudioToMonoPcm(new Blob([result.output as BlobPart]), 22050);
+      const audio = await decodeAudioToMonoPcm(new Blob([outBytes as BlobPart]), 22050);
       const window = audio.pcm.slice(22050, 22050 * 2);
       let zc = 0;
       for (let i = 1; i < window.length; i++) {
@@ -98,7 +100,7 @@ describe("editRender (real Chromium WebCodecs + mp4-muxer)", () => {
         driftRatio: 1.0,
       });
 
-      const reparsed = await demuxVideoTrack(new Blob([result.output as BlobPart]));
+      const reparsed = await demuxVideoTrack(new Blob([result.output! as BlobPart]));
       expect(reparsed).not.toBeNull();
       // Output duration should be ≈ 1.5 s ± frame-rate granularity (33 ms).
       expect(reparsed!.info.durationS).toBeGreaterThan(1.3);
@@ -135,7 +137,7 @@ describe("editRender (real Chromium WebCodecs + mp4-muxer)", () => {
         driftRatio: 1.0,
       });
 
-      const reparsed = await demuxVideoTrack(new Blob([result.output as BlobPart]));
+      const reparsed = await demuxVideoTrack(new Blob([result.output! as BlobPart]));
       expect(reparsed).not.toBeNull();
 
       // Decode a frame near the middle and check that the centre region
@@ -221,7 +223,7 @@ describe("editRender (real Chromium WebCodecs + mp4-muxer)", () => {
       // Decode a few frames of the output and verify the bottom strip is
       // not entirely the source-frame red — visualizers must have painted
       // pixels there.
-      const reparsed = await demuxVideoTrack(new Blob([result.output as BlobPart]));
+      const reparsed = await demuxVideoTrack(new Blob([result.output! as BlobPart]));
       expect(reparsed).not.toBeNull();
 
       let nonRedPixelCount = 0;

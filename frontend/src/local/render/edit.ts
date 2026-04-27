@@ -7,19 +7,27 @@
  *   1. Demux phone-video → encoded video chunks + decoder config.
  *   2. Decode + transform studio audio (drift, offset, segment cuts).
  *   3. Encode audio → AAC chunks.
- *   4. For each output video frame:
- *        - decode the source frame
- *        - composite (text overlays / future visualizers)
- *        - encode → H.264 chunks
- *      Done segment-by-segment when `segments` describes cuts.
- *   5. Mux video + audio chunks into MP4.
+ *   4. Streaming video pipeline: each decoded VideoFrame is composited
+ *      and pushed straight into the encoder, then closed. Backpressure
+ *      on the decode/encode queues keeps memory bounded — see the
+ *      `frameQueue` history below for what we replaced.
+ *   5. Mux video + audio into MP4. If `output` is provided we stream
+ *      the bytes directly into a FileSystemWritableFileStream; otherwise
+ *      we fall back to an in-memory buffer (used by tests).
  *
- * For Phase 5 the visualizer layer is stubbed (no avectorscope etc. yet);
- * the compositor handles ASS overlays (via JASSUB if available) and is
- * extensible. See `compositor.ts`.
+ * History: until 2026-04 the pipeline buffered every decoded VideoFrame
+ * into an array (`frameQueue: VideoFrame[]`) before encoding. That
+ * accumulated multi-GB of YUV data for typical 3-min 1080p videos and
+ * regularly killed the browser tab. Streaming + backpressure fixes that.
  */
 
-import { ArrayBufferTarget, Muxer } from "mp4-muxer";
+import {
+  ArrayBufferTarget,
+  FileSystemWritableFileStreamTarget,
+  Muxer,
+} from "mp4-muxer";
+
+type MuxTarget = ArrayBufferTarget | FileSystemWritableFileStreamTarget;
 import { encodeAacFromPcm } from "../codec/webcodecs/audio-encode";
 import { demuxVideoTrack } from "../codec/webcodecs/demux";
 import { StreamingVideoEncoder } from "../codec/webcodecs/video-encode";
@@ -36,9 +44,22 @@ export interface Segment {
   out: number; // seconds
 }
 
+export interface EditRenderProgress {
+  /** "audio-decode" | "audio-encode" | "video-encode" | "muxing" */
+  stage: string;
+  /** Frames composited + sent to the encoder so far. */
+  framesDone: number;
+  /** Total frames the encoder is expected to emit (best estimate). */
+  framesTotal: number;
+}
+
 export interface EditRenderInput {
   videoFile: Blob | ArrayBuffer;
-  audioFile: Blob | ArrayBuffer;
+  /** One of audioFile / audioPcm must be provided. audioPcm is the worker
+   *  path: AudioContext.decodeAudioData is unavailable in workers, so the
+   *  main thread decodes once and transfers the Float32Array. */
+  audioFile?: Blob | ArrayBuffer;
+  audioPcm?: { pcm: Float32Array; sampleRate: number; channels: number };
   segments: Segment[]; // empty/zero-length → use the whole clip
   overlays: TextOverlay[];
   energy?: EnergyCurves | null;
@@ -47,19 +68,28 @@ export interface EditRenderInput {
   driftRatio: number;
   videoBitrateBps?: number;
   audioBitrateBps?: number;
+  /** Stream the muxed MP4 directly into this writable. When present the
+   *  caller owns the stream's lifecycle (close on success, abort on error). */
+  output?: FileSystemWritableFileStream;
+  /** Periodic progress notifications. Called from the decoder output
+   *  callback — keep work in the handler tiny. */
+  onProgress?: (p: EditRenderProgress) => void;
 }
 
 export interface EditRenderResult {
-  output: Uint8Array;
+  /** In-memory MP4 bytes when `input.output` was not provided; otherwise null. */
+  output: Uint8Array | null;
   width: number;
   height: number;
   videoCodec: string;
   audioBackend: "webcodecs" | "ffmpeg-wasm";
   audioSampleRate: number;
   audioChannelCount: number;
+  /** Final size in bytes. Always populated. */
+  byteLength: number;
 }
 
-async function decodeStudioAudioInterleaved(
+export async function decodeStudioAudioInterleaved(
   source: Blob | ArrayBuffer,
 ): Promise<{ pcm: Float32Array; sampleRate: number; channels: number }> {
   const buf = source instanceof ArrayBuffer ? source : await source.arrayBuffer();
@@ -114,18 +144,33 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   const video = await demuxVideoTrack(input.videoFile);
   if (!video) throw new Error("Edit render: no video track in source.");
 
-  // Step 2: decode + transform audio.
-  const audio = await decodeStudioAudioInterleaved(input.audioFile);
-  let pcm = audio.pcm;
+  // Step 2: decode + transform audio. We chain through a single binding so
+  // intermediate Float32Arrays become unreachable and can be GC'd before
+  // the next allocation runs. For 3 min stereo @ 48 kHz each copy is
+  // ~140 MB — keeping all four around simultaneously is what caused the
+  // pre-2026-04 audio-side leak.
+  input.onProgress?.({ stage: "audio-decode", framesDone: 0, framesTotal: 0 });
+  let audio: { pcm: Float32Array; sampleRate: number; channels: number };
+  if (input.audioPcm) {
+    audio = input.audioPcm;
+  } else if (input.audioFile) {
+    audio = await decodeStudioAudioInterleaved(input.audioFile);
+  } else {
+    throw new Error("editRender: either audioFile or audioPcm is required");
+  }
+  let pcm: Float32Array | null = audio.pcm;
   if (input.driftRatio !== 1.0) {
-    pcm = applyDriftStretchInterleaved(pcm, audio.channels, input.driftRatio);
+    const next = applyDriftStretchInterleaved(pcm, audio.channels, input.driftRatio);
+    pcm = next;
   }
   if (input.offsetMs !== 0) {
-    pcm = applyAudioOffsetInterleaved(pcm, audio.channels, audio.sampleRate, input.offsetMs);
+    const next = applyAudioOffsetInterleaved(pcm, audio.channels, audio.sampleRate, input.offsetMs);
+    pcm = next;
   }
   pcm = applySegments(pcm, audio.channels, audio.sampleRate, input.segments);
 
   // Step 3: encode audio.
+  input.onProgress?.({ stage: "audio-encode", framesDone: 0, framesTotal: 0 });
   const encodedAudio = await encodeAacFromPcm(pcm, {
     numberOfChannels: audio.channels,
     sampleRate: audio.sampleRate,
@@ -134,8 +179,11 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   if (!encodedAudio.description) {
     throw new Error("Audio encoder produced no description");
   }
+  // Drop the PCM reference — encoder copied what it needed. Frees ~half a
+  // gig for a 3-min stereo source before the heavy video pipeline starts.
+  pcm = null;
 
-  // Step 4: video composite + encode.
+  // Step 4: streaming video composite + encode.
   const fps = Math.max(1, Math.round(video.info.fps));
   const compositor = new Compositor({
     width: video.info.width,
@@ -153,27 +201,69 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     bitrateBps: input.videoBitrateBps ?? 4_000_000,
   });
 
-  // Build the list of source-time intervals we want to keep (segments).
-  // If segments is empty, use the whole video.
   const intervals: Segment[] =
     input.segments.length > 0
       ? input.segments
       : [{ in: 0, out: video.info.durationS }];
 
-  // Decode the source video into VideoFrames, filter by interval, push to
-  // compositor + encoder. We reuse a single VideoDecoder with a queue.
-  let outputCursorUs = 0;
+  // Estimate the total emitted-frame count from the kept duration. Used
+  // only for the progress bar; off by a frame or two is fine.
+  const keptDurationS = intervals.reduce((acc, s) => acc + (s.out - s.in), 0);
+  const framesTotal = Math.max(1, Math.round(keptDurationS * fps));
+
   let nextIntervalIdx = 0;
   let firstFrameInGop = true;
-
-  const frameQueue: VideoFrame[] = [];
-  let decoderError: Error | null = null;
+  let framesEmitted = 0;
+  let pendingError: Error | null = null;
+  // VideoEncoder.encode is synchronous, so we can chain
+  // decode → composite → encode entirely inside the decoder's output
+  // callback. No frame ever lives outside this scope.
   const decoder = new VideoDecoder({
     output: (frame) => {
-      frameQueue.push(frame);
+      try {
+        const tS = frame.timestamp / 1_000_000;
+        let inInterval = false;
+        let intervalStartS = 0;
+        for (let i = 0; i < intervals.length; i++) {
+          const seg = intervals[i];
+          if (tS >= seg.in && tS < seg.out) {
+            inInterval = true;
+            for (let j = 0; j < i; j++) {
+              intervalStartS += intervals[j].out - intervals[j].in;
+            }
+            intervalStartS -= seg.in;
+            if (i !== nextIntervalIdx) {
+              nextIntervalIdx = i;
+              firstFrameInGop = true;
+            }
+            break;
+          }
+        }
+        if (!inInterval) {
+          frame.close();
+          return;
+        }
+        const outTs = Math.round((tS + intervalStartS) * 1_000_000);
+        const composed = compositor.composite(frame, outTs);
+        encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
+        composed.close();
+        frame.close();
+        firstFrameInGop = false;
+        framesEmitted++;
+        if (framesEmitted % 30 === 0 || framesEmitted === framesTotal) {
+          input.onProgress?.({
+            stage: "video-encode",
+            framesDone: framesEmitted,
+            framesTotal,
+          });
+        }
+      } catch (e) {
+        pendingError = e instanceof Error ? e : new Error(String(e));
+        try { frame.close(); } catch { /* already closed */ }
+      }
     },
     error: (e) => {
-      decoderError = e instanceof Error ? e : new Error(String(e));
+      pendingError = e instanceof Error ? e : new Error(String(e));
     },
   });
   decoder.configure({
@@ -183,10 +273,17 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     description: video.info.description,
   });
 
-  // Feed all chunks into the decoder. WebCodecs handles the back-pressure
-  // (decoder.decodeQueueSize) — for our typical 3-min videos the buffer is
-  // small enough that we don't need to throttle.
+  // Feed chunks with backpressure. Without this the HW decoder happily
+  // outruns the (typically slower) software encoder and we accumulate
+  // hundreds of in-flight VideoFrames. The thresholds (8 / 16) are
+  // conservative — empirically Chromium's HW encoder pipelines around
+  // 4 frames; 16 leaves headroom without bloating memory.
   for (const c of video.chunks) {
+    if (pendingError) throw pendingError;
+    while (decoder.decodeQueueSize > 8 || encoder.encodeQueueSize > 16) {
+      await new Promise((r) => setTimeout(r, 1));
+      if (pendingError) throw pendingError;
+    }
     decoder.decode(
       new EncodedVideoChunk({
         type: c.isKey ? "key" : "delta",
@@ -198,56 +295,31 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   }
   await decoder.flush();
   decoder.close();
-
-  if (decoderError) throw decoderError;
-
-  // Walk frames, filter by intervals, encode.
-  for (const frame of frameQueue) {
-    const tS = frame.timestamp / 1_000_000;
-    // Skip frames whose source time isn't within any active interval.
-    let inInterval = false;
-    let intervalStartS = 0;
-    for (let i = 0; i < intervals.length; i++) {
-      const seg = intervals[i];
-      if (tS >= seg.in && tS < seg.out) {
-        inInterval = true;
-        // Compute cumulative interval offset for output timestamp.
-        for (let j = 0; j < i; j++) {
-          intervalStartS += intervals[j].out - intervals[j].in;
-        }
-        intervalStartS -= seg.in;
-        if (i !== nextIntervalIdx) {
-          nextIntervalIdx = i;
-          firstFrameInGop = true;
-        }
-        break;
-      }
-    }
-    if (!inInterval) {
-      frame.close();
-      continue;
-    }
-
-    // Compute output timestamp.
-    const outTs = Math.round((tS + intervalStartS) * 1_000_000);
-    outputCursorUs = outTs;
-    const composed = compositor.composite(frame, outTs);
-    encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
-    composed.close();
-    frame.close();
-    firstFrameInGop = false;
-  }
+  if (pendingError) throw pendingError;
 
   const encodedVideo = await encoder.finish();
   if (!encodedVideo.description) {
     throw new Error("Video encoder produced no description");
   }
   compositor.destroy();
-  void outputCursorUs;
 
-  // Step 5: mux.
+  // Final progress tick at the encode boundary.
+  input.onProgress?.({
+    stage: "muxing",
+    framesDone: framesEmitted,
+    framesTotal,
+  });
+
+  // Step 5: mux. Stream into the caller-provided sink when given so the
+  // entire MP4 never has to live in RAM. fastStart: "in-memory" is not
+  // available with a streaming target — moov ends up at the tail, which
+  // is fine for local OPFS playback.
+  const target: MuxTarget = input.output
+    ? new FileSystemWritableFileStreamTarget(input.output)
+    : new ArrayBufferTarget();
+
   const muxer = new Muxer({
-    target: new ArrayBufferTarget(),
+    target,
     video: {
       codec: "avc",
       width: video.info.width,
@@ -259,7 +331,7 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
       numberOfChannels: encodedAudio.numberOfChannels,
       sampleRate: encodedAudio.sampleRate,
     },
-    fastStart: "in-memory",
+    fastStart: input.output ? false : "in-memory",
     firstTimestampBehavior: "offset",
   });
 
@@ -270,7 +342,7 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
       codedHeight: encodedVideo.height,
       description: encodedVideo.description,
     },
-  } as unknown as Parameters<Muxer<ArrayBufferTarget>["addVideoChunkRaw"]>[4];
+  } as unknown as Parameters<Muxer<MuxTarget>["addVideoChunkRaw"]>[4];
   for (const c of encodedVideo.chunks) {
     muxer.addVideoChunkRaw(c.data, c.type, c.timestampUs, c.durationUs, videoMeta);
   }
@@ -282,20 +354,35 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
       numberOfChannels: encodedAudio.numberOfChannels,
       description: encodedAudio.description,
     },
-  } as unknown as Parameters<Muxer<ArrayBufferTarget>["addAudioChunkRaw"]>[4];
+  } as unknown as Parameters<Muxer<MuxTarget>["addAudioChunkRaw"]>[4];
   for (const c of encodedAudio.chunks) {
     muxer.addAudioChunkRaw(c.data, c.type, c.timestampUs, c.durationUs, audioMeta);
   }
 
   muxer.finalize();
 
+  let outputBytes: Uint8Array | null = null;
+  let byteLength = 0;
+  if (input.output) {
+    // Caller closes the writable. We only know the size if the muxer
+    // exposes it on the target — FileSystemWritableFileStreamTarget
+    // doesn't, so we leave byteLength at 0 here and have the caller
+    // stat the file afterwards.
+    byteLength = 0;
+  } else {
+    const buf = (target as ArrayBufferTarget).buffer;
+    outputBytes = new Uint8Array(buf);
+    byteLength = outputBytes.byteLength;
+  }
+
   return {
-    output: new Uint8Array((muxer.target as ArrayBufferTarget).buffer),
+    output: outputBytes,
     width: video.info.width,
     height: video.info.height,
     videoCodec: encodedVideo.codec,
     audioBackend: "webcodecs",
     audioSampleRate: encodedAudio.sampleRate,
     audioChannelCount: encodedAudio.numberOfChannels,
+    byteLength,
   };
 }

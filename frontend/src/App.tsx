@@ -6,13 +6,18 @@ import { RegistrationMark } from "./editor/components/RuleStrip";
 import Editor from "./pages/Editor";
 import History from "./pages/History";
 import JobPage from "./pages/JobPage";
+import RenderScreen from "./pages/RenderScreen";
 import { Settings } from "./pages/Settings";
 import { BrowserTooOld } from "./pages/BrowserTooOld";
 import Upload from "./pages/Upload";
 
 export default function App() {
   const location = useLocation();
-  const isEditor = /^\/job\/[^/]+\/edit/.test(location.pathname);
+  // Hide the global TopBar on routes that own their full-bleed layout
+  // (the editor and the render screen).
+  const isFullBleed =
+    /^\/job\/[^/]+\/edit/.test(location.pathname) ||
+    /^\/job\/[^/]+\/render$/.test(location.pathname);
   const caps = useMemo(() => detectCapabilities(), []);
   const min = useMemo(() => meetsMinRequirements(caps), [caps]);
 
@@ -47,12 +52,13 @@ export default function App() {
 
   return (
     <div className="min-h-full flex flex-col paper-bg">
-      {!isEditor && <TopBar />}
+      {!isFullBleed && <TopBar />}
       <Routes>
         <Route path="/" element={<Upload />} />
         <Route path="/jobs" element={<History />} />
         <Route path="/job/:id" element={<JobPage />} />
         <Route path="/job/:id/edit" element={<Editor />} />
+        <Route path="/job/:id/render" element={<RenderScreen />} />
         <Route path="/settings" element={<Settings caps={caps} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
