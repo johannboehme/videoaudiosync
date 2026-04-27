@@ -8,7 +8,7 @@ import { SyncTuner } from "../editor/components/SyncTuner";
 import { Timeline } from "../editor/components/Timeline";
 import { TransportBar } from "../editor/components/TransportBar";
 import { TrimPanel } from "../editor/components/TrimPanel";
-import { VideoCanvas } from "../editor/components/VideoCanvas";
+import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { useEditorStore } from "../editor/store";
 import {
   jobsDb,
@@ -57,6 +57,28 @@ export default function Editor() {
   const [assets, setAssets] = useState<EditorAssets | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Global hotkeys 1..9 = live-cut to that cam's lane (vintage vision-mixer
+  // pushbuttons). Ignored when the user is typing in an input/textarea.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+      }
+      const n = parseInt(e.key, 10);
+      if (!Number.isInteger(n) || n < 1 || n > 9) return;
+      const s = useEditorStore.getState();
+      const clip = s.clips[n - 1];
+      if (!clip) return;
+      e.preventDefault();
+      s.addCut({ atTimeS: s.playback.currentTime, camId: clip.id });
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -224,7 +246,12 @@ export default function Editor() {
         jobTitle={job.title || job.id}
         jobId={job.id}
         videoArea={
-          <VideoCanvas videoUrl={assets.videoUrl} audioUrl={assets.audioUrl} />
+          <MultiCamPreview
+            cams={Object.fromEntries(
+              Object.entries(assets.cams).map(([id, ca]) => [id, { videoUrl: ca.videoUrl }]),
+            )}
+            audioUrl={assets.audioUrl}
+          />
         }
         transport={<TransportBar />}
         timeline={

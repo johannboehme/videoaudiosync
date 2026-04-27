@@ -83,6 +83,7 @@ export function Timeline({
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const setSelectedClipId = useEditorStore((s) => s.setSelectedClipId);
   const setClipStartOffset = useEditorStore((s) => s.setClipStartOffset);
+  const addCut = useEditorStore((s) => s.addCut);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
 
   const duration = jobMeta?.duration || audioDuration || 0;
@@ -557,6 +558,7 @@ export function Timeline({
                 hotkeyLabel={i < 9 ? String(i + 1) : undefined}
                 selected={clip.id === selectedClipId}
                 onSelectClip={() => setSelectedClipId(clip.id)}
+                onTake={() => addCut({ atTimeS: currentTime, camId: clip.id })}
                 height={videoLaneHeight}
               />
             ))}
