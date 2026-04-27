@@ -25,6 +25,7 @@ import {
   type Segment,
 } from "./render/edit";
 import type {
+  CamWorkerInput,
   EditWorkerEvent,
   EditWorkerInput,
   EditWorkerMessage,
@@ -377,6 +378,14 @@ export interface EditSpecLocal {
   exportOpts?: ExportRenderOpts;
   /** Output filename (without extension). Used purely for download UX. */
   outputFilename?: string;
+  /** Per-cam render-time overrides built from the editor's clips slice. */
+  clipOverrides?: Array<{
+    id: string;
+    syncOverrideMs: number;
+    startOffsetS: number;
+  }>;
+  /** Multi-cam cuts — drives the multi-source frame loop. */
+  cuts?: Array<{ atTimeS: number; camId: string }>;
 }
 
 export interface ExportRenderOpts {
@@ -423,14 +432,9 @@ export async function runEditRender(
   try {
     await reportProgress(jobId, { pct: 5, stage: "render-prep" }, "rendering");
 
-    // V1 limitation: the editor records multi-cam cuts in `job.cuts`, but
-    // the render pipeline still only encodes cam-1. Honoring cuts in the
-    // exported MP4 needs a multi-source frame pipeline (per-cam decoders
-    // + activeCamAt walk per output frame) — tracked as a separate task.
-    const cam1Path = job.videos?.[0]?.opfsPath;
-    if (!cam1Path) throw new Error("No video found for this job.");
+    const videos = job.videos ?? [];
+    if (videos.length === 0) throw new Error("No video found for this job.");
     const audioExt = fileExtension(new File([], job.audioFilename), "wav");
-    const videoOpfsPath = cam1Path;
     const audioFile = await opfs.readFile(audioPath(jobId, audioExt));
 
     // Audio decode + energy curves run on the main thread because
@@ -464,10 +468,41 @@ export async function runEditRender(
     }
 
     await reportProgress(jobId, { pct: 25, stage: "encoding" });
+    // Audio offset is anchored to cam-1 (the master clock cam), same sign
+    // convention as the legacy single-cam pipeline.
     const totalOffsetMs = job.sync.offsetMs + (spec.offsetOverrideMs ?? 0);
 
+    // Build the per-cam descriptors. Each cam's master-timeline start
+    // position is derived from its own sync algorithm + the editor's
+    // syncOverrideMs + startOffsetS; mirrors `clipRangeS()` on the editor
+    // side so what the user previewed is what gets rendered.
+    const overridesById = new Map(
+      (spec.clipOverrides ?? []).map((o) => [o.id, o] as const),
+    );
+    const camInputs: CamWorkerInput[] = videos.map((v) => {
+      const ov = overridesById.get(v.id);
+      const algoMs = v.sync?.offsetMs ?? 0;
+      const userMs = ov?.syncOverrideMs ?? 0;
+      const startOffsetS = ov?.startOffsetS ?? 0;
+      const masterStartS = -(algoMs + userMs) / 1000 + startOffsetS;
+      return {
+        id: v.id,
+        opfsPath: v.opfsPath,
+        masterStartS,
+        sourceDurationS: v.durationS ?? 0,
+      };
+    });
+
+    const cuts = spec.cuts ?? [];
+    const masterDurationS = Math.max(
+      ...camInputs.map((c) => c.masterStartS + c.sourceDurationS),
+      0,
+    );
+
     const workerInput: EditWorkerInput = {
-      videoPath: videoOpfsPath,
+      cams: camInputs,
+      cuts,
+      masterDurationS,
       outputPath: outputPath(jobId),
       audioPcm: audio,
       segments: spec.segments,

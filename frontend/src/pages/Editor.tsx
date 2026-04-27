@@ -193,6 +193,16 @@ export default function Editor() {
     const exportOpts = spec.export
       ? exportSpecToRenderOpts(spec.export, sourceDims)
       : undefined;
+    // Persist the multi-cam state (clips + cuts) into the job record so
+    // a refresh / history-page revisit shows the same edit.
+    const liveState = useEditorStore.getState();
+    const clipOverrides = liveState.clips.map((c) => ({
+      id: c.id,
+      syncOverrideMs: c.syncOverrideMs,
+      startOffsetS: c.startOffsetS,
+    }));
+    const cuts = liveState.cuts;
+    await jobsDb.updateJob(id, { cuts });
     const local: EditSpecLocal = {
       segments: spec.segments,
       overlays: (spec.overlays ?? []).map((o) => ({
@@ -213,6 +223,8 @@ export default function Editor() {
         : undefined,
       exportOpts,
       outputFilename: spec.export?.filename,
+      clipOverrides,
+      cuts,
     };
     // Fire-and-forget: the render screen owns the lifecycle from here.
     // Errors are surfaced via jobEvents, so we don't await — and we

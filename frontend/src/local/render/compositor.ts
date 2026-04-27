@@ -34,21 +34,12 @@ export interface CompositorOptions {
   visualizers?: Visualizer[];
 }
 
-interface FitRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /** True when source aspect matches output exactly — skips the letterbox fill. */
-  fillsCanvas: boolean;
-}
-
 function computeFitRect(
   srcW: number,
   srcH: number,
   dstW: number,
   dstH: number,
-): FitRect {
+): { x: number; y: number; w: number; h: number; fillsCanvas: boolean } {
   const srcAspect = srcW / srcH;
   const dstAspect = dstW / dstH;
   const aspectMatch = Math.abs(srcAspect - dstAspect) < 1e-3;
@@ -70,7 +61,6 @@ export class Compositor {
   private ctx: OffscreenCanvasRenderingContext2D;
   private opts: CompositorOptions;
   private assBlob: string | null = null;
-  private fitRect: FitRect;
 
   constructor(opts: CompositorOptions) {
     this.opts = opts;
@@ -78,12 +68,6 @@ export class Compositor {
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("Compositor: OffscreenCanvas 2d context unavailable");
     this.ctx = ctx;
-    this.fitRect = computeFitRect(
-      opts.sourceWidth ?? opts.width,
-      opts.sourceHeight ?? opts.height,
-      opts.width,
-      opts.height,
-    );
   }
 
   /**
@@ -110,38 +94,44 @@ export class Compositor {
    * caller MUST `.close()` after encoding.
    */
   composite(frame: VideoFrame, timestampUs: number): VideoFrame {
-    if (this.fitRect.fillsCanvas) {
-      this.ctx.drawImage(
-        frame as unknown as CanvasImageSource,
-        0,
-        0,
-        this.opts.width,
-        this.opts.height,
-      );
+    return this.compositeImage(
+      frame as unknown as CanvasImageSource,
+      this.opts.sourceWidth ?? frame.codedWidth,
+      this.opts.sourceHeight ?? frame.codedHeight,
+      timestampUs,
+      frame.duration ?? 0,
+    );
+  }
+
+  /**
+   * Multi-source variant: caller provides an arbitrary `CanvasImageSource`
+   * (VideoFrame, ImageBitmap, OffscreenCanvas …) plus its native dimensions.
+   * Letterbox / pillarbox is recomputed per call so cams of different
+   * aspects can share a single compositor + output stream.
+   */
+  compositeImage(
+    source: CanvasImageSource,
+    srcW: number,
+    srcH: number,
+    timestampUs: number,
+    durationUs: number,
+  ): VideoFrame {
+    const fit = computeFitRect(srcW, srcH, this.opts.width, this.opts.height);
+    if (fit.fillsCanvas) {
+      this.ctx.drawImage(source, 0, 0, this.opts.width, this.opts.height);
     } else {
-      // Fill the letterbox/pillarbox bands with black, then place the
-      // source frame in its fit-rect.
       this.ctx.fillStyle = "#000";
       this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
-      this.ctx.drawImage(
-        frame as unknown as CanvasImageSource,
-        this.fitRect.x,
-        this.fitRect.y,
-        this.fitRect.w,
-        this.fitRect.h,
-      );
+      this.ctx.drawImage(source, fit.x, fit.y, fit.w, fit.h);
     }
 
     const t = timestampUs / 1_000_000;
 
-    // Visualizer layers (Canvas2D drawn directly on top of the main canvas).
     if (this.opts.visualizers && this.opts.visualizers.length > 0) {
       for (const v of this.opts.visualizers) {
         v.draw(this.ctx, t, this.opts.width, this.opts.height);
       }
     }
-
-    // Subtitle layer (text overlays).
     if (this.opts.overlays.length > 0) {
       renderOverlays(
         this.ctx,
@@ -155,7 +145,7 @@ export class Compositor {
 
     return new VideoFrame(this.canvas, {
       timestamp: timestampUs,
-      duration: frame.duration ?? 0,
+      duration: durationUs,
     });
   }
 

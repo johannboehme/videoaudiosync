@@ -19,19 +19,43 @@
  *        { type: "error", message: string }
  */
 
-import { editRender, type EditRenderProgress, type Segment } from "./edit";
+import {
+  editRender,
+  editRenderMulti,
+  type EditRenderProgress,
+  type Segment,
+} from "./edit";
 import { opfs } from "../../storage/opfs";
 import { ShowwavesVisualizer } from "./visualizer/showwaves";
 import { ShowfreqsVisualizer } from "./visualizer/showfreqs";
 import type { Visualizer } from "./visualizer/types";
 import type { TextOverlay, EnergyCurves } from "./ass-builder";
+import type { Cut } from "../../storage/jobs-db";
 
 export type VisualizerWorkerDescriptor =
   | { type: "showwaves"; pcm: Float32Array; sampleRate: number }
   | { type: "showfreqs"; energy: EnergyCurves };
 
+/** Per-cam input descriptor for the multi-source render path. */
+export interface CamWorkerInput {
+  id: string;
+  opfsPath: string;
+  /** Cam start position on the master timeline (seconds). */
+  masterStartS: number;
+  sourceDurationS: number;
+}
+
 export interface EditWorkerInput {
-  videoPath: string;
+  /** Legacy single-cam path. Used when `cams` is omitted (or has length 1
+   *  and `cuts` is empty — the renderer fast-paths to the simpler pipeline). */
+  videoPath?: string;
+  /** Multi-cam path. When present and (cams.length > 1 || cuts.length > 0)
+   *  the worker dispatches to `editRenderMulti`. */
+  cams?: CamWorkerInput[];
+  cuts?: Cut[];
+  /** Master-timeline duration; defaults to longest cam's end. */
+  masterDurationS?: number;
+
   outputPath: string;
   audioPcm: { pcm: Float32Array; sampleRate: number; channels: number };
   segments: Segment[];
@@ -68,7 +92,6 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
 
   let writable: FileSystemWritableFileStream | null = null;
   try {
-    const videoFile = await opfs.readFile(input.videoPath);
     writable = await opfs.createWritable(input.outputPath);
 
     const visualizers: Visualizer[] = [];
@@ -80,27 +103,73 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
       }
     }
 
-    await editRender({
-      videoFile,
-      audioPcm: input.audioPcm,
-      segments: input.segments,
-      overlays: input.overlays,
-      energy: input.energy,
-      visualizers,
-      offsetMs: input.offsetMs,
-      driftRatio: input.driftRatio,
-      outputWidth: input.outputWidth,
-      outputHeight: input.outputHeight,
-      videoCodec: input.videoCodec,
-      audioCodec: input.audioCodec,
-      videoBitrateBps: input.videoBitrateBps,
-      audioBitrateBps: input.audioBitrateBps,
-      output: writable,
-      onProgress: (p) => {
-        const evt: EditWorkerEvent = { type: "progress", progress: p };
-        ctx.postMessage(evt);
-      },
-    });
+    const onProgress = (p: EditRenderProgress) => {
+      const evt: EditWorkerEvent = { type: "progress", progress: p };
+      ctx.postMessage(evt);
+    };
+
+    const useMultiCam =
+      input.cams !== undefined &&
+      (input.cams.length > 1 || (input.cuts ?? []).length > 0);
+
+    if (useMultiCam) {
+      const cams = input.cams!;
+      const camFiles = await Promise.all(
+        cams.map(async (c) => ({
+          ...c,
+          file: await opfs.readFile(c.opfsPath),
+        })),
+      );
+      await editRenderMulti({
+        cams: camFiles.map((c) => ({
+          id: c.id,
+          file: c.file,
+          masterStartS: c.masterStartS,
+          sourceDurationS: c.sourceDurationS,
+        })),
+        cuts: input.cuts ?? [],
+        masterDurationS: input.masterDurationS,
+        audioPcm: input.audioPcm,
+        segments: input.segments,
+        overlays: input.overlays,
+        energy: input.energy,
+        visualizers,
+        offsetMs: input.offsetMs,
+        driftRatio: input.driftRatio,
+        outputWidth: input.outputWidth,
+        outputHeight: input.outputHeight,
+        videoCodec: input.videoCodec,
+        audioCodec: input.audioCodec,
+        videoBitrateBps: input.videoBitrateBps,
+        audioBitrateBps: input.audioBitrateBps,
+        output: writable,
+        onProgress,
+      });
+    } else {
+      // Single-cam fast path. Either `videoPath` (legacy) or the only entry
+      // in `cams` provides the source.
+      const path = input.videoPath ?? input.cams?.[0]?.opfsPath;
+      if (!path) throw new Error("editWorker: no video source provided");
+      const videoFile = await opfs.readFile(path);
+      await editRender({
+        videoFile,
+        audioPcm: input.audioPcm,
+        segments: input.segments,
+        overlays: input.overlays,
+        energy: input.energy,
+        visualizers,
+        offsetMs: input.offsetMs,
+        driftRatio: input.driftRatio,
+        outputWidth: input.outputWidth,
+        outputHeight: input.outputHeight,
+        videoCodec: input.videoCodec,
+        audioCodec: input.audioCodec,
+        videoBitrateBps: input.videoBitrateBps,
+        audioBitrateBps: input.audioBitrateBps,
+        output: writable,
+        onProgress,
+      });
+    }
 
     await writable.close();
     writable = null;
