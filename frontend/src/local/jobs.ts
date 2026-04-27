@@ -29,20 +29,13 @@ import {
   removeRenderUnloadGuard,
   requestPersistentStorage,
 } from "./lifecycle";
+import { emitJobUpdate, jobEvents } from "./jobs-events";
+
+export { jobEvents };
 
 const VIDEO_NAME = "video";
 const AUDIO_NAME = "audio";
 const OUTPUT_NAME = "output.mp4";
-
-export const jobEvents = new EventTarget();
-
-type JobEvent = CustomEvent<{ jobId: string; job: LocalJob }>;
-
-function emitJobUpdate(job: LocalJob): void {
-  jobEvents.dispatchEvent(
-    new CustomEvent("update", { detail: { jobId: job.id, job } }) as JobEvent,
-  );
-}
 
 function videoPath(jobId: string, ext: string): string {
   return `jobs/${jobId}/${VIDEO_NAME}.${ext}`;
@@ -139,6 +132,25 @@ async function reportProgress(
   emitJobUpdate(updated);
 }
 
+/**
+ * Mark a job as failed and emit an update event. Best-effort — if the
+ * row no longer exists (e.g. user deleted it during render), we swallow.
+ */
+async function markFailed(jobId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    const updated = await jobsDb.updateJob(jobId, {
+      status: "failed",
+      error: message,
+      progress: { pct: 100, stage: "failed" },
+      finishedAt: Date.now(),
+    });
+    emitJobUpdate(updated);
+  } catch {
+    // ignore — likely deleted
+  }
+}
+
 async function runSync(
   jobId: string,
   videoExt: string,
@@ -230,6 +242,11 @@ export async function runQuickRender(
       finishedAt: Date.now(),
     });
     emitJobUpdate(updated);
+  } catch (err) {
+    // Crucial: without this the job stays stuck in "rendering" status
+    // forever and the JobPage shows no recovery actions.
+    await markFailed(jobId, err);
+    throw err;
   } finally {
     removeRenderUnloadGuard(jobId);
   }
@@ -319,6 +336,9 @@ export async function runEditRender(
       editSpec: spec,
     });
     emitJobUpdate(updated);
+  } catch (err) {
+    await markFailed(jobId, err);
+    throw err;
   } finally {
     removeRenderUnloadGuard(jobId);
   }

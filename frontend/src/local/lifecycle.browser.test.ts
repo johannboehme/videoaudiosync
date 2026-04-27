@@ -56,6 +56,26 @@ describe("markInterruptedJobsOnLoad", () => {
     const second = await markInterruptedJobsOnLoad();
     expect(second).toBe(0);
   });
+
+  it("emits jobEvents so any open page refreshes immediately", async () => {
+    const { jobEvents } = await import("./jobs-events");
+    await jobsDb.saveJob(makeJob({ id: "stuck-render", status: "rendering" }));
+
+    const observed: Array<{ jobId: string; status: string }> = [];
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ jobId: string; job: { status: string } }>).detail;
+      observed.push({ jobId: detail.jobId, status: detail.job.status });
+    };
+    jobEvents.addEventListener("update", handler);
+
+    try {
+      await markInterruptedJobsOnLoad();
+    } finally {
+      jobEvents.removeEventListener("update", handler);
+    }
+
+    expect(observed).toContainEqual({ jobId: "stuck-render", status: "failed" });
+  });
 });
 
 describe("install/removeRenderUnloadGuard", () => {

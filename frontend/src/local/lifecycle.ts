@@ -21,6 +21,7 @@
 
 import { jobsDb, type LocalJob } from "../storage/jobs-db";
 import { opfs } from "../storage/opfs";
+import { emitJobUpdate } from "./jobs-events";
 
 const HIGH_WATER = 0.8; // start pruning above 80% used
 const LOW_WATER = 0.6; // prune down to 60%
@@ -34,12 +35,16 @@ export async function markInterruptedJobsOnLoad(): Promise<number> {
   let touched = 0;
   for (const j of all) {
     if (j.status === "syncing" || j.status === "rendering") {
-      await jobsDb.updateJob(j.id, {
+      const updated = await jobsDb.updateJob(j.id, {
         status: "failed",
         error: `Interrupted: page was closed during ${j.status}. Restart the operation to retry.`,
         progress: { pct: 100, stage: "interrupted" },
         finishedAt: Date.now(),
       });
+      // Emit so any open page (e.g. a JobPage that was already mounted
+      // before this housekeeping ran) refreshes immediately instead of
+      // showing a stale "rendering 30 %" forever.
+      emitJobUpdate(updated);
       touched++;
     }
   }

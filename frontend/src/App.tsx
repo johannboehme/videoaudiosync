@@ -24,8 +24,18 @@ export default function App() {
   // by a now-dead tab) so surfacing that beats letting them hang in limbo.
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    void markInterruptedJobsOnLoad().catch(() => undefined);
-    setReady(true);
+    // Await the interrupted-job sweep before unblocking routing so any
+    // JobPage that mounts immediately after sees the freshly flipped
+    // "failed" status instead of a stale "rendering" snapshot.
+    let cancelled = false;
+    markInterruptedJobsOnLoad()
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   if (!ready) {
     return <main className="min-h-full" aria-hidden />;

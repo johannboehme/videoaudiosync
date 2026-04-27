@@ -120,6 +120,42 @@ describe("local jobs lifecycle", () => {
     if (url) URL.revokeObjectURL(url);
   }, 120_000);
 
+  it("if runQuickRender throws, the job is marked failed in IDB and an event is emitted", async () => {
+    const video = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+    const jobId = await createJob(video, audio);
+    await waitForJobStatus(jobId, "synced");
+
+    // Sabotage by deleting the audio file from OPFS — render will throw
+    // when it tries to read it.
+    await opfs.deletePath(`jobs/${jobId}/audio.wav`);
+
+    let observedFailedEvent = false;
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ jobId: string; job: { status: string; error?: string } }>).detail;
+      if (detail.jobId === jobId && detail.job.status === "failed") {
+        observedFailedEvent = true;
+      }
+    };
+    jobEvents.addEventListener("update", handler);
+
+    let threw = false;
+    try {
+      await runQuickRender(jobId);
+    } catch {
+      threw = true;
+    }
+    jobEvents.removeEventListener("update", handler);
+
+    expect(threw, "runQuickRender should rethrow on failure").toBe(true);
+
+    const after = await jobsDb.getJob(jobId);
+    expect(after?.status).toBe("failed");
+    expect(after?.error).toBeTruthy();
+    expect(after?.sync).toBeDefined(); // sync result is preserved → user can retry
+    expect(observedFailedEvent).toBe(true);
+  }, 120_000);
+
   it("deleteJob removes both OPFS files and the IndexedDB row", async () => {
     const video = await fetchVideoFile();
     const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });

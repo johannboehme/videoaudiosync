@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ChunkyButton } from "../editor/components/ChunkyButton";
 import { MonoReadout } from "../editor/components/MonoReadout";
 import { RuleStrip } from "../editor/components/RuleStrip";
 import { DownloadIcon } from "../editor/components/icons";
 import {
+  deleteJob,
   jobEvents,
   jobsDb,
   resolveJobAssetUrl,
@@ -22,6 +23,7 @@ const PIPELINE = [
 
 export default function JobPage() {
   const { id = "" } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [job, setJob] = useState<LocalJob | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -74,6 +76,13 @@ export default function JobPage() {
     }
   }
 
+  async function onDelete() {
+    if (!job) return;
+    if (!window.confirm("Delete this job and its files?")) return;
+    await deleteJob(job.id);
+    navigate("/jobs");
+  }
+
   if (err) return <Banner kind="error" text={err} />;
   if (!job) {
     return (
@@ -87,6 +96,10 @@ export default function JobPage() {
 
   const isDone = job.status === "rendered" || job.status === "synced";
   const isFailed = job.status === "failed";
+  // A failed job that already has a sync result is recoverable: the
+  // sync data lets the user re-enter the editor or kick off another
+  // render attempt without redoing the upload + analysis.
+  const canRetry = isFailed && Boolean(job.sync);
 
   return (
     <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10">
@@ -132,14 +145,13 @@ export default function JobPage() {
         />
       </section>
 
-      {isFailed && job.error && (
-        <Banner kind="error" text={job.error} />
-      )}
+      {isFailed && job.error && <Banner kind="error" text={job.error} />}
+      {err && <Banner kind="error" text={err} />}
 
-      {isDone && (
+      {(isDone || canRetry) && (
         <div className="flex flex-wrap gap-3 border-t border-rule pt-5">
           <ChunkyButton variant="primary" size="lg" onClick={onQuickRender}>
-            Quick render
+            {canRetry ? "Retry quick render" : "Quick render"}
           </ChunkyButton>
           <ChunkyButton variant="secondary" size="lg">
             <Link to={`/job/${job.id}/edit`}>Open editor</Link>
@@ -154,6 +166,18 @@ export default function JobPage() {
               Download MP4
             </a>
           )}
+          <ChunkyButton variant="ghost" size="lg" onClick={onDelete}>
+            Delete
+          </ChunkyButton>
+        </div>
+      )}
+
+      {/* Sync also failed — only recovery is to delete and retry the upload. */}
+      {isFailed && !job.sync && (
+        <div className="flex flex-wrap gap-3 border-t border-rule pt-5">
+          <ChunkyButton variant="ghost" size="lg" onClick={onDelete}>
+            Delete and start over
+          </ChunkyButton>
         </div>
       )}
     </main>
