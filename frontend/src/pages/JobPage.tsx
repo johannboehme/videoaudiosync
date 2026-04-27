@@ -12,6 +12,7 @@ import {
   runQuickRender,
   type LocalJob,
 } from "../local/jobs";
+import type { VideoAsset } from "../storage/jobs-db";
 
 const PIPELINE = [
   { key: "queued", label: "Queue" },
@@ -123,26 +124,8 @@ export default function JobPage() {
         <Pipeline status={job.status} progressPct={job.progress.pct} />
       </section>
 
-      <section className="mb-6 grid sm:grid-cols-3 gap-3">
-        <MonoReadout
-          label="OFFSET"
-          value={job.sync ? `${job.sync.offsetMs.toFixed(1)} ms` : "—"}
-          align="left"
-        />
-        <MonoReadout
-          label="CONFIDENCE"
-          value={job.sync ? `${(job.sync.confidence * 100).toFixed(0)}%` : "—"}
-          align="left"
-        />
-        <MonoReadout
-          label="DRIFT"
-          value={
-            job.sync
-              ? `${((job.sync.driftRatio - 1) * 100).toFixed(3)}%`
-              : "—"
-          }
-          align="left"
-        />
+      <section className="mb-6">
+        <SyncPatchPanel job={job} />
       </section>
 
       {isFailed && job.error && <Banner kind="error" text={job.error} />}
@@ -220,6 +203,178 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className="font-mono text-[10px] tracking-label uppercase text-ink-2 bg-paper-hi border border-rule rounded-full px-2 py-0.5">
       {status}
+    </span>
+  );
+}
+
+/**
+ * Sync Patch Panel — one row per cam, hardware-patchbay look.
+ *
+ * Each cam keeps its own SyncResult (offset/drift/confidence) under
+ * `job.videos[i].sync`. The panel reads from there as the single source of
+ * truth so the values agree with what the editor's per-clip Sync Tuner
+ * uses — no mirror-staleness possible.
+ *
+ * Single-cam jobs still get the compact 3-readout look they had before.
+ */
+function SyncPatchPanel({ job }: { job: LocalJob }) {
+  const videos: VideoAsset[] =
+    job.videos ?? (job.videoFilename
+      ? [
+          {
+            id: "cam-1",
+            filename: job.videoFilename,
+            opfsPath: `jobs/${job.id}/video`,
+            color: "#3b6dff",
+            sync: job.sync,
+            durationS: job.durationS,
+            width: job.width,
+            height: job.height,
+          },
+        ]
+      : []);
+
+  if (videos.length === 0) {
+    return (
+      <div className="rounded-md border border-rule px-4 py-6 text-center font-mono text-xs text-ink-3">
+        No cams yet.
+      </div>
+    );
+  }
+
+  // Single-cam: keep the compact look familiar from the original page.
+  if (videos.length === 1) {
+    const cam = videos[0];
+    return (
+      <div className="grid sm:grid-cols-3 gap-3">
+        <MonoReadout
+          label="OFFSET"
+          value={cam.sync ? `${cam.sync.offsetMs.toFixed(1)} ms` : "—"}
+          align="left"
+        />
+        <MonoReadout
+          label="CONFIDENCE"
+          value={cam.sync ? `${(cam.sync.confidence * 100).toFixed(0)}%` : "—"}
+          align="left"
+        />
+        <MonoReadout
+          label="DRIFT"
+          value={
+            cam.sync
+              ? `${((cam.sync.driftRatio - 1) * 100).toFixed(3)}%`
+              : "—"
+          }
+          align="left"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-rule overflow-hidden bg-paper-hi shadow-panel">
+      <div className="bg-paper-panel border-b border-rule px-3 py-2 flex items-center gap-2">
+        <span className="font-display tracking-label uppercase text-[10px] text-ink-2">
+          Sync · {videos.length} cams
+        </span>
+        <RuleStrip count={20} className="text-rule flex-1 max-w-[180px]" />
+      </div>
+      <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-4 gap-y-0 text-sm">
+        <HeaderCell>CAM</HeaderCell>
+        <HeaderCell>SOURCE</HeaderCell>
+        <HeaderCell align="right">OFFSET</HeaderCell>
+        <HeaderCell align="right">DRIFT</HeaderCell>
+        <HeaderCell align="right">CONF</HeaderCell>
+        {videos.map((cam, i) => (
+          <SyncRow key={cam.id} cam={cam} index={i} last={i === videos.length - 1} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HeaderCell({
+  children,
+  align = "left",
+}: {
+  children: React.ReactNode;
+  align?: "left" | "right";
+}) {
+  return (
+    <div
+      className={[
+        "px-3 py-2 font-display tracking-label uppercase text-[10px] text-ink-3 border-b border-rule bg-paper-panel/60",
+        align === "right" ? "text-right" : "text-left",
+      ].join(" ")}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SyncRow({ cam, index, last }: { cam: VideoAsset; index: number; last: boolean }) {
+  const sync = cam.sync;
+  const border = last ? "" : "border-b border-rule/50";
+  return (
+    <>
+      {/* CAM cell — color stripe + name */}
+      <div className={`px-3 py-3 ${border} flex items-center gap-2`}>
+        <span
+          className="w-1.5 h-7 rounded-sm shrink-0"
+          style={{
+            background: cam.color,
+            boxShadow: `0 0 4px ${cam.color}55`,
+          }}
+        />
+        <span className="font-display font-semibold text-xs tracking-label uppercase">
+          Cam {index + 1}
+        </span>
+      </div>
+      {/* SOURCE cell — filename */}
+      <div
+        className={`px-3 py-3 ${border} font-mono text-xs text-ink-2 truncate self-center`}
+        title={cam.filename}
+      >
+        {cam.filename}
+      </div>
+      {/* OFFSET */}
+      <div className={`px-3 py-3 ${border} text-right font-mono tabular text-ink self-center`}>
+        {sync ? `${sync.offsetMs.toFixed(1)} ms` : "—"}
+      </div>
+      {/* DRIFT */}
+      <div className={`px-3 py-3 ${border} text-right font-mono tabular text-ink self-center`}>
+        {sync ? `${((sync.driftRatio - 1) * 100).toFixed(3)}%` : "—"}
+      </div>
+      {/* CONFIDENCE — three-LED bar like a hardware tally */}
+      <div className={`px-3 py-3 ${border} text-right self-center`}>
+        {sync ? <ConfidenceLeds value={sync.confidence} /> : <span className="font-mono text-ink-3">—</span>}
+      </div>
+    </>
+  );
+}
+
+/** 3-LED confidence indicator. Matches the analog Tally aesthetic of the
+ * Lane-Headers in the timeline. */
+function ConfidenceLeds({ value }: { value: number }) {
+  const pct = Math.round(value * 100);
+  // High >= 70, Mid 30..70, Low < 30
+  const lit = value >= 0.7 ? 3 : value >= 0.3 ? 2 : 1;
+  const color = lit === 3 ? "#34D399" : lit === 2 ? "#FFB020" : "#FF3326";
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="inline-flex gap-[3px]">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="block w-[6px] h-[6px] rounded-full"
+            style={{
+              background: i < lit ? color : "#3A352E",
+              boxShadow: i < lit ? `0 0 4px ${color}` : "none",
+              opacity: i < lit ? 1 : 0.35,
+            }}
+          />
+        ))}
+      </span>
+      <span className="font-mono tabular text-ink text-xs">{pct}%</span>
     </span>
   );
 }
