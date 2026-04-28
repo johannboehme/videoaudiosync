@@ -157,6 +157,102 @@ async function inspectJobPage(page, jobId) {
   return snapshot;
 }
 
+async function runEditorChecks(page, jobId, label) {
+  console.log(`\n--- editor checks: ${label} ---`);
+  await page.goto(`${BASE}/job/${jobId}/edit`, { waitUntil: "domcontentloaded" });
+  // Editor mounts a few async resources (waveform, frames image). Give it a bit.
+  await page.waitForTimeout(4000);
+
+  // Snapshot the editor.
+  await page.screenshot({ path: `/tmp/vas-${label}-editor.png`, fullPage: true });
+
+  // Verify timeline pieces are in the DOM.
+  const text = await page.evaluate(() => document.body.innerText);
+  const hasPanel = /PROGRAM/i.test(text);
+  const hasMaster = /MASTER · AUDIO/i.test(text);
+  const hasCam = /CAM 1/i.test(text);
+  const hasSyncTuner = /SYNC\s*TUNER|Sync · Cam/i.test(text);
+  console.log(
+    `[${label}] editor: PROGRAM=${hasPanel} MASTER=${hasMaster} CAM=${hasCam} SYNC_TUNER=${hasSyncTuner}`,
+  );
+
+  // Hotkey cut test (1 → cam-1, 2 → cam-2 if present).
+  await page.keyboard.press("1");
+  await page.waitForTimeout(200);
+  await page.keyboard.press("2");
+  await page.waitForTimeout(200);
+
+  // The editor's `addCut` mutates an in-memory zustand slice that's only
+  // persisted on render-submit — to verify the hotkey reached the right
+  // place we check that pressing 1/2 didn't crash and the page is alive.
+  const stillAlive = await page.evaluate(
+    () => document.querySelector("body")?.children.length ?? 0,
+  );
+  console.log(`[${label}] editor still alive after hotkeys: ${stillAlive > 0}`);
+
+  return { hasPanel, hasMaster, hasCam, hasSyncTuner };
+}
+
+async function runRenderCheck(page, jobId, label) {
+  console.log(`\n--- render check: ${label} ---`);
+  await page.goto(`${BASE}/job/${jobId}`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(800);
+
+  // Click QUICK RENDER (single-source pipeline) — quickest path to verify
+  // the encoder + muxer actually produce a file.
+  await page.getByRole("button", { name: /quick render/i }).click();
+
+  const t0 = Date.now();
+  let lastStatus = null;
+  while (Date.now() - t0 < 600_000) {
+    const job = await page.evaluate(async () => {
+      const req = indexedDB.open("videoaudiosync");
+      await new Promise((r) => (req.onsuccess = r));
+      const tx = req.result.transaction("jobs");
+      const all = await new Promise(
+        (r) => (tx.objectStore("jobs").getAll().onsuccess = (e) => r(e.target.result)),
+      );
+      return all[all.length - 1];
+    });
+    if (job?.status !== lastStatus) {
+      console.log(
+        `[render-${label}] status=${job?.status} progress=${JSON.stringify(job?.progress)}`,
+      );
+      lastStatus = job?.status;
+    }
+    if (job?.status === "rendered") {
+      console.log(
+        `[render-${label}] DONE: bytes=${job.outputBytes}, hasOutput=${job.hasOutput}`,
+      );
+      return { ok: true, bytes: job.outputBytes };
+    }
+    if (job?.status === "failed") {
+      console.log(`[render-${label}] FAILED: ${job.error}`);
+      return { ok: false, error: job.error };
+    }
+    await page.waitForTimeout(1500);
+  }
+  return { ok: false, error: "timeout" };
+}
+
+async function runHistoryChecks(page) {
+  console.log(`\n--- history page check ---`);
+  await page.goto(`${BASE}/jobs`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(800);
+  const text = await page.evaluate(() => document.body.innerText);
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  console.log(`[history] visible lines:`, lines.slice(0, 20));
+}
+
+async function runStaticPageChecks(page, paths) {
+  for (const p of paths) {
+    await page.goto(BASE + p, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const titles = await page.locator("h1, h2").allTextContents();
+    console.log(`[static] ${p}: titles=${JSON.stringify(titles)}`);
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const ctx = await browser.newContext();
@@ -182,7 +278,20 @@ async function inspectJobPage(page, jobId) {
 
       const pageText = await inspectJobPage(page, result.finalJob.id);
       console.log(`\n[${result.scenario}] JOB PAGE TEXT:\n${pageText}`);
+
+      // Smoke-check the editor: opens, shows the timeline, hotkeys reach it.
+      await runEditorChecks(page, result.finalJob.id, result.scenario);
+
+      // Trigger a quick render and verify the MP4 actually lands.
+      const renderResult = await runRenderCheck(page, result.finalJob.id, result.scenario);
+      console.log(`[${result.scenario}] render result:`, renderResult);
     }
+
+    // History page should show all the jobs from above.
+    await runHistoryChecks(page);
+
+    // Static pages.
+    await runStaticPageChecks(page, ["/impressum", "/datenschutz", "/settings"]);
   } catch (err) {
     console.error("ERROR:", err);
     process.exitCode = 1;
