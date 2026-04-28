@@ -561,24 +561,39 @@ export async function runEditRender(
           // frames to OPFS — a 2–10 s "silent" stretch on a typical
           // export that left the user wondering if anything was happening.
           if (p.stage === "video-encode" && p.framesTotal > 0) {
-            const pct = 25 + Math.floor((p.framesDone / p.framesTotal) * 65);
+            const pct = 25 + Math.floor((p.framesDone / p.framesTotal) * 60);
             if (pct === lastDispatchedPct) return;
             lastDispatchedPct = pct;
             void reportProgress(jobId, {
-              pct: Math.min(89, pct),
+              pct: Math.min(85, pct),
               stage: "encoding",
               framesDone: p.framesDone,
               framesTotal: p.framesTotal,
             });
-          } else if (p.stage === "muxing") {
-            if (lastDispatchedPct === 92) return;
-            lastDispatchedPct = 92;
+          } else if (p.stage === "encoder-flush") {
+            if (lastDispatchedPct === 87) return;
+            lastDispatchedPct = 87;
+            void reportProgress(jobId, { pct: 87, stage: "encoder-flush" });
+          } else if (p.stage === "muxing" && p.framesTotal > 0) {
+            // Streaming-mux: chunks-written / total-chunks scaled into 88-94 %.
+            const pct = 88 + Math.floor((p.framesDone / p.framesTotal) * 6);
+            if (pct === lastDispatchedPct) return;
+            lastDispatchedPct = pct;
             void reportProgress(jobId, {
-              pct: 92,
+              pct: Math.min(94, pct),
               stage: "muxing",
               framesDone: p.framesDone,
               framesTotal: p.framesTotal,
             });
+          } else if (p.stage === "muxing") {
+            // Fallback for the initial muxing event before chunk progress.
+            if (lastDispatchedPct === 88) return;
+            lastDispatchedPct = 88;
+            void reportProgress(jobId, { pct: 88, stage: "muxing" });
+          } else if (p.stage === "finalizing") {
+            if (lastDispatchedPct === 95) return;
+            lastDispatchedPct = 95;
+            void reportProgress(jobId, { pct: 95, stage: "finalizing" });
           } else if (p.stage === "audio-encode") {
             if (lastDispatchedPct === 18) return;
             lastDispatchedPct = 18;

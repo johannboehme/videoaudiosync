@@ -682,6 +682,14 @@ export async function editRenderMulti(
       }
     }
 
+    // The encoder still has pending frames to flush — on a 90 s clip
+    // that's 1-3 s of opaque waiting. Surface it as its own stage so the
+    // progress bar moves off the last frame-encode tick.
+    input.onProgress?.({
+      stage: "encoder-flush",
+      framesDone: framesEmitted,
+      framesTotal: totalFrames,
+    });
     const encodedVideo = await encoder.finish();
     if (!encodedVideo.description) {
       throw new Error("Video encoder produced no description");
@@ -722,8 +730,23 @@ export async function editRenderMulti(
         description: encodedVideo.description,
       },
     } as unknown as Parameters<Muxer<MuxTarget>["addVideoChunkRaw"]>[4];
+    // Push chunks in batches so the progress event fires periodically
+    // while the muxer streams to FileSystemWritableFileStream — without
+    // this, longer renders sit silent for several seconds while the file
+    // is written.
+    const totalChunks = encodedVideo.chunks.length + encodedAudio.chunks.length;
+    let chunksWritten = 0;
+    const reportMuxProgress = () => {
+      input.onProgress?.({
+        stage: "muxing",
+        framesDone: chunksWritten,
+        framesTotal: totalChunks,
+      });
+    };
     for (const c of encodedVideo.chunks) {
       muxer.addVideoChunkRaw(c.data, c.type, c.timestampUs, c.durationUs, videoMeta);
+      chunksWritten++;
+      if ((chunksWritten & 0x3f) === 0) reportMuxProgress();
     }
 
     const audioMeta = {
@@ -736,8 +759,15 @@ export async function editRenderMulti(
     } as unknown as Parameters<Muxer<MuxTarget>["addAudioChunkRaw"]>[4];
     for (const c of encodedAudio.chunks) {
       muxer.addAudioChunkRaw(c.data, c.type, c.timestampUs, c.durationUs, audioMeta);
+      chunksWritten++;
+      if ((chunksWritten & 0x3f) === 0) reportMuxProgress();
     }
 
+    input.onProgress?.({
+      stage: "finalizing",
+      framesDone: chunksWritten,
+      framesTotal: totalChunks,
+    });
     muxer.finalize();
 
     let outputBytes: Uint8Array | null = null;
