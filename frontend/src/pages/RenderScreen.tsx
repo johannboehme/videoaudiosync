@@ -13,9 +13,11 @@ import {
 const STAGE_LABELS: Record<string, string> = {
   "render-prep": "Vorbereiten",
   "audio-decode": "Audio dekodieren",
+  "audio-encode": "Audio kodieren",
   "energy-curves": "Audio-Energie analysieren",
   "extracting-frames": "Vorschaubilder extrahieren",
   encoding: "Video kodieren",
+  muxing: "Audio + Video zusammenführen",
   writing: "MP4 schreiben",
   rendered: "Fertig",
   cancelled: "Abgebrochen",

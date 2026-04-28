@@ -556,16 +556,34 @@ export async function runEditRender(
         const msg = e.data;
         if (msg.type === "progress") {
           const p = msg.progress;
-          if (p.stage !== "video-encode" || p.framesTotal <= 0) return;
-          const pct = 25 + Math.floor((p.framesDone / p.framesTotal) * 65);
-          if (pct === lastDispatchedPct) return;
-          lastDispatchedPct = pct;
-          void reportProgress(jobId, {
-            pct: Math.min(89, pct),
-            stage: "encoding",
-            framesDone: p.framesDone,
-            framesTotal: p.framesTotal,
-          });
+          // Map worker stages to UI percentages so the bar doesn't sit at
+          // 89 % while the encoder flushes + the muxer writes 90 s of
+          // frames to OPFS — a 2–10 s "silent" stretch on a typical
+          // export that left the user wondering if anything was happening.
+          if (p.stage === "video-encode" && p.framesTotal > 0) {
+            const pct = 25 + Math.floor((p.framesDone / p.framesTotal) * 65);
+            if (pct === lastDispatchedPct) return;
+            lastDispatchedPct = pct;
+            void reportProgress(jobId, {
+              pct: Math.min(89, pct),
+              stage: "encoding",
+              framesDone: p.framesDone,
+              framesTotal: p.framesTotal,
+            });
+          } else if (p.stage === "muxing") {
+            if (lastDispatchedPct === 92) return;
+            lastDispatchedPct = 92;
+            void reportProgress(jobId, {
+              pct: 92,
+              stage: "muxing",
+              framesDone: p.framesDone,
+              framesTotal: p.framesTotal,
+            });
+          } else if (p.stage === "audio-encode") {
+            if (lastDispatchedPct === 18) return;
+            lastDispatchedPct = 18;
+            void reportProgress(jobId, { pct: 18, stage: "audio-encode" });
+          }
         } else if (msg.type === "done") {
           resolve();
         } else if (msg.type === "error") {

@@ -546,11 +546,14 @@ export async function editRenderMulti(
   }
 
   // Audio: master audio is the canonical timeline. We don't time-stretch
-  // it — each cam compensates for its own driftRatio in the frame lookup
-  // below (via `camSourceTimeUs`). The single global driftRatio that the
-  // legacy single-cam render used is irrelevant here: with two or more
-  // cams there's no single ratio that satisfies all of them, and bending
-  // the audio to match cam-1 made cam-2 drift the other direction.
+  // or offset-shift it — each cam already encodes its own sync delay via
+  // `masterStartS` (cam frame lookups go through `camSourceTimeUs` below)
+  // and its own clock drift via `driftRatio`. Applying the legacy single-
+  // cam `offsetMs` to the audio on top of that double-applies cam-1's
+  // sync: the audio gets shifted while the cam frame lookup *also*
+  // shifts to compensate, and the two shifts compound — what looked
+  // like correct alignment in the preview ended up several seconds out
+  // in the export.
   input.onProgress?.({ stage: "audio-decode", framesDone: 0, framesTotal: 0 });
   let audio: { pcm: Float32Array; sampleRate: number; channels: number };
   if (input.audioPcm) {
@@ -561,14 +564,6 @@ export async function editRenderMulti(
     throw new Error("editRenderMulti: either audioFile or audioPcm is required");
   }
   let pcm: Float32Array | null = audio.pcm;
-  if (input.offsetMs !== 0) {
-    pcm = applyAudioOffsetInterleaved(
-      pcm,
-      audio.channels,
-      audio.sampleRate,
-      input.offsetMs,
-    );
-  }
   pcm = applySegments(pcm, audio.channels, audio.sampleRate, input.segments);
 
   input.onProgress?.({ stage: "audio-encode", framesDone: 0, framesTotal: 0 });
