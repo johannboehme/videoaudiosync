@@ -30,6 +30,14 @@ struct SyncResultDto {
     drift_ratio: f64,
     method: String,
     warning: Option<String>,
+    candidates: Vec<MatchCandidateDto>,
+}
+
+#[derive(Serialize)]
+struct MatchCandidateDto {
+    offset_ms: f64,
+    confidence: f64,
+    overlap_frames: u32,
 }
 
 impl From<sync::SyncResult> for SyncResultDto {
@@ -40,6 +48,15 @@ impl From<sync::SyncResult> for SyncResultDto {
             drift_ratio: r.drift_ratio,
             method: r.method,
             warning: r.warning,
+            candidates: r
+                .candidates
+                .iter()
+                .map(|c| MatchCandidateDto {
+                    offset_ms: c.offset_ms,
+                    confidence: c.confidence,
+                    overlap_frames: c.overlap_frames,
+                })
+                .collect(),
         }
     }
 }

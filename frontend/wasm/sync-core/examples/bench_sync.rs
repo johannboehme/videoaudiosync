@@ -200,7 +200,10 @@ fn build_scenarios() -> Vec<Scenario> {
         });
     }
 
-    // 15. Master + master (query appears twice in ref) — algo should find one.
+    // 15. Master + master (query appears twice in ref) — both alignments
+    //     are valid; the algorithm should report ONE of them. We use a
+    //     custom expected_offset_ms tolerance only for this scenario;
+    //     either ~0 or ~master_len + gap is acceptable.
     {
         let mut ref_pcm = master_30s.clone();
         ref_pcm.extend(silence_then(2.0, &[]));
@@ -209,9 +212,7 @@ fn build_scenarios() -> Vec<Scenario> {
             name: "master-twice-in-ref".into(),
             ref_pcm,
             query_pcm: master_30s.clone(),
-            // Either occurrence is acceptable — pick the closer one.
             expected_offset_ms: 0.0,
-            // Generous: either 0 or 32_000ms is acceptable.
             tolerance_ms: 35_000.0,
         });
     }
@@ -329,12 +330,17 @@ fn build_scenarios() -> Vec<Scenario> {
 // Signal generators
 
 fn make_song(duration_s: f32, seed: u64, _percussive: bool) -> Vec<f32> {
-    // Random walk through a pentatonic scale, with light click on every beat.
+    // Music-like signal: a melody (varied note lengths drawn from a pentatonic
+    // scale with octave jumps) over a slowly evolving bass drone. No fixed
+    // bar period — avoids the synthetic self-similarity that earlier
+    // versions of this fixture produced. Approximates the spectral richness
+    // and lack of strict periodicity of recorded music far more than the
+    // older "note every 0.4 s + click every 0.5 s" pattern did.
     let n = (duration_s * SR as f32) as usize;
     let mut y = vec![0.0f32; n];
-    let scale = [220.0_f32, 277.18, 329.63, 392.0, 466.16];
-    let note_dur = 0.4_f32;
-    let click_period = 0.5_f32;
+    let scale_lo = [220.0_f32, 246.94, 277.18, 329.63, 369.99];
+    let scale_hi = [440.0_f32, 493.88, 554.37, 659.25, 739.99];
+    let note_durs = [0.18_f32, 0.22, 0.30, 0.34, 0.42, 0.55];
     let mut state = seed.wrapping_mul(0x9E3779B97F4A7C15);
     let mut rand_u32 = move || {
         state ^= state << 13;
@@ -343,34 +349,33 @@ fn make_song(duration_s: f32, seed: u64, _percussive: bool) -> Vec<f32> {
         state as u32
     };
     let mut t_cursor = 0.0f32;
+    let mut bass_freq = scale_lo[0] * 0.5; // sub-bass drone
     while t_cursor < duration_s {
+        // Pick scale + octave + duration randomly. Octave jumps + variable
+        // durations break the strict-period self-similarity.
+        let high_octave = rand_u32() % 100 < 35;
+        let scale = if high_octave { &scale_hi } else { &scale_lo };
         let f = scale[(rand_u32() as usize) % scale.len()];
+        let nd = note_durs[(rand_u32() as usize) % note_durs.len()];
+        // Occasional bass shift (every ~2-3 s).
+        if rand_u32() % 100 < 8 {
+            bass_freq = scale_lo[(rand_u32() as usize) % scale_lo.len()] * 0.5;
+        }
         let start = (t_cursor * SR as f32) as usize;
-        let end = ((t_cursor + note_dur) * SR as f32) as usize;
+        let end = ((t_cursor + nd) * SR as f32) as usize;
         let end = end.min(n);
         for i in start..end {
             let t = i as f32 / SR as f32;
-            let env = (1.0 - (t - t_cursor) / note_dur).max(0.0);
-            // Tone + 2nd harmonic for spectral richness.
-            let s = 0.4 * (2.0 * PI * f * t).sin() + 0.15 * (2.0 * PI * 2.0 * f * t).sin();
-            y[i] += s * env;
+            // Plucked-tone envelope: sharp attack, exponential decay.
+            let local_t = t - t_cursor;
+            let env = (-local_t / (nd * 0.6)).exp();
+            let melody = 0.35 * (2.0 * PI * f * t).sin()
+                + 0.12 * (2.0 * PI * 2.0 * f * t).sin()
+                + 0.06 * (2.0 * PI * 3.0 * f * t).sin();
+            let bass = 0.18 * (2.0 * PI * bass_freq * t).sin();
+            y[i] += melody * env + bass * 0.6;
         }
-        t_cursor += note_dur;
-    }
-    // Click track on top.
-    let mut t = click_period;
-    while t < duration_s {
-        let click_start = (t * SR as f32) as usize;
-        let click_len = (0.005 * SR as f32) as usize;
-        for i in 0..click_len {
-            let idx = click_start + i;
-            if idx >= n {
-                break;
-            }
-            let env = (1.0 - i as f32 / click_len as f32).max(0.0);
-            y[idx] += env * 0.6 * (2.0 * PI * 2000.0 * (i as f32 / SR as f32)).sin();
-        }
-        t += click_period;
+        t_cursor += nd;
     }
     y
 }

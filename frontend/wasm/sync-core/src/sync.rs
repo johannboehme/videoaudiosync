@@ -150,14 +150,32 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         &onset_ref,
         &onset_query,
         opts.sr,
-        /*max_alternates=*/ 5,
+        /*max_alternates=*/ 10,
     );
 
     let (mut lag, mut confidence, mut candidates) = match report {
         Some(r) => {
+            // Primary stays whatever chroma+onset picked. Sample-level
+            // Pearson re-ranking was tried and made primaries WORSE on
+            // real music (raw audio inner product is too sensitive to
+            // amplitude/noise differences) — but the same scoring is a
+            // useful confidence reading on each surfaced candidate, so
+            // the UI's snap-to-alternate-match list can rank them.
             let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
                 .chain(r.alternates.iter())
-                .map(|c| cand_to_out(c, opts.sr))
+                .map(|c| {
+                    let mut out = cand_to_out(c, opts.sr);
+                    let sample = sample_level_pearson(
+                        &ref_y,
+                        &query_y,
+                        c.offset_samples,
+                    );
+                    // Surface the higher of chroma-NCC and sample-NCC so
+                    // alts that look strong at the audio level are visibly
+                    // ranked higher in the snap UI.
+                    out.confidence = (sample as f64).max(c.ncc as f64);
+                    out
+                })
                 .collect();
             let primary_lag = r.primary.offset_samples;
             let primary_conf = r.primary.ncc as f64;
@@ -186,19 +204,13 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         }
     }
 
-    // Drift refinement is only useful when (a) we have a confident chroma
-    // alignment to seed it, and (b) the drift refinement itself agrees
-    // closely with that seed. Without (a), the windowed correlation has
-    // its own unnormalized-correlation bias and can drag a perfectly good
-    // NCC result off-target. Threshold mirrors `confidence_threshold`.
+    // Drift refinement seeded by the primary chroma+onset candidate. The
+    // ±1 s sanity check stops drift from wandering into another local
+    // lock-in if its per-window xcorr disagrees badly with the seed.
     if confidence >= opts.confidence_threshold {
         if let Some(refined) =
             windowed_drift_refinement(&ref_y, &query_y, opts.sr, lag, DriftConfig::default())
         {
-            // Tighter sanity check: only trust drift refinement if its
-            // offset is within 1s of NCC's primary. Anything bigger means
-            // the per-window xcorr locked onto a different (probably
-            // edge-biased) lag — drop it.
             if (refined.offset_samples - lag).abs() <= opts.sr as i64 {
                 lag = refined.offset_samples;
                 drift = refined.drift_ratio;
@@ -234,6 +246,47 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         method,
         warning,
         candidates,
+    }
+}
+
+/// Pearson-style normalized correlation of two PCM signals at a specific
+/// integer-sample lag. Returns a value in [-1, 1]; ≥ 0 means the signals
+/// are positively correlated over the overlap region.
+///
+/// Used as the disambiguator after chroma+onset peak picking. Chroma
+/// rewards beat-grid-aligned positions equally for repetitive music;
+/// sample-level inner product is much more sensitive to where transients
+/// actually fall (a one-beat shift drops correlation toward zero).
+///
+/// Implementation: O(N) loop. Skips the work entirely if the overlap
+/// would be tiny (< 0.5 s).
+fn sample_level_pearson(ref_y: &[f32], query_y: &[f32], lag_samples: i64) -> f32 {
+    let n_r = ref_y.len() as i64;
+    let n_q = query_y.len() as i64;
+    let start = (-lag_samples).max(0);
+    let end = n_r.min(n_q - lag_samples);
+    if end <= start {
+        return 0.0;
+    }
+    let n = (end - start) as usize;
+    if n < 11_025 {
+        return 0.0;
+    } // < 0.5 s @ 22050 Hz
+    let mut dot = 0.0_f64;
+    let mut sum_r2 = 0.0_f64;
+    let mut sum_q2 = 0.0_f64;
+    for i in start..end {
+        let r = ref_y[i as usize] as f64;
+        let q = query_y[(i + lag_samples) as usize] as f64;
+        dot += r * q;
+        sum_r2 += r * r;
+        sum_q2 += q * q;
+    }
+    let denom = (sum_r2 * sum_q2).sqrt();
+    if denom < 1e-12 {
+        0.0
+    } else {
+        (dot / denom).clamp(-1.0, 1.0) as f32
     }
 }
 

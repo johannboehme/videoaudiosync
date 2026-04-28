@@ -31,12 +31,17 @@ use crate::xcorr::correlate_full;
 const MIN_OVERLAP_FRACTION: f32 = 0.20;
 
 /// Minimum spacing between alternate candidates, in seconds. Two peaks
-/// closer than this collapse into one (the higher).
-const MIN_PEAK_SPACING_S: f32 = 1.0;
+/// closer than this collapse into one (the higher). 0.25 s lets us
+/// surface near-duplicate peaks at sub-beat distances — important for
+/// the snap-to-alternate UI on rhythmic music where beat-aligned wrong
+/// peaks cluster around the true peak.
+const MIN_PEAK_SPACING_S: f32 = 0.25;
 
 /// Alternate candidates with NCC below `top_ncc * REL_THRESHOLD` are
-/// dropped. 0.6 keeps anything above 60 % of the leader.
-const REL_THRESHOLD: f32 = 0.6;
+/// dropped. 0.3 is loose enough to surface beat-shifted near-misses, which
+/// is what the snap-to-alternate-match UI wants to suggest when chroma's
+/// global peak picks the wrong beat in a self-similar piece of music.
+const REL_THRESHOLD: f32 = 0.3;
 
 #[derive(Debug, Clone)]
 pub struct MatchCandidate {
@@ -216,7 +221,13 @@ pub fn align_with_onset(
         && !onset_q.is_empty()
         && onset_r.len() + onset_q.len() - 1 == ncc_chroma.len()
     {
-        const ONSET_WEIGHT: f32 = 0.4;
+        // Onset carries more weight than chroma here — chroma rewards
+        // any beat-grid-aligned position equally for repetitive material,
+        // and onset is the only feature that knows WHERE in time the
+        // unique transients of the recording sit. Real-music bench on
+        // 30 s pop chunks @ 64–128 BPM needs onset ≥ chroma to consistently
+        // pick the true alignment over a beat-shifted impostor.
+        const ONSET_WEIGHT: f32 = 0.85;
         // Normalize the envelopes so their NCC peak ≈ 1 (matches chroma's range).
         let r_norm_sq: f64 = onset_r.iter().map(|&x| x as f64 * x as f64).sum();
         let q_norm_sq: f64 = onset_q.iter().map(|&x| x as f64 * x as f64).sum();
