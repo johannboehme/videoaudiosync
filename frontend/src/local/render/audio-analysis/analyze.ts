@@ -138,7 +138,13 @@ export function analyzeAudio(
   const beatFrames = seedTempo
     ? trackBeatFrames(onsetStrength, framesPerSec, seedTempo, audioStartFrame)
     : [];
-  const beats = beatFrames.map(frameToSec);
+  // Sub-frame refinement: the DP tracker reports beats as integer frame
+  // indices, so when the music's true period sits between two integer
+  // values (e.g. 14.985 frames at 30 fps for a real 120 BPM track),
+  // every beat snaps to the nearer integer and the regression slope
+  // picks up a few-percent quantization bias. Parabolic-fit each peak
+  // against its two neighbours to recover ~0.1-frame resolution.
+  const beats = beatFrames.map((f) => frameToSec(refineBeatFrame(onsetStrength, f)));
 
   // Regression refit: solve (period, phase) such that beats[k] ≈ phase + k·period
   // by least squares. Averaging across many beats gives sub-frame precision
@@ -214,6 +220,30 @@ function maskFirst(arr: number[], n: number): number[] {
   const out = arr.slice();
   for (let i = 0; i < n && i < out.length; i++) out[i] = 0;
   return out;
+}
+
+/**
+ * Parabolic-interpolate the local onset-strength peak around `idx` to a
+ * fractional frame position. The DP beat-tracker quantizes every beat to
+ * an integer frame; without this refinement the regression slope picks
+ * up systematic bias whenever the true beat-period falls between two
+ * integer frame counts (e.g. 120 BPM at 30 fps = 14.985 frames). Result
+ * is clamped to ±0.5 frames so a misaligned peak can't drag a beat onto
+ * the wrong side of the next analysis window.
+ */
+function refineBeatFrame(strength: number[], idx: number): number {
+  if (idx <= 0 || idx >= strength.length - 1) return idx;
+  const ym1 = strength[idx - 1];
+  const y0 = strength[idx];
+  const yp1 = strength[idx + 1];
+  // Only refine when idx is actually a local maximum — otherwise the
+  // parabolic fit slides the beat onto a neighbour that wasn't the
+  // tracker's choice for a reason.
+  if (y0 < ym1 || y0 < yp1) return idx;
+  const denom = ym1 - 2 * y0 + yp1;
+  if (denom === 0) return idx;
+  const offset = (0.5 * (ym1 - yp1)) / denom;
+  return idx + Math.max(-0.5, Math.min(0.5, offset));
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -570,43 +600,45 @@ function trackBeatFrames(
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fit `beats[k] ≈ phase + k·period` by least squares so the BPM (and the
- * grid anchor that snap targets are drawn from) reflects the *actual* beat
- * positions rather than an autocorrelation peak quantized to one frame.
+ * Recover the true (period, phase) from the detected beats. Naive
+ * least-squares through every beat is sensitive to a single bad
+ * detection — if the DP-tracker drops or doubles a beat anywhere in the
+ * chain (its ±25% period window allows that) the slope absorbs the gap
+ * and biases BPM by ~0.2 across the rest of the track, compounding into
+ * ≈100 ms of cut-vs-beat drift over a minute.
  *
- * For tracks with intro silence the autocorrelation phase is wrong by up
- * to a beat-period; the regression intercept lands on the first real
- * beat. For BPM the autocorrelation peak has ~0.1-frame precision after
- * parabolic refinement, which compounds to hundreds of ms of grid drift
- * across a few minutes — averaging across N beats gives O(1/√N) precision
- * and effectively eliminates the drift.
+ * The interval distribution on real music isn't symmetric either — it
+ * has a long right tail (~3-5 % of intervals land 1 frame late because
+ * the onset peak ekes one window further than the true beat). The mean
+ * picks that bias up; the **median** ignores it. So: period = median of
+ * consecutive-beat intervals; phase = mean residual of (beats[k] − k·period)
+ * so phase noise still averages out across all beats.
  */
 function refineTempoFromBeats(beats: number[], seed: Tempo): Tempo {
   if (beats.length < 2) return seed;
-  const n = beats.length;
-  let sumK = 0;
-  let sumK2 = 0;
-  let sumT = 0;
-  let sumKT = 0;
-  for (let k = 0; k < n; k++) {
-    const t = beats[k];
-    sumK += k;
-    sumK2 += k * k;
-    sumT += t;
-    sumKT += k * t;
-  }
-  const denom = n * sumK2 - sumK * sumK;
-  if (denom === 0) return seed;
-  const period = (n * sumKT - sumK * sumT) / denom;
+
+  const intervals: number[] = [];
+  for (let i = 1; i < beats.length; i++) intervals.push(beats[i] - beats[i - 1]);
+  const sorted = [...intervals].sort((a, b) => a - b);
+  // Median for an even-length list: average of the two middle values.
+  const mid = sorted.length >> 1;
+  const period =
+    sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+
   if (!isFinite(period) || period <= 0) return seed;
-  const phase = (sumT - period * sumK) / n;
   const bpm = 60 / period;
 
-  // Sanity check: the refit must stay inside the search window of the
-  // autocorrelation (60..200 BPM). If it bolts somewhere weird, keep the
-  // seed BPM but still adopt the regression intercept as phase.
+  // Phase: mean of residuals (beats[k] - k·period). Robust phase given a
+  // robust period — averaging over all beats keeps the noise floor low
+  // even though we trimmed when computing the period.
+  let phaseSum = 0;
+  for (let k = 0; k < beats.length; k++) phaseSum += beats[k] - k * period;
+  const phase = phaseSum / beats.length;
+
+  // Sanity check: if the trimmed mean lands somewhere absurd, keep the
+  // seed BPM but still adopt the new phase from the actual beats.
   if (bpm < 30 || bpm > 240) {
-    return { ...seed, phase };
+    return { ...seed, phase: beats[0] };
   }
 
   return {
