@@ -2,16 +2,10 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChunkyButton } from "./ChunkyButton";
-import {
-  ChevronLeftIcon,
-  DownloadIcon,
-  SyncIcon,
-} from "./icons";
+import { ChevronLeftIcon, DownloadIcon } from "./icons";
 import { BottomSheet } from "./BottomSheet";
-import { useEditorStore, type PanelTab } from "../store";
 
 const SIDE_PANEL_COLLAPSE_KEY = "editor.sidepanel.collapsed";
-const SLIM_RAIL_W = 36;
 const EXPANDED_W = 380;
 
 function readCollapsed(): boolean {
@@ -57,12 +51,14 @@ export function EditorShell({
         submitting={submitting}
       />
 
-      {/* Desktop layout (lg+) */}
+      {/* Desktop layout (lg+). When collapsed the side column is 0 px so
+       *  the timeline and preview claim every available pixel; the
+       *  expand-handle floats over the right edge as a small grab tab. */}
       <div
-        className="flex-1 hidden lg:grid gap-3 px-3 pb-3 overflow-hidden min-h-0 transition-[grid-template-columns] duration-200 ease-out"
+        className="relative flex-1 hidden lg:grid gap-3 px-3 pb-3 overflow-hidden min-h-0 transition-[grid-template-columns] duration-200 ease-out"
         style={{
           gridTemplateColumns: sideCollapsed
-            ? `1fr ${SLIM_RAIL_W}px`
+            ? `1fr 0px`
             : `1fr ${EXPANDED_W}px`,
         }}
       >
@@ -77,18 +73,30 @@ export function EditorShell({
             {timeline}
           </div>
         </div>
-        <div className="relative min-h-0">
-          {sideCollapsed ? (
-            <SlimRail onExpand={() => setSideCollapsed(false)} />
-          ) : (
-            <div className="relative h-full overflow-hidden">
-              <CollapseTab
-                onCollapse={() => setSideCollapsed(true)}
-              />
-              <div className="h-full overflow-hidden">{sidePanel}</div>
-            </div>
-          )}
+        <div
+          className={[
+            "relative min-h-0 overflow-hidden",
+            sideCollapsed ? "pointer-events-none" : "",
+          ].join(" ")}
+          aria-hidden={sideCollapsed}
+        >
+          <div
+            className="h-full overflow-hidden transition-opacity duration-150"
+            style={{ opacity: sideCollapsed ? 0 : 1 }}
+          >
+            {sidePanel}
+          </div>
         </div>
+
+        {/* Expand/collapse handle. Floats outside the grid columns so it
+         *  doesn't reserve any layout space — pinned to the right edge
+         *  of the editor content, vertically centered. Slides with the
+         *  panel when expanded so it always sits *just* outside the
+         *  panel's left edge. */}
+        <PanelHandle
+          collapsed={sideCollapsed}
+          onToggle={() => setSideCollapsed((c) => !c)}
+        />
       </div>
 
       {/* Tablet / mobile layout */}
@@ -114,125 +122,80 @@ export function EditorShell({
 }
 
 /**
- * Small chevron tab on the *expanded* side panel that collapses the panel.
- * Lives just outside the panel's left edge so it doesn't push the tab
- * row inward, anchored to the vertical center of the panel area.
+ * Skeuomorphic drawer-pull that toggles the side panel. Floats over the
+ * right side so it never reserves layout space. When collapsed it sits
+ * flush against the right edge (panel is gone, full screen for the
+ * editor); when expanded it sits just outside the panel's left edge.
+ *
+ * Look: a small chunky grip with knurled horizontal lines (mirrors the
+ * fader-thumb on the time scrollbar), a brushed-cobalt face that sets
+ * it apart from the paper chrome, and a hot LED dot at the top so the
+ * eye lands on it.
  */
-function CollapseTab({ onCollapse }: { onCollapse: () => void }) {
+function PanelHandle({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  // Outer grid has px-3 + gap-3 (= 12 px each). When collapsed the panel
+  // is 0 so the handle sits inside the right padding; when expanded the
+  // panel takes EXPANDED_W and the handle sits at its left edge.
+  const rightPx = collapsed ? 12 : EXPANDED_W + 12 + 12;
+
   return (
     <button
       type="button"
-      onClick={onCollapse}
-      aria-label="Collapse side panel"
-      title="Collapse side panel"
+      onClick={onToggle}
+      aria-label={collapsed ? "Show side panel" : "Hide side panel"}
+      title={collapsed ? "Show panel" : "Hide panel"}
       className={[
-        "absolute top-1/2 -translate-y-1/2 -left-3 z-10",
-        "w-6 h-14 rounded-l-md flex items-center justify-center",
-        "bg-paper-hi border border-r-0 border-rule shadow-panel",
-        "text-ink-2 hover:text-ink hover:bg-paper-deep transition-colors",
+        "group absolute top-1/2 -translate-y-1/2 z-20",
+        "w-3.5 h-11 rounded-l flex flex-col items-center justify-between py-1.5",
+        "transition-[right] duration-200 ease-out",
       ].join(" ")}
+      style={{
+        right: rightPx,
+        background: "linear-gradient(180deg, #2A4F8F 0%, #1F4079 50%, #2A4F8F 100%)",
+        border: "1px solid rgba(0,0,0,0.45)",
+        boxShadow: [
+          "inset 0 1px 0 rgba(255,255,255,0.18)",
+          "inset 0 -1px 0 rgba(0,0,0,0.3)",
+          "-1px 1px 2px rgba(0,0,0,0.18)",
+        ].join(", "),
+      }}
     >
+      {/* Hot LED at the top — small "this is interactive" cue. */}
+      <span
+        aria-hidden
+        className="block w-1 h-1 rounded-full"
+        style={{
+          background: "#FF5722",
+          boxShadow: "0 0 3px rgba(255,87,34,0.85)",
+        }}
+      />
+      {/* Knurled grip — three thin horizontal lines, brighter on hover. */}
+      <span
+        aria-hidden
+        className="flex flex-col gap-[2px] py-0.5"
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="block w-[6px] h-[1px] rounded-sm"
+            style={{ background: "rgba(255,255,255,0.55)" }}
+          />
+        ))}
+      </span>
+      {/* Direction hint at the bottom — chevron-left when expanded
+       *  (collapse), chevron-right when collapsed (expand). Tucked
+       *  small so the grip texture stays the focal point. */}
       <ChevronLeftIcon
-        className="w-3.5 h-3.5"
-        style={{ transform: "rotate(180deg)" }}
+        className="w-2 h-2 transition-transform duration-200 text-paper-hi/85 group-hover:text-paper-hi"
+        style={{ transform: collapsed ? "rotate(180deg)" : "none" }}
       />
     </button>
-  );
-}
-
-/**
- * Collapsed side-panel slim-rail. Doubles as a quick tab switcher: each
- * stacked button (SYNC / TRIM / OVERLAYS / EXPORT) jumps directly to
- * that tab AND expands the panel in one click. The currently-active
- * tab is highlighted with a hot-orange accent stripe and the
- * tape-deck "key pressed" inset shadow, so the user knows where they
- * left off even while the body is hidden.
- */
-function SlimRail({ onExpand }: { onExpand: () => void }) {
-  const activeTab = useEditorStore((s) => s.ui.activePanel);
-  const setActive = useEditorStore((s) => s.setActivePanel);
-
-  const tabs: { value: PanelTab; label: string; glyph: ReactNode }[] = [
-    {
-      value: "sync",
-      label: "Sync",
-      glyph: <SyncIcon className="w-3.5 h-3.5" />,
-    },
-    { value: "trim", label: "Trim", glyph: <RailLetter>T</RailLetter> },
-    {
-      value: "overlays",
-      label: "Overlays",
-      glyph: <RailLetter>O</RailLetter>,
-    },
-    {
-      value: "export",
-      label: "Export",
-      glyph: <DownloadIcon className="w-3.5 h-3.5" />,
-    },
-  ];
-
-  return (
-    <div
-      className="h-full flex flex-col gap-1 py-2 bg-paper-hi rounded-lg border border-rule shadow-panel"
-      role="tablist"
-      aria-label="Side panel quick tabs"
-    >
-      {tabs.map((t) => {
-        const active = t.value === activeTab;
-        return (
-          <button
-            key={t.value}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            aria-label={`${t.label} — click to expand panel`}
-            title={`${t.label} (click to expand)`}
-            onClick={() => {
-              setActive(t.value);
-              onExpand();
-            }}
-            className={[
-              "relative mx-1.5 flex flex-col items-center justify-center gap-0.5 py-2 rounded-md",
-              "text-ink-2 hover:text-ink transition-colors",
-              active ? "bg-paper-deep" : "hover:bg-paper-deep/60",
-            ].join(" ")}
-          >
-            {/* Hot accent stripe for the active tab — left edge so it
-             *  reads as a "current" marker without dominating. */}
-            {active && (
-              <span
-                aria-hidden
-                className="absolute top-1 bottom-1 left-0 w-[2px] rounded-r bg-hot"
-                style={{ boxShadow: "0 0 4px rgba(255,87,34,0.55)" }}
-              />
-            )}
-            <span
-              className={active ? "text-hot" : "text-ink-2"}
-              aria-hidden
-            >
-              {t.glyph}
-            </span>
-            <span
-              className="font-display tracking-label uppercase text-[8.5px] leading-none font-semibold"
-              style={{ color: active ? "#1A1816" : undefined }}
-            >
-              {t.label}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function RailLetter({ children }: { children: ReactNode }) {
-  return (
-    <span
-      aria-hidden
-      className="font-display font-semibold text-[13px] leading-none"
-    >
-      {children}
-    </span>
   );
 }
 
