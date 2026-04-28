@@ -5,6 +5,7 @@
 use crate::chroma::{self, ChromaMatrix, HOP, N_PITCH_CLASSES};
 use crate::drift::{windowed_drift_refinement, DriftConfig};
 use crate::dtw::dtw_drift;
+use crate::ncc::{align_with_candidates, MatchCandidate};
 use crate::util::peak_normalize;
 use crate::xcorr::correlate_full;
 
@@ -15,6 +16,36 @@ pub struct SyncResult {
     pub drift_ratio: f64,
     pub method: String,
     pub warning: Option<String>,
+    /// Alternate match candidates with NCC ≥ 60 % of the primary's. Sorted
+    /// descending by NCC. Used by the editor for snap-to-alternate-match.
+    pub candidates: Vec<MatchCandidateOut>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchCandidateOut {
+    pub offset_ms: f64,
+    pub confidence: f64,
+    pub overlap_frames: u32,
+}
+
+impl From<&MatchCandidate> for MatchCandidateOut {
+    fn from(c: &MatchCandidate) -> Self {
+        // Use the actual SR — passed in via a closure or recomputed here.
+        // This conversion lives in `sync_audio_pcm` where SR is in scope.
+        Self {
+            offset_ms: 0.0,
+            confidence: c.ncc as f64,
+            overlap_frames: c.overlap_frames,
+        }
+    }
+}
+
+fn cand_to_out(c: &MatchCandidate, sr: u32) -> MatchCandidateOut {
+    MatchCandidateOut {
+        offset_ms: c.offset_samples as f64 / sr as f64 * 1000.0,
+        confidence: c.ncc as f64,
+        overlap_frames: c.overlap_frames,
+    }
 }
 
 /// Cosine confidence between two L2-normalized chroma matrices at a given lag.
@@ -93,6 +124,7 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
             drift_ratio: 1.0,
             method: "chroma".to_string(),
             warning: Some("Empty audio".to_string()),
+            candidates: Vec::new(),
         };
     }
 
@@ -103,17 +135,36 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
 
     let cr = chroma::chroma_features(&ref_y, opts.sr);
     let cq = chroma::chroma_features(&query_y, opts.sr);
-    let (mut lag, mut confidence) = chroma_alignment(&cr, &cq);
-    let mut method = "chroma".to_string();
+
+    // Primary alignment uses NCC + multi-candidate peak picking. Fixes the
+    // unnormalized-correlation undershoot the legacy chroma_alignment had on
+    // ref-with-silent-prefix scenarios, and surfaces alternates so the UI
+    // can offer "snap to alternate match" when the user disagrees.
+    let report = align_with_candidates(&cr, &cq, opts.sr, /*max_alternates=*/ 5);
+    let (mut lag, mut confidence, mut candidates) = match report {
+        Some(r) => {
+            let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
+                .chain(r.alternates.iter())
+                .map(|c| cand_to_out(c, opts.sr))
+                .collect();
+            // Primary is always cands[0].
+            let primary_lag = r.primary.offset_samples;
+            let primary_conf = r.primary.ncc as f64;
+            // Patch primary entry's confidence so the consumer sees the same
+            // value that lands in SyncResult.confidence.
+            if let Some(p) = cands.get_mut(0) {
+                p.confidence = primary_conf;
+            }
+            (primary_lag, primary_conf, cands)
+        }
+        None => (0, 0.0, Vec::new()),
+    };
+    let mut method = "ncc".to_string();
     let mut drift = 1.0f64;
     let mut warning: Option<String> = None;
 
     if confidence < opts.confidence_threshold {
-        method = "chroma+dtw".to_string();
-        // For DTW use a coarser hop (1024) like the backend does, to keep memory bounded.
-        // We re-compute chroma with hop=1024 implicitly by sub-sampling for DTW would be
-        // wrong; the backend creates fresh chroma at hop=1024. We do the same.
-        // (If you want to optimize, share the FFT planner.)
+        method = "ncc+dtw".to_string();
         let cr_dtw = compute_chroma_with_hop(&ref_y, opts.sr, 1024);
         let cq_dtw = compute_chroma_with_hop(&query_y, opts.sr, 1024);
         let (offset_dtw, drift_dtw) = dtw_drift(&cr_dtw, &cq_dtw, 1024);
@@ -126,15 +177,27 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         }
     }
 
-    // Always run sliding-window drift refinement.
-    if let Some(refined) =
-        windowed_drift_refinement(&ref_y, &query_y, opts.sr, lag, DriftConfig::default())
-    {
-        // Sanity: only trust if refined offset is within 30 s of the chroma offset.
-        if (refined.offset_samples - lag).abs() <= 30 * opts.sr as i64 {
-            lag = refined.offset_samples;
-            drift = refined.drift_ratio;
-            method.push_str("+drift");
+    // Drift refinement is only useful when (a) we have a confident chroma
+    // alignment to seed it, and (b) the drift refinement itself agrees
+    // closely with that seed. Without (a), the windowed correlation has
+    // its own unnormalized-correlation bias and can drag a perfectly good
+    // NCC result off-target. Threshold mirrors `confidence_threshold`.
+    if confidence >= opts.confidence_threshold {
+        if let Some(refined) =
+            windowed_drift_refinement(&ref_y, &query_y, opts.sr, lag, DriftConfig::default())
+        {
+            // Tighter sanity check: only trust drift refinement if its
+            // offset is within 1s of NCC's primary. Anything bigger means
+            // the per-window xcorr locked onto a different (probably
+            // edge-biased) lag — drop it.
+            if (refined.offset_samples - lag).abs() <= opts.sr as i64 {
+                lag = refined.offset_samples;
+                drift = refined.drift_ratio;
+                method.push_str("+drift");
+                if let Some(p) = candidates.get_mut(0) {
+                    p.offset_ms = lag as f64 / opts.sr as f64 * 1000.0;
+                }
+            }
         }
     }
 
@@ -161,6 +224,7 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         drift_ratio: drift,
         method,
         warning,
+        candidates,
     }
 }
 

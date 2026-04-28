@@ -1,14 +1,13 @@
 /**
  * Lane-Header: hardware control strip on the left of each video lane.
  *
- * Inspired by vintage TV-switcher tally panels and Eurorack modules:
- *  - vertical cam-color stripe (continuity with the PROGRAM strip)
- *  - tiny corner "screw" for skeuomorphism
- *  - cam name + filename + hotkey chip
- *  - round TAKE button (rubber surface, cam-colored, with LED tally ring)
+ * Vintage-tally aesthetic — sepia/paper tones for the body, cam color
+ * reduced to a left-edge stripe + a small tally LED. The TAKE button
+ * itself is a recessed paper-toned hardware button (no candy gradients,
+ * no halo glow). Status is communicated by the small TALLY LED, not by
+ * tinting the button.
  *
- * The TAKE button doesn't fire in V1 of Schritt 6 — Schritt 8 wires it up
- * to the cuts list. Visually it already shows status (dim/available/on-air).
+ * Sized to fit a 44 × 44 button + name/filename column without clipping.
  */
 import { CSSProperties, MouseEvent } from "react";
 
@@ -27,7 +26,7 @@ interface Props {
   height?: number;
 }
 
-const HEADER_W = 132;
+const HEADER_W = 156;
 
 export function LaneHeader({
   name,
@@ -40,120 +39,81 @@ export function LaneHeader({
   onTake,
   height = 80,
 }: Props) {
-  const ledColor =
-    status === "on-air" ? "#FF3326" : status === "available" ? "#34D399" : "#3A352E";
-  const ledGlow =
-    status === "on-air"
-      ? `0 0 14px ${ledColor}, 0 0 5px ${ledColor}`
-      : status === "available"
-        ? `0 0 6px ${ledColor}`
-        : "none";
-  const ledOpacity = status === "off" ? 0.18 : 1;
-
   const handleTake = (e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     onTake?.();
   };
 
-  const moduleStyle: CSSProperties = {
-    background: `
-      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(255,255,255,0.45) 0%, transparent 70%),
-      linear-gradient(180deg, #DDD4BE 0%, #C9BFA6 100%)
-    `,
-  };
-
-  const buttonCoreStyle: CSSProperties = {
-    background: `
-      radial-gradient(circle at 32% 26%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0) 55%),
-      radial-gradient(circle at 50% 50%, ${color} 0%, ${color} 60%, ${darken(color, 0.18)} 100%)
-    `,
-    boxShadow:
-      "inset 0 2px 2px rgba(255,255,255,0.45), inset 0 -2px 3px rgba(0,0,0,0.32), 0 2px 3px rgba(0,0,0,0.22)",
-  };
-
   return (
     <div
-      className="relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer"
+      className="relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper hover:bg-paper-deep transition-colors"
       style={{
         width: HEADER_W,
         height,
         boxShadow: selected
-          ? `inset 0 0 0 2px ${color}, inset 0 0 0 4px rgba(255,255,255,0.6)`
+          ? `inset 3px 0 0 ${color}`
           : undefined,
       }}
       onClick={onSelectClip}
     >
-      {/* Vertical color stripe — visual continuity with PROGRAM-strip segments */}
+      {/* Cam-color edge stripe — single solid bar, no gradient, no glow. */}
       <div
-        className="w-[6px] shrink-0"
-        style={{
-          background: `linear-gradient(180deg, ${color} 0%, ${darken(color, 0.18)} 100%)`,
-          boxShadow: "inset -1px 0 0 rgba(0,0,0,0.22)",
-        }}
+        className="w-[5px] shrink-0"
+        style={{ background: color }}
       />
 
-      {/* Module body */}
-      <div
-        className="flex-1 relative px-2 py-2 flex items-center gap-2"
-        style={moduleStyle}
-      >
-        {/* Two tiny "screws" — top-right and bottom-right — for skeuomorphism. */}
-        <Screw className="absolute top-1.5 right-1.5" />
-        <Screw className="absolute bottom-1.5 right-1.5" />
-
+      {/* Module body — flat paper-hi, no fake metal. */}
+      <div className="flex-1 relative px-2.5 py-2 flex items-center gap-2 min-w-0">
         {/* Labels */}
         <div className="flex-1 min-w-0 flex flex-col gap-1 pr-1">
-          <div className="flex items-baseline gap-1.5">
-            <span className="font-display font-semibold text-[11px] tracking-label uppercase text-ink leading-none">
+          <div className="flex items-baseline gap-1.5 min-w-0">
+            <span className="font-display font-semibold text-[11px] tracking-label uppercase text-ink leading-none truncate">
               {name}
             </span>
             {hotkeyLabel && (
               <span
-                className="font-mono text-[9px] tracking-label text-ink leading-none rounded-sm border border-rule/70 bg-paper-hi px-[3px] py-[2px]"
-                style={{ boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.06), 0 1px 0 rgba(255,255,255,0.5)" }}
+                className="font-mono text-[9px] tracking-label text-ink-2 leading-none rounded-sm border border-rule bg-paper px-[3px] py-[1px] shrink-0"
+                style={{ boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.04)" }}
               >
                 {hotkeyLabel}
               </span>
             )}
           </div>
-          <span className="font-mono text-[9px] text-ink-3 leading-none truncate" title={filename}>
+          <span
+            className="font-mono text-[9px] text-ink-3 leading-snug truncate min-w-0"
+            title={filename}
+          >
             {filename}
           </span>
-          {status === "on-air" && (
-            <span
-              className="font-mono text-[8px] tracking-label uppercase leading-none mt-0.5"
-              style={{ color: ledColor, textShadow: `0 0 4px ${ledColor}` }}
-            >
-              ● ON AIR
-            </span>
-          )}
+          <Tally status={status} color={color} />
         </div>
 
-        {/* TAKE button */}
+        {/* TAKE button — vintage hardware look. Paper body with subtle inset
+         * border + emboss shadow. Cam color shows ONLY in the tally dot, not
+         * in the button face — keeps multi-cam panels from screaming. */}
         <button
           type="button"
           onClick={handleTake}
           aria-label={`Take ${name}`}
-          className="relative w-[44px] h-[44px] shrink-0 transition-transform active:translate-y-px active:scale-[0.97]"
+          className="relative shrink-0 transition-transform active:translate-y-px"
+          style={{
+            width: 48,
+            height: 44,
+          }}
         >
-          {/* LED tally ring (outer halo) */}
           <span
-            className="absolute -inset-[3px] rounded-full pointer-events-none"
-            style={{
-              background: ledColor,
-              boxShadow: ledGlow,
-              opacity: ledOpacity,
-              transition: "box-shadow 120ms ease-out, opacity 120ms ease-out, background 120ms ease-out",
-            }}
-          />
-          {/* Button core */}
-          <span
-            className="absolute inset-0 rounded-full flex items-center justify-center"
-            style={buttonCoreStyle}
+            className="absolute inset-0 rounded-md flex items-center justify-center"
+            style={takeFace(status === "on-air")}
           >
             <span
-              className="font-display font-semibold text-[10px] tracking-label uppercase text-paper-hi leading-none"
-              style={{ textShadow: "0 1px 1px rgba(0,0,0,0.4)" }}
+              className="font-display font-semibold text-[10px] tracking-label uppercase leading-none"
+              style={{
+                color: status === "on-air" ? "#FF3326" : "#1A1816",
+                textShadow:
+                  status === "on-air"
+                    ? "0 0 4px rgba(255,51,38,0.35)"
+                    : "0 1px 0 rgba(255,255,255,0.4)",
+              }}
             >
               TAKE
             </span>
@@ -166,25 +126,63 @@ export function LaneHeader({
 
 LaneHeader.WIDTH = HEADER_W;
 
-function Screw({ className = "" }: { className?: string }) {
+/**
+ * Inline tally indicator: a small LED + status word. Sits on the third
+ * line of the label column so the column reads name / filename / status.
+ * No haloed pulsing — just a small lit dot, like the tally on a vintage
+ * studio panel.
+ */
+function Tally({ status, color }: { status: CamStatus; color: string }) {
+  const dotColor =
+    status === "on-air" ? "#FF3326" : status === "available" ? "#3F8F5A" : "#9A8F80";
+  const label = status === "on-air" ? "ON AIR" : status === "available" ? "READY" : "—";
+  const labelColor =
+    status === "on-air"
+      ? "#C42E20"
+      : status === "available"
+        ? "#3F8F5A"
+        : "#9A8F80";
   return (
-    <span
-      className={`block w-[5px] h-[5px] rounded-full pointer-events-none ${className}`}
-      style={{
-        background: "radial-gradient(circle at 30% 30%, #9A8F80 0%, #4B433A 100%)",
-        boxShadow:
-          "inset 0 -0.5px 0 rgba(255,255,255,0.4), 0 0.5px 0 rgba(255,255,255,0.5)",
-      }}
-    />
+    <span className="inline-flex items-center gap-1.5 mt-0.5" aria-hidden>
+      <span
+        className="block w-[6px] h-[6px] rounded-full shrink-0"
+        style={{
+          background: dotColor,
+          boxShadow:
+            status === "on-air"
+              ? "0 0 4px rgba(255,51,38,0.55)"
+              : status === "available"
+                ? "inset 0 0 0 0.5px rgba(0,0,0,0.15)"
+                : "inset 0 0 0 0.5px rgba(0,0,0,0.15)",
+          opacity: status === "off" ? 0.45 : 1,
+        }}
+      />
+      <span
+        className="font-mono text-[8px] tracking-label uppercase leading-none"
+        style={{ color: labelColor }}
+      >
+        {label}
+      </span>
+      {/* Cam color reference — tiny stripe so the tally row is colour-tagged
+        * even when status is the same across cams. */}
+      <span
+        className="block w-[14px] h-[2px] rounded-sm"
+        style={{ background: color, opacity: 0.6 }}
+      />
+    </span>
   );
 }
 
-/** Darken a hex color by a fraction. */
-function darken(hex: string, fraction: number): string {
-  const c = hex.replace("#", "");
-  if (c.length !== 6) return hex;
-  const r = Math.round(parseInt(c.slice(0, 2), 16) * (1 - fraction));
-  const g = Math.round(parseInt(c.slice(2, 4), 16) * (1 - fraction));
-  const b = Math.round(parseInt(c.slice(4, 6), 16) * (1 - fraction));
-  return `#${[r, g, b].map((n) => Math.max(0, n).toString(16).padStart(2, "0")).join("")}`;
+/**
+ * Recessed paper-toned button face. When ON AIR, an inset cam-color stroke
+ * lights up around the perimeter — much subtler than the previous halo.
+ */
+function takeFace(onAir: boolean): CSSProperties {
+  return {
+    background:
+      "linear-gradient(180deg, #FAF6EC 0%, #EFE7D2 100%)",
+    boxShadow: onAir
+      ? "inset 0 0 0 1.5px #FF3326, inset 0 1px 0 rgba(255,255,255,0.65), inset 0 -1px 0 rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)"
+      : "inset 0 0 0 1px rgba(154,143,128,0.55), inset 0 1px 0 rgba(255,255,255,0.65), inset 0 -1px 0 rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+  };
 }

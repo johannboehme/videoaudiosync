@@ -9,6 +9,7 @@
 pub mod chroma;
 pub mod drift;
 pub mod dtw;
+pub mod ncc;
 pub mod sync;
 pub mod util;
 pub mod xcorr;

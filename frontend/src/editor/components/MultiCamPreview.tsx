@@ -44,17 +44,21 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
     );
   }
 
-  const showCam1 = activeCamId === cam1.id;
   const showTestPattern = activeCamId === null;
 
+  // Layer order (back → front):
+  //   1. cam-1 (always mounted + always rendering frames; drives audio + clock).
+  //   2. each satellite cam, only rendered visibly when it is the active cam.
+  //   3. test pattern overlay when no cam has material.
+  // We never put `visibility: hidden` on cam-1 — some browsers stop
+  // presenting frames on hidden video elements which froze cam-1 the moment
+  // the user took another cam ON AIR.
   return (
     <div className="relative w-full h-full bg-sunken overflow-hidden">
-      {/* Master cam (cam-1) — always mounted, hidden when another cam is active */}
-      <div className={`absolute inset-0 ${showCam1 ? "" : "invisible"}`}>
+      <div className="absolute inset-0">
         <VideoCanvas videoUrl={cam1Url} audioUrl={audioUrl} />
       </div>
 
-      {/* Satellite cams — one per cam-2..N */}
       {clips.slice(1).map((clip) => {
         const url = cams[clip.id]?.videoUrl;
         if (!url) return null;
@@ -69,7 +73,6 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
         );
       })}
 
-      {/* No cam at this position → test pattern */}
       {showTestPattern && (
         <div className="absolute inset-0">
           <TestPattern />

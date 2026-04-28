@@ -52,7 +52,7 @@ type DragKind =
 
 const HANDLE_HIT = 14;
 const TARGET_TILE_W = 64;
-const HEADER_W = 132;
+const HEADER_W = 156;
 const SCROLLBAR_H = 14;
 
 export function Timeline({
@@ -195,8 +195,9 @@ export function Timeline({
     const ctx: CanvasRenderingContext2D = ctx2d;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Background — warm paper.
-    ctx.fillStyle = "#E8E1D0";
+    // Background — warm cream, sits between paper and paper-deep so it
+    // matches the unselected-tab sepia without going stark white.
+    ctx.fillStyle = "#ECE3CC";
     ctx.fillRect(0, 0, canvasWidth, canvasH);
 
     // Per-video-lane: thumbnails + clip pill.
@@ -215,13 +216,13 @@ export function Timeline({
         aspect: cams[clip.id]?.aspect ?? 16 / 9,
         selected: clip.id === selectedClipId,
       });
-      // Lane separator line below each video lane
-      ctx.fillStyle = "#C9BFA6";
+      // Lane separator line below each video lane (subtle sepia rule).
+      ctx.fillStyle = "#D8CFB8";
       ctx.fillRect(0, band.bottom - 1, canvasWidth, 1);
     }
 
-    // Audio lane background.
-    ctx.fillStyle = "#DDD4BE";
+    // Audio lane background — slightly recessed for separation from video lanes.
+    ctx.fillStyle = "#E3D9BE";
     ctx.fillRect(0, audioBand.top, canvasWidth, audioLaneHeight);
 
     // Audio waveform — same logic as before.
@@ -383,16 +384,25 @@ export function Timeline({
       return;
     }
 
-    // Video lane → click pill = select + start drag-move; click empty = deselect + seek.
+    // Video lane:
+    //   * Click on a clip pill — select the clip; default drag = scrub the
+    //     playhead (most common). Hold Alt while dragging to reposition the
+    //     clip in time instead. NLE-style.
+    //   * Click on empty lane — deselect, seek + scrub.
     const hit = findClipAt(x, y);
     if (hit) {
       setSelectedClipId(hit.clip.id);
-      dragRef.current = {
-        kind: "clip-move",
-        camId: hit.clip.id,
-        grabT: t,
-        origStartOffsetS: hit.clip.startOffsetS,
-      };
+      if (e.altKey) {
+        dragRef.current = {
+          kind: "clip-move",
+          camId: hit.clip.id,
+          grabT: t,
+          origStartOffsetS: hit.clip.startOffsetS,
+        };
+      } else {
+        seek(t);
+        dragRef.current = { kind: "playhead" };
+      }
     } else {
       setSelectedClipId(null);
       seek(t);
@@ -491,7 +501,15 @@ export function Timeline({
               : "crosshair",
       );
     } else {
-      setHoverCursor(findClipAt(x, y) ? "grab" : "crosshair");
+      // Video lane — over a clip the cursor is `pointer` (clip is selectable
+      // + scrub-draggable). Alt-modifier shows a `move` cursor to hint at
+      // the alternate clip-move drag behavior.
+      const overClip = findClipAt(x, y);
+      if (overClip) {
+        setHoverCursor(e.altKey ? "move" : "pointer");
+      } else {
+        setHoverCursor("crosshair");
+      }
     }
   };
 
@@ -526,7 +544,7 @@ export function Timeline({
         {/* PROGRAM-Strip row */}
         <div className="flex">
           <div
-            className="shrink-0 flex items-center px-3 border-r border-b border-rule bg-paper-panel"
+            className="shrink-0 flex items-center px-3 border-r border-b border-rule bg-paper"
             style={{ width: HEADER_W, height: 32 }}
           >
             <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
@@ -564,7 +582,7 @@ export function Timeline({
             ))}
             {/* MASTER · AUDIO header */}
             <div
-              className="shrink-0 flex items-center px-3 border-r border-t border-rule bg-paper-panel"
+              className="shrink-0 flex items-center px-3 border-r border-t border-rule bg-paper"
               style={{ height: audioLaneHeight }}
             >
               <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
@@ -591,7 +609,7 @@ export function Timeline({
         {/* Custom scrollbar — hardware mixer fader feel */}
         <div className="flex">
           <div
-            className="shrink-0 border-r border-t border-rule bg-paper-panel"
+            className="shrink-0 border-r border-t border-rule bg-paper"
             style={{ width: HEADER_W, height: SCROLLBAR_H }}
           />
           <div
@@ -681,8 +699,9 @@ function drawVideoLane({
   aspect,
   selected,
 }: DrawVideoLaneArgs) {
-  // Lane background (slightly recessed paper).
-  ctx.fillStyle = "#DDD4BE";
+  // Lane background — warm cream, slightly lighter than the audio lane
+  // to give a subtle stack-of-tracks feel without going dark.
+  ctx.fillStyle = "#ECE3CC";
   ctx.fillRect(0, bandTop, canvasWidth, bandH);
 
   // Clip range on the master timeline.
