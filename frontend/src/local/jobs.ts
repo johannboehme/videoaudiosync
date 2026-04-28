@@ -86,6 +86,77 @@ function fileExtension(file: File, fallback: string): string {
   return /^[a-z0-9]{1,8}$/i.test(ext) ? ext : fallback;
 }
 
+// -----------------------------------------------------------------------------
+// Single source of truth for "persist a media file as a new cam slot in OPFS
+// + return the matching asset record". Used by both the upfront upload flow
+// (createJob — loops over the user's videos) and the per-cam Editor "+ Media"
+// flow (addVideoToJob / addImageToJob — one cam per call).
+// -----------------------------------------------------------------------------
+
+/** Persist a video file as cam-{index+1} in OPFS and return the
+ *  VideoAsset record (without sync / dimensions / framesPath — those are
+ *  filled by runCamPrep). */
+async function persistVideoCam(
+  jobId: string,
+  file: File,
+  index: number,
+): Promise<VideoAsset> {
+  const camId = `cam-${index + 1}`;
+  const ext = fileExtension(file, "mp4");
+  const opfsPath = camVideoPath(jobId, camId, ext);
+  await opfs.writeFile(opfsPath, file);
+  return {
+    id: camId,
+    filename: file.name,
+    opfsPath,
+    color: camColorAt(index),
+  };
+}
+
+/** Persist an image file as cam-{index+1} in OPFS, probe its dimensions,
+ *  and return the ImageAsset record. Probing failure is non-fatal —
+ *  width/height stay undefined and the lane uses a fallback aspect. */
+async function persistImageCam(
+  jobId: string,
+  file: File,
+  index: number,
+  durationS: number,
+): Promise<{
+  kind: "image";
+  id: string;
+  filename: string;
+  opfsPath: string;
+  color: string;
+  durationS: number;
+  width?: number;
+  height?: number;
+}> {
+  const camId = `cam-${index + 1}`;
+  const ext = fileExtension(file, "png");
+  const opfsPath = camVideoPath(jobId, camId, ext);
+  await opfs.writeFile(opfsPath, file);
+  let width: number | undefined;
+  let height: number | undefined;
+  try {
+    const bitmap = await createImageBitmap(file);
+    width = bitmap.width;
+    height = bitmap.height;
+    bitmap.close();
+  } catch {
+    // ignore — non-fatal
+  }
+  return {
+    kind: "image",
+    id: camId,
+    filename: file.name,
+    opfsPath,
+    color: camColorAt(index),
+    durationS,
+    width,
+    height,
+  };
+}
+
 interface CreateJobOptions {
   /** Optional title; falls back to the video file name. */
   title?: string | null;
@@ -122,17 +193,7 @@ export async function createJob(
 
   const videos: VideoAsset[] = [];
   for (let i = 0; i < videoFiles.length; i++) {
-    const file = videoFiles[i];
-    const camId = `cam-${i + 1}`;
-    const ext = fileExtension(file, "mp4");
-    const opfsPath = camVideoPath(jobId, camId, ext);
-    await opfs.writeFile(opfsPath, file);
-    videos.push({
-      id: camId,
-      filename: file.name,
-      opfsPath,
-      color: camColorAt(i),
-    });
+    videos.push(await persistVideoCam(jobId, videoFiles[i], i));
   }
 
   const firstVideo = videoFiles[0];
@@ -410,18 +471,8 @@ export async function addVideoToJob(
   if (!job) throw new Error(`Job ${jobId} not found`);
 
   const existing = job.videos ?? [];
-  const camId = `cam-${existing.length + 1}`;
-  const ext = fileExtension(file, "mp4");
-  const opfsPath = camVideoPath(jobId, camId, ext);
-
-  await opfs.writeFile(opfsPath, file);
-
-  const newCam: VideoAsset = {
-    id: camId,
-    filename: file.name,
-    opfsPath,
-    color: camColorAt(existing.length),
-  };
+  const newCam = await persistVideoCam(jobId, file, existing.length);
+  const camId = newCam.id;
 
   // Append immediately (sync still undefined) so editor lane appears now.
   const next = [...existing, newCam];
@@ -507,42 +558,19 @@ export async function addImageToJob(
   if (!job) throw new Error(`Job ${jobId} not found`);
 
   const existing = job.videos ?? [];
-  const camId = `cam-${existing.length + 1}`;
-  const ext = fileExtension(file, "png");
-  const opfsPath = camVideoPath(jobId, camId, ext);
-
-  await opfs.writeFile(opfsPath, file);
-
-  // Probe dimensions for the lane aspect / preview sizing.
-  let width: number | undefined;
-  let height: number | undefined;
-  try {
-    const bitmap = await createImageBitmap(file);
-    width = bitmap.width;
-    height = bitmap.height;
-    bitmap.close();
-  } catch {
-    // ignore — non-fatal, lane will use fallback aspect
-  }
-
   const durationS = opts.durationS ?? DEFAULT_IMAGE_DURATION_S;
-
-  const newAsset = {
-    kind: "image" as const,
-    id: camId,
-    filename: file.name,
-    opfsPath,
-    color: camColorAt(existing.length),
+  const newAsset = await persistImageCam(
+    jobId,
+    file,
+    existing.length,
     durationS,
-    width,
-    height,
-  };
+  );
 
   const next = [...existing, newAsset];
   const saved = await jobsDb.updateJob(jobId, { videos: next });
   emitJobUpdate(saved);
 
-  return camId;
+  return newAsset.id;
 }
 
 interface QuickRenderInput {
