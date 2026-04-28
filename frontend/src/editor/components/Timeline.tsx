@@ -148,7 +148,11 @@ export function Timeline({
     });
   };
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [canvasWidth, setCanvasWidth] = useState(800);
+  // Raw inner-width for the canvas column. Effective canvasWidth
+  // shrinks by SCROLLBAR_H when the lane stack overflows so the
+  // canvas content (waveform, trim handles, …) doesn't extend under
+  // the vertical fader thumb.
+  const [baseCanvasWidth, setBaseCanvasWidth] = useState(800);
   const dragRef = useRef<DragKind | null>(null);
   /** Set during a clip-move drag so the PROGRAM strip can show match
    *  markers only while the user is actually re-aligning a cam. */
@@ -255,7 +259,7 @@ export function Timeline({
     if (!wrapRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0].contentRect.width;
-      setCanvasWidth(Math.max(0, w - HEADER_W));
+      setBaseCanvasWidth(Math.max(0, w - HEADER_W));
     });
     ro.observe(wrapRef.current);
     return () => ro.disconnect();
@@ -267,6 +271,16 @@ export function Timeline({
   useEffect(() => {
     updateLaneScroll();
   }, [clips.length]);
+
+  // When the lane stack overflows, the vertical fader claims the
+  // right SCROLLBAR_H pixels of the canvas column → shrink the
+  // effective canvas width so audio handles / waveform / clip pills
+  // don't draw under the thumb.
+  const laneOverflows = laneScroll.height > laneScroll.viewport + 0.5;
+  const canvasWidth = Math.max(
+    0,
+    baseCanvasWidth - (laneOverflows ? SCROLLBAR_H : 0),
+  );
 
   // ---- Per-cam thumbnail Image objects ----
   // Video clips: load the frames-strip (multiple stills laid out
@@ -825,8 +839,9 @@ export function Timeline({
   //      ctrlKey, mouse Ctrl/Cmd+wheel does the same): zoom, anchored
   //      at the cursor's master-time. preventDefault stops the
   //      browser's page-zoom.
-  //   2. Alt-wheel: also zoom — kept as a mouse-only fallback for
-  //      users without a trackpad pinch gesture.
+  //   2. Option(Mac) / Alt(Windows) + wheel: also zoom. The Option
+  //      key sets event.altKey on macOS — kept as a mouse-only
+  //      fallback for users without a trackpad pinch gesture.
   //   3. Horizontal wheel (|deltaX| > |deltaY|): scrub time. The
   //      trackpad's natural left/right swipe nudges scrollX.
   //   4. Plain vertical wheel: not handled here — bubbles to the
