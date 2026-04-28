@@ -59,6 +59,12 @@ export interface VideoAsset {
   startOffsetS?: number;
   /** Index into sync.candidates of the user-selected primary. */
   selectedCandidateIdx?: number;
+  /** Per-clip trim from the source-time start (seconds). Defaults to 0
+   *  when absent — full source from frame 0. */
+  trimInS?: number;
+  /** Per-clip trim end (seconds, in source-time). Defaults to durationS
+   *  when absent — full source to the end. */
+  trimOutS?: number;
 }
 
 /**

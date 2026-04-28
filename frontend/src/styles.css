@@ -72,6 +72,17 @@ body,
   50% { opacity: 1; }
 }
 
+/* Hide native scrollbar but keep scrolling functional. Used by the
+ * timeline lane stack: native scroll handles wheel/touch/keyboard,
+ * a custom fader-style thumb is rendered as an overlay. */
+.no-native-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.no-native-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Reduce motion respectfully */
 @media (prefers-reduced-motion: reduce) {
   *,

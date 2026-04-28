@@ -105,6 +105,15 @@ export interface VideoClip {
   /** Index into `candidates` of the user-selected primary. Defaults to 0
    *  (top-confidence candidate). The user can move this with match-snap. */
   selectedCandidateIdx: number;
+  /** Per-clip trim from the source's start (seconds, 0..sourceDurationS).
+   *  Optional — undefined / 0 = full source from frame 0. The cam still
+   *  plays from source-time 0 onward; trim only restricts the master-
+   *  timeline range during which this cam is "available" for cuts /
+   *  rendering. */
+  trimInS?: number;
+  /** Per-clip trim end (seconds, in source-time). Undefined = full
+   *  source through the end. */
+  trimOutS?: number;
 }
 
 /**
@@ -152,6 +161,16 @@ export function clipRangeS(clip: Clip): { startS: number; endS: number } {
     return { startS: clip.startOffsetS, endS: clip.startOffsetS + clip.durationS };
   }
   const totalSyncS = (clip.syncOffsetMs + clip.syncOverrideMs) / 1000;
-  const startS = -totalSyncS + clip.startOffsetS;
-  return { startS, endS: startS + clip.sourceDurationS };
+  const baseStartS = -totalSyncS + clip.startOffsetS;
+  // Per-clip trim applies on top of the cam's natural master-timeline
+  // span. The cam still *plays* from source-time 0 onward, but only the
+  // [startS + trimInS, startS + trimOutS] portion is "available" — cuts
+  // outside this window route to other cams or the test pattern.
+  const trimInS = clip.trimInS ?? 0;
+  const trimOutS = clip.trimOutS ?? clip.sourceDurationS;
+  return {
+    startS: baseStartS + trimInS,
+    endS: baseStartS + trimOutS,
+  };
 }
+

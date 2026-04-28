@@ -84,6 +84,8 @@ function assetToClipInit(v: MediaAsset): ClipInit {
     driftRatio: v.sync?.driftRatio ?? 1,
     candidates: persistedCandidates ?? fallbackCandidates,
     selectedCandidateIdx: v.selectedCandidateIdx,
+    trimInS: v.trimInS,
+    trimOutS: v.trimOutS,
   };
 }
 
@@ -659,7 +661,15 @@ export default function Editor() {
                   const cam = job.videos?.find((v) => v.id === camId);
                   const aspect =
                     cam?.width && cam?.height ? cam.width / cam.height : 16 / 9;
-                  return [camId, { framesUrl: ca.framesUrl, aspect }];
+                  // Image clips: pass the asset URL through so the lane
+                  // renders the actual image as a preview instead of an
+                  // empty pill.
+                  const imageUrl =
+                    cam?.kind === "image" ? ca.videoUrl : null;
+                  return [
+                    camId,
+                    { framesUrl: ca.framesUrl, imageUrl, aspect },
+                  ];
                 }),
               )}
               peaks={assets.wave.peaks}

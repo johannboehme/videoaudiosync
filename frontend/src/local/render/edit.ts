@@ -460,7 +460,9 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
 export interface CamSourceInput {
   id: string;
   file: Blob | ArrayBuffer;
-  /** Cam's start time on the master timeline (seconds). */
+  /** Cam's start time on the master timeline (seconds). The cam's source
+   *  plays from source-time 0 at this point — trim narrows the *visible*
+   *  window only, it doesn't shift source-time. */
   masterStartS: number;
   /** Source duration of this cam's video (seconds). For image cams this
    *  is the user-set length on the master timeline. */
@@ -474,6 +476,12 @@ export interface CamSourceInput {
    *  "image" means the file is decoded once via createImageBitmap and the
    *  same frame is emitted for every output frame in the cam's range. */
   kind?: "video" | "image";
+  /** Per-clip trim (source-time seconds). Narrows the master-timeline
+   *  range during which this cam is "available" to
+   *  [masterStartS + trimInS, masterStartS + trimOutS]. Defaults to
+   *  [0, sourceDurationS]. Image cams ignore this. */
+  trimInS?: number;
+  trimOutS?: number;
 }
 
 export interface MultiCamRenderInput
@@ -618,11 +626,29 @@ export async function editRenderMulti(
   pcm = null;
 
   // Cam ranges on the master timeline + a test-pattern source for gaps.
-  const camRanges = input.cams.map((c) => ({
-    id: c.id,
-    startS: c.masterStartS,
-    endS: c.masterStartS + c.sourceDurationS,
-  }));
+  // Per-clip trim (video cams only) narrows the available window; image
+  // cams' sourceDurationS *is* their on-timeline length so no trim
+  // applies. activeCamAt routes cuts to the unrestricted cam outside
+  // the trim window, falling back to the test pattern.
+  const camRanges = input.cams.map((c) => {
+    if (c.kind === "image") {
+      return {
+        id: c.id,
+        startS: c.masterStartS,
+        endS: c.masterStartS + c.sourceDurationS,
+      };
+    }
+    const trimInS = Math.max(0, c.trimInS ?? 0);
+    const trimOutS = Math.max(
+      trimInS + 0.05,
+      Math.min(c.sourceDurationS, c.trimOutS ?? c.sourceDurationS),
+    );
+    return {
+      id: c.id,
+      startS: c.masterStartS + trimInS,
+      endS: c.masterStartS + trimOutS,
+    };
+  });
   const masterDurationS =
     input.masterDurationS ??
     Math.max(...camRanges.map((r) => r.endS), 0);

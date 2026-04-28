@@ -120,6 +120,9 @@ export interface VideoClipInit {
   candidates?: MatchCandidate[];
   /** Persisted user-selected primary candidate index. Defaults to 0. */
   selectedCandidateIdx?: number;
+  /** Per-clip trim — defaults to 0 / sourceDurationS. */
+  trimInS?: number;
+  trimOutS?: number;
 }
 
 /** Initial data for an image clip. */
@@ -240,6 +243,14 @@ interface EditorState {
   setClipSyncOverride(camId: string, ms: number): void;
   nudgeClipSyncOverride(camId: string, deltaMs: number): void;
   setClipStartOffset(camId: string, startOffsetS: number): void;
+  /** Resize an image clip's duration on the master timeline. Clamped to
+   *  a sane minimum so the lane doesn't collapse to invisibility.
+   *  No-op for video clips (their length is the source-file length). */
+  setImageClipDuration(camId: string, durationS: number): void;
+  /** Set per-clip trim for a video clip. Clamped to
+   *  [0, sourceDurationS] with a minimum visible window of 0.05 s.
+   *  No-op for image clips. */
+  setVideoClipTrim(camId: string, trimInS: number, trimOutS: number): void;
   /** Add a cut, but skip if the target cam is already active at that time
    * (no point recording a switch to the cam that was already on PROGRAM).
    * Returns true if a cut was actually inserted. */
@@ -377,6 +388,11 @@ function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): 
       driftRatio: init.driftRatio ?? 1,
       candidates,
       selectedCandidateIdx: selectedIdx,
+      trimInS: Math.max(0, init.trimInS ?? 0),
+      trimOutS: Math.max(
+        (init.trimInS ?? 0) + 0.05,
+        init.trimOutS ?? init.sourceDurationS,
+      ),
     };
   });
 }
@@ -733,6 +749,35 @@ export const useEditorStore = create<EditorState>()(
       const next = Math.round((found.syncOverrideMs + deltaMs) * 1000) / 1000;
       get().setClipSyncOverride(camId, next);
     },
+    setImageClipDuration(camId, durationS) {
+      const next = get().clips.map((c): Clip => {
+        if (c.id !== camId) return c;
+        if (c.kind !== "image") return c;
+        // Hard min so the pill never collapses to an unhittable sliver.
+        const clamped = Math.max(0.1, durationS);
+        return { ...c, durationS: clamped };
+      });
+      set({ clips: next });
+    },
+
+    setVideoClipTrim(camId, trimInS, trimOutS) {
+      const next = get().clips.map((c): Clip => {
+        if (c.id !== camId) return c;
+        if (!isVideoClip(c)) return c;
+        const minWindow = 0.05;
+        const inS = Math.max(
+          0,
+          Math.min(c.sourceDurationS - minWindow, trimInS),
+        );
+        const outS = Math.max(
+          inS + minWindow,
+          Math.min(c.sourceDurationS, trimOutS),
+        );
+        return { ...c, trimInS: inS, trimOutS: outS };
+      });
+      set({ clips: next });
+    },
+
     setClipStartOffset(camId, startOffsetS) {
       const clips = get().clips.map((c) =>
         c.id === camId ? { ...c, startOffsetS } : c,

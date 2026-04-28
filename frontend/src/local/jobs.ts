@@ -778,12 +778,25 @@ export async function runEditRender(
       const userMs = ov?.syncOverrideMs ?? 0;
       const startOffsetS = ov?.startOffsetS ?? 0;
       const masterStartS = -(algoMs + userMs) / 1000 + startOffsetS;
+      // Per-clip trim: the cam still plays from source-time 0 onward
+      // (masterStartS unchanged), but we narrow its "available" master-
+      // timeline range to [trimInS, trimOutS]. activeCamAt + the
+      // editor's clipRangeS use this same window to pick the active
+      // cam, so cuts stay consistent between editor and render.
+      const sourceDurationS = v.durationS ?? 0;
+      const trimInS = Math.max(0, v.trimInS ?? 0);
+      const trimOutS = Math.max(
+        trimInS + 0.05,
+        Math.min(sourceDurationS, v.trimOutS ?? sourceDurationS),
+      );
       return {
         id: v.id,
         opfsPath: v.opfsPath,
         masterStartS,
-        sourceDurationS: v.durationS ?? 0,
+        sourceDurationS,
         driftRatio: v.sync?.driftRatio ?? 1,
+        trimInS,
+        trimOutS,
       };
     });
 

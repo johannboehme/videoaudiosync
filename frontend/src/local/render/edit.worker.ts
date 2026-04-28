@@ -40,7 +40,9 @@ export type VisualizerWorkerDescriptor =
 export interface CamWorkerInput {
   id: string;
   opfsPath: string;
-  /** Cam start position on the master timeline (seconds). */
+  /** Cam start position on the master timeline (seconds). The cam's
+   *  source plays from source-time 0 at this point, regardless of
+   *  trim — trim only narrows the *visible* window. */
   masterStartS: number;
   sourceDurationS: number;
   /** Per-cam drift vs. master audio. Default 1 = no drift. */
@@ -49,6 +51,10 @@ export interface CamWorkerInput {
    *  keep working unchanged. "image" tells the worker to decode the file
    *  as a still image and emit it as a static frame for the entire range. */
   kind?: "video" | "image";
+  /** Per-clip trim — narrows the cam's "available" master-timeline
+   *  range. Defaults to [0, sourceDurationS] (no trim). */
+  trimInS?: number;
+  trimOutS?: number;
 }
 
 export interface EditWorkerInput {
@@ -136,6 +142,8 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
           sourceDurationS: c.sourceDurationS,
           driftRatio: c.driftRatio ?? 1,
           kind: c.kind ?? "video",
+          trimInS: c.trimInS,
+          trimOutS: c.trimOutS,
         })),
         cuts: input.cuts ?? [],
         masterDurationS: input.masterDurationS,

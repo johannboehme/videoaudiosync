@@ -33,6 +33,10 @@ import { DEFAULT_MATCH_CONFIDENCE_THRESHOLD } from "../match-snap";
 interface CamAssetInfo {
   /** OPFS object URL for this cam's thumbnail strip (may be null). */
   framesUrl: string | null;
+  /** OPFS object URL of the cam's image file (image clips only). When
+   *  set the lane shows it as a single fitted preview instead of the
+   *  tiled video thumbnail strip. */
+  imageUrl?: string | null;
   /** Source aspect ratio (width / height) — drives thumbnail tile geometry. */
   aspect: number;
 }
@@ -58,14 +62,41 @@ type DragKind =
   | { kind: "trim-out" }
   | { kind: "loop"; offset: number }
   | {
-      /** Resize an image clip's right edge → updates durationS. Only
-       *  valid for image clips (video clips' source duration is fixed
-       *  by the file). */
+      /** Resize an image clip's right edge → grows durationS. */
       kind: "image-resize-end";
       camId: string;
       grabT: number;
       origDurationS: number;
       origStartOffsetS: number;
+    }
+  | {
+      /** Resize an image clip's left edge → shifts startOffsetS while
+       *  keeping the right edge in place. */
+      kind: "image-resize-start";
+      camId: string;
+      grabT: number;
+      origDurationS: number;
+      origStartOffsetS: number;
+    }
+  | {
+      /** Trim a video clip's right edge — narrows trimOutS within
+       *  [trimInS+0.05, sourceDurationS]. */
+      kind: "video-trim-out";
+      camId: string;
+      origStartS: number;
+      origTrimInS: number;
+      origTrimOutS: number;
+      sourceDurationS: number;
+    }
+  | {
+      /** Trim a video clip's left edge — narrows trimInS within
+       *  [0, trimOutS-0.05]. */
+      kind: "video-trim-in";
+      camId: string;
+      origStartS: number;
+      origTrimInS: number;
+      origTrimOutS: number;
+      sourceDurationS: number;
     }
   | {
       kind: "clip-move";
@@ -100,6 +131,22 @@ export function Timeline({
   onDeleteClip,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Lane-stack vertical scroll state — drives the custom fader-thumb.
+  const laneStackRef = useRef<HTMLDivElement>(null);
+  const [laneScroll, setLaneScroll] = useState({
+    top: 0,
+    height: 0,
+    viewport: 0,
+  });
+  const updateLaneScroll = () => {
+    const el = laneStackRef.current;
+    if (!el) return;
+    setLaneScroll({
+      top: el.scrollTop,
+      height: el.scrollHeight,
+      viewport: el.clientHeight,
+    });
+  };
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(800);
   const dragRef = useRef<DragKind | null>(null);
@@ -135,6 +182,8 @@ export function Timeline({
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const setSelectedClipId = useEditorStore((s) => s.setSelectedClipId);
   const setClipStartOffset = useEditorStore((s) => s.setClipStartOffset);
+  const setImageClipDuration = useEditorStore((s) => s.setImageClipDuration);
+  const setVideoClipTrim = useEditorStore((s) => s.setVideoClipTrim);
   const setClipSyncOverride = useEditorStore((s) => s.setClipSyncOverride);
   const setSelectedCandidateIdx = useEditorStore((s) => s.setSelectedCandidateIdx);
   const resetClipAlignment = useEditorStore((s) => s.resetClipAlignment);
@@ -212,7 +261,17 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
+  // Re-measure the lane-stack scroll geometry whenever the cam count
+  // changes — adding / removing lanes shifts scrollHeight, and the
+  // thumb size needs to follow.
+  useEffect(() => {
+    updateLaneScroll();
+  }, [clips.length]);
+
   // ---- Per-cam thumbnail Image objects ----
+  // Video clips: load the frames-strip (multiple stills laid out
+  // horizontally). Image clips: load the image asset itself so the lane
+  // shows a real preview, not a coloured pill.
   const camImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const [camImagesReady, setCamImagesReady] = useState(0);
   useEffect(() => {
@@ -220,7 +279,12 @@ export function Timeline({
     const map = new Map<string, HTMLImageElement>();
     let pending = 0;
     for (const clip of clips) {
-      const url = cams[clip.id]?.framesUrl;
+      const camAsset = cams[clip.id];
+      if (!camAsset) continue;
+      const url =
+        clip.kind === "image"
+          ? camAsset.imageUrl ?? null
+          : camAsset.framesUrl;
       if (!url) continue;
       pending++;
       const img = new Image();
@@ -490,6 +554,30 @@ export function Timeline({
     return null;
   }
 
+  /** Edge-handle hit-test for clip resizing. Detects whether the pointer
+   *  is on the LEFT or RIGHT edge of a clip's pill (within HANDLE_HIT px).
+   *  Image clips: both edges are draggable. Video clips: trim handles on
+   *  both edges (constrained within the source's full length). */
+  function findClipResizeEdge(
+    x: number,
+    y: number,
+  ): { clip: Clip; edge: "start" | "end"; band: { top: number; bottom: number } } | null {
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i];
+      const band = videoBands[i];
+      if (y < band.top || y >= band.bottom) continue;
+      const range = clipRangeS(c);
+      const xStart = tToX(range.startS);
+      const xEnd = tToX(range.endS);
+      // End edge first — when start and end are very close together (a
+      // freshly-trimmed sliver) the user is more likely aiming at the
+      // visible right edge.
+      if (Math.abs(x - xEnd) <= HANDLE_HIT) return { clip: c, edge: "end", band };
+      if (Math.abs(x - xStart) <= HANDLE_HIT) return { clip: c, edge: "start", band };
+    }
+    return null;
+  }
+
   function classifyAudioHit(x: number): "trim-in" | "trim-out" | "playhead" | "loop" | null {
     const xp = tToX(currentTime);
     const xIn = tToX(trim.in);
@@ -552,8 +640,37 @@ export function Timeline({
     //   * Locked (default): click anywhere = scrub the playhead (the
     //     playhead can be dragged through dense clips without getting
     //     stuck).
-    //   * Unlocked: click on a clip pill = drag-move that clip; click on
-    //     empty area = scrub the playhead. Selection always happens.
+    //   * Unlocked: click on the right edge of an image clip = resize
+    //     drag (durationS); click on a clip pill = drag-move that clip;
+    //     click on empty area = scrub the playhead. Selection always
+    //     happens.
+    if (!lanesLocked) {
+      const edge = findClipResizeEdge(x, y);
+      if (edge) {
+        setSelectedClipId(edge.clip.id);
+        const range = clipRangeS(edge.clip);
+        if (edge.clip.kind === "image") {
+          dragRef.current = {
+            kind: edge.edge === "end" ? "image-resize-end" : "image-resize-start",
+            camId: edge.clip.id,
+            grabT: tRaw,
+            origDurationS: edge.clip.durationS,
+            origStartOffsetS: edge.clip.startOffsetS,
+          };
+        } else if (isVideoClip(edge.clip)) {
+          dragRef.current = {
+            kind: edge.edge === "end" ? "video-trim-out" : "video-trim-in",
+            camId: edge.clip.id,
+            origStartS: range.startS,
+            origTrimInS: edge.clip.trimInS ?? 0,
+            origTrimOutS:
+              edge.clip.trimOutS ?? edge.clip.sourceDurationS,
+            sourceDurationS: edge.clip.sourceDurationS,
+          };
+        }
+        return;
+      }
+    }
     const hit = findClipAt(x, y);
     if (hit) {
       setSelectedClipId(hit.clip.id);
@@ -592,6 +709,30 @@ export function Timeline({
     const drag = dragRef.current;
     if (drag.kind === "playhead") {
       seek(snapped(tRaw, e));
+    } else if (drag.kind === "image-resize-end") {
+      // New right edge follows the pointer (snapped to the active grid),
+      // durationS = new-right - startOffsetS.
+      const newRightS = snapped(xToT(x), e);
+      const newDuration = newRightS - drag.origStartOffsetS;
+      setImageClipDuration(drag.camId, newDuration);
+    } else if (drag.kind === "image-resize-start") {
+      // Left edge moves; right edge stays fixed at orig + origDuration.
+      const origRight = drag.origStartOffsetS + drag.origDurationS;
+      const newLeft = Math.min(origRight - 0.1, snapped(xToT(x), e));
+      setClipStartOffset(drag.camId, newLeft);
+      setImageClipDuration(drag.camId, origRight - newLeft);
+    } else if (drag.kind === "video-trim-out") {
+      // New right edge on master timeline → trimOutS = new-right -
+      // (origStartS - origTrimInS) so the un-trimmed startS stays put.
+      const baseStartS = drag.origStartS - drag.origTrimInS;
+      const newRightS = snapped(xToT(x), e);
+      const newTrimOutS = newRightS - baseStartS;
+      setVideoClipTrim(drag.camId, drag.origTrimInS, newTrimOutS);
+    } else if (drag.kind === "video-trim-in") {
+      const baseStartS = drag.origStartS - drag.origTrimInS;
+      const newLeftS = snapped(xToT(x), e);
+      const newTrimInS = newLeftS - baseStartS;
+      setVideoClipTrim(drag.camId, newTrimInS, drag.origTrimOutS);
     } else if (drag.kind === "trim-in") {
       setTrim({ in: snapped(tRaw, e), out: trim.out });
     } else if (drag.kind === "trim-out") {
@@ -678,24 +819,57 @@ export function Timeline({
     frozenTimelineRangeRef.current = null;
   };
 
-  // Wheel zoom — anchored at the cursor's master-time. scrollX is
-  // expressed as offset (≥0) from the timeline's left edge (= the
-  // most-negative cam start, or 0).
+  // Trackpad-aware wheel handling — three exclusive modes:
+  //
+  //   1. Pinch / Ctrl-wheel (browsers map trackpad pinch to wheel +
+  //      ctrlKey, mouse Ctrl/Cmd+wheel does the same): zoom, anchored
+  //      at the cursor's master-time. preventDefault stops the
+  //      browser's page-zoom.
+  //   2. Alt-wheel: also zoom — kept as a mouse-only fallback for
+  //      users without a trackpad pinch gesture.
+  //   3. Horizontal wheel (|deltaX| > |deltaY|): scrub time. The
+  //      trackpad's natural left/right swipe nudges scrollX.
+  //   4. Plain vertical wheel: not handled here — bubbles to the
+  //      lane container's `overflow-y: auto` for natural lane scroll.
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const tAtCursor = xToT(x);
-    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-    const newZoom = Math.max(1, Math.min(64, zoom * factor));
-    if (newZoom === zoom) return;
-    const newVisible = timelineSpan / newZoom;
-    const desiredViewStart = tAtCursor - (x / canvasWidth) * newVisible;
-    const newScroll = Math.max(
-      0,
-      Math.min(timelineSpan - newVisible, desiredViewStart - timelineStartS),
-    );
-    setZoom(newZoom);
-    setScrollX(newScroll);
+    const isZoomGesture = e.ctrlKey || e.metaKey || e.altKey;
+    if (isZoomGesture) {
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const tAtCursor = xToT(x);
+      // Pinch gestures emit small smooth deltas; mouse wheel emits
+      // chunky 100+ ones. Scale the factor so the pinch feels natural
+      // without making the mouse wheel laggy.
+      const intensity = Math.min(1, Math.abs(e.deltaY) / 50);
+      const step = 1 + 0.2 * intensity;
+      const factor = e.deltaY < 0 ? step : 1 / step;
+      const newZoom = Math.max(1, Math.min(64, zoom * factor));
+      if (newZoom === zoom) return;
+      const newVisible = timelineSpan / newZoom;
+      const desiredViewStart = tAtCursor - (x / canvasWidth) * newVisible;
+      const newScroll = Math.max(
+        0,
+        Math.min(timelineSpan - newVisible, desiredViewStart - timelineStartS),
+      );
+      setZoom(newZoom);
+      setScrollX(newScroll);
+      return;
+    }
+
+    // Horizontal wheel = time scrub. Only intercept when deltaX
+    // dominates, so a near-vertical trackpad swipe still falls through
+    // to the lane scroll.
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && e.deltaX !== 0) {
+      e.preventDefault();
+      const dt = (e.deltaX / canvasWidth) * visibleDur;
+      const cur = viewStart - timelineStartS;
+      const next = Math.max(0, Math.min(timelineSpan - visibleDur, cur + dt));
+      setScrollX(next);
+      return;
+    }
+    // Plain vertical wheel: let it bubble so overflow-y on the lane
+    // container scrolls. No preventDefault, no setScroll.
   };
 
   // ---- Custom hardware-mixer scrollbar ----
@@ -752,7 +926,12 @@ export function Timeline({
     } else {
       // Video lane — over a clip the cursor is `pointer` (clip is selectable
       // + scrub-draggable). Alt-modifier shows a `move` cursor to hint at
-      // the alternate clip-move drag behavior.
+      // the alternate clip-move drag behavior. Image clips have a resize
+      // affordance on their right edge.
+      if (!lanesLocked && findClipResizeEdge(x, y)) {
+        setHoverCursor("ew-resize");
+        return;
+      }
       const overClip = findClipAt(x, y);
       if (overClip) {
         setHoverCursor(e.altKey ? "move" : "pointer");
@@ -899,11 +1078,13 @@ export function Timeline({
          *  cams doesn't push the timeline section into the preview area —
          *  past ~5 cam lanes a vertical scrollbar appears on the right. */}
         <div
-          className="flex"
+          ref={laneStackRef}
+          className="flex no-native-scrollbar relative"
           style={{
             maxHeight: 5 * videoLaneHeight + audioLaneHeight,
             overflowY: "auto",
           }}
+          onScroll={updateLaneScroll}
         >
           <div className="shrink-0 flex flex-col" style={{ width: HEADER_W }}>
             {clips.map((clip, i) => (
@@ -995,6 +1176,18 @@ export function Timeline({
               onPointerCancel={onPointerUp}
               onWheel={onWheel}
               style={{ cursor: hoverCursor, touchAction: "none", display: "block" }}
+            />
+            {/* Custom vertical fader-thumb — overlay on the right edge of
+             *  the canvas column, mirrors scrollTop of the lane stack.
+             *  Native scrollbar is hidden via .no-native-scrollbar; the
+             *  underlying overflow-y: auto still handles wheel/touch. */}
+            <VerticalFaderThumb
+              scrollTop={laneScroll.top}
+              scrollHeight={laneScroll.height}
+              viewport={laneScroll.viewport}
+              onScrollTo={(t) => {
+                if (laneStackRef.current) laneStackRef.current.scrollTop = t;
+              }}
             />
           </div>
         </div>
@@ -1106,34 +1299,60 @@ function drawVideoLane({
   const pillW = Math.min(canvasWidth, xEnd) - pillX;
   if (pillW <= 0) return;
 
-  // Thumbnails — only inside the clip's pill region, with target tile width.
+  // Thumbnails — only inside the clip's pill region. Image clips show a
+  // single object-fit:cover preview; video clips show the tiled
+  // frame-strip sampled along the clip's source-time.
   if (img && img.width > 0 && img.height > 0) {
-    const sourceTileW = img.height * aspect;
-    const tilesShown = Math.max(2, Math.round(pillW / TARGET_TILE_W));
-    const tileWDest = pillW / tilesShown;
-    const inset = 4; // padding inside pill so the rounded corners look clean
+    const inset = 4;
     const drawTop = bandTop + inset;
     const drawH = bandH - inset * 2;
     ctx.save();
-    // Round-rect clip so thumbnails respect the pill boundaries.
     roundRectPath(ctx, pillX, bandTop + 2, pillW, bandH - 4, 6);
     ctx.clip();
-    for (let i = 0; i < tilesShown; i++) {
-      const tFrac = (i + 0.5) / tilesShown; // sample mid-tile
-      const tInClip = range.startS + tFrac * (range.endS - range.startS);
-      const sourceFrac = (tInClip - range.startS) / (range.endS - range.startS);
-      const sx = Math.max(0, Math.min(img.width - sourceTileW, sourceFrac * img.width - sourceTileW / 2));
-      ctx.drawImage(
-        img,
-        sx,
-        0,
-        sourceTileW,
-        img.height,
-        pillX + i * tileWDest,
-        drawTop,
-        tileWDest,
-        drawH,
-      );
+
+    if (clip.kind === "image") {
+      // object-fit: cover — fill the pill, crop the image to fit
+      // the lane height. Repeat horizontally if the pill is wider
+      // than one display copy so a long-duration still doesn't end
+      // up with awkward empty regions.
+      const dispW = drawH * (img.width / img.height);
+      if (dispW > 0) {
+        for (let x = pillX; x < pillX + pillW; x += dispW) {
+          const w = Math.min(dispW, pillX + pillW - x);
+          ctx.drawImage(
+            img,
+            0,
+            0,
+            (w / dispW) * img.width,
+            img.height,
+            x,
+            drawTop,
+            w,
+            drawH,
+          );
+        }
+      }
+    } else {
+      const sourceTileW = img.height * aspect;
+      const tilesShown = Math.max(2, Math.round(pillW / TARGET_TILE_W));
+      const tileWDest = pillW / tilesShown;
+      for (let i = 0; i < tilesShown; i++) {
+        const tFrac = (i + 0.5) / tilesShown; // sample mid-tile
+        const tInClip = range.startS + tFrac * (range.endS - range.startS);
+        const sourceFrac = (tInClip - range.startS) / (range.endS - range.startS);
+        const sx = Math.max(0, Math.min(img.width - sourceTileW, sourceFrac * img.width - sourceTileW / 2));
+        ctx.drawImage(
+          img,
+          sx,
+          0,
+          sourceTileW,
+          img.height,
+          pillX + i * tileWDest,
+          drawTop,
+          tileWDest,
+          drawH,
+        );
+      }
     }
     ctx.restore();
   }
@@ -1158,6 +1377,124 @@ function drawVideoLane({
   // even when the pill is compressed.
   ctx.fillStyle = clip.color;
   ctx.fillRect(pillX, bandTop, pillW, 3);
+
+  // Resize grips on both edges — three short vertical bars tucked
+  // just inside the pill so the user sees the affordance without
+  // needing to hover for the cursor change. Image and video clips
+  // both resize (image: durationS / startOffsetS; video: trim in/out).
+  if (pillW > 18) {
+    ctx.save();
+    ctx.fillStyle = "rgba(26,24,22,0.55)";
+    const drawGrip = (cx: number) => {
+      const gy = bandTop + bandH * 0.5 - 6;
+      for (let i = 0; i < 3; i++) {
+        ctx.fillRect(cx + i * 2 - 2, gy, 1, 12);
+      }
+    };
+    if (xStart >= 0) drawGrip(Math.max(0, xStart) + 4);
+    if (xEnd <= canvasWidth) drawGrip(Math.min(canvasWidth - 1, xEnd) - 4);
+    ctx.restore();
+  }
+}
+
+/** Hardware-fader vertical scrollbar — mirrors the horizontal one's
+ *  cassette-aesthetic but rotated 90°. Visible only when the lane
+ *  stack overflows. Pointer-drag the thumb to scroll. */
+function VerticalFaderThumb({
+  scrollTop,
+  scrollHeight,
+  viewport,
+  onScrollTo,
+}: {
+  scrollTop: number;
+  scrollHeight: number;
+  viewport: number;
+  onScrollTo: (t: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ startY: number; startTop: number } | null>(null);
+  const overflows = scrollHeight > viewport + 0.5;
+  const thumbH = overflows
+    ? Math.max(28, (viewport / scrollHeight) * viewport)
+    : 0;
+  const trackInnerH = Math.max(0, viewport - thumbH);
+  const maxScroll = Math.max(0, scrollHeight - viewport);
+  const thumbY = maxScroll > 0 ? (scrollTop / maxScroll) * trackInnerH : 0;
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!overflows) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { startY: e.clientY, startTop: scrollTop };
+  };
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || trackInnerH <= 0) return;
+    const dy = e.clientY - d.startY;
+    const delta = (dy / trackInnerH) * maxScroll;
+    onScrollTo(Math.max(0, Math.min(maxScroll, d.startTop + delta)));
+  };
+  const onPointerUp = () => {
+    dragRef.current = null;
+  };
+
+  if (!overflows) return null;
+
+  return (
+    <div
+      ref={trackRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      className="absolute right-0 top-0"
+      style={{
+        width: SCROLLBAR_H,
+        height: viewport,
+        background:
+          "linear-gradient(90deg, #C9BFA6 0%, #DDD4BE 50%, #C9BFA6 100%)",
+        boxShadow: "inset 1px 0 2px rgba(0,0,0,0.18)",
+        touchAction: "none",
+      }}
+    >
+      {/* Tick column for the fader-rail feel */}
+      <div className="absolute inset-x-[3px] top-0 bottom-0 flex flex-col items-center justify-between pointer-events-none">
+        {Array.from({ length: 16 }).map((_, i) => (
+          <span
+            key={i}
+            className="h-px w-[6px] block"
+            style={{ background: "rgba(0,0,0,0.18)" }}
+          />
+        ))}
+      </div>
+      {/* Thumb */}
+      <div
+        className="absolute left-[2px] right-[2px] rounded-sm"
+        style={{
+          top: thumbY,
+          height: thumbH,
+          background:
+            "linear-gradient(90deg, #FAF6EC 0%, #DDD4BE 50%, #C9BFA6 100%)",
+          boxShadow:
+            "inset 1px 0 0 rgba(255,255,255,0.7), inset -1px 0 0 rgba(0,0,0,0.15), 1px 0 2px rgba(0,0,0,0.12)",
+          cursor: "grab",
+        }}
+      >
+        {/* Knurled grip lines on the thumb (rotated relative to horizontal). */}
+        <span
+          className="absolute left-1 right-1 top-1/2 -translate-y-1/2 flex flex-col gap-[1px]"
+          style={{ height: 14 }}
+        >
+          {Array.from({ length: 5 }).map((_, i) => (
+            <span
+              key={i}
+              className="h-[1px] w-full block"
+              style={{ background: "rgba(0,0,0,0.22)" }}
+            />
+          ))}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function drawHandle(ctx: CanvasRenderingContext2D, x: number, top: number, h: number) {

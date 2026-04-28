@@ -49,6 +49,8 @@ export function buildPersistPatch(
       syncOverrideMs: clip.syncOverrideMs,
       startOffsetS: clip.startOffsetS,
       selectedCandidateIdx: clip.selectedCandidateIdx,
+      trimInS: clip.trimInS,
+      trimOutS: clip.trimOutS,
     };
   });
 
