@@ -148,11 +148,7 @@ export function Timeline({
     });
   };
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Raw inner-width for the canvas column. Effective canvasWidth
-  // shrinks by SCROLLBAR_H when the lane stack overflows so the
-  // canvas content (waveform, trim handles, …) doesn't extend under
-  // the vertical fader thumb.
-  const [baseCanvasWidth, setBaseCanvasWidth] = useState(800);
+  const [canvasWidth, setCanvasWidth] = useState(800);
   const dragRef = useRef<DragKind | null>(null);
   /** Set during a clip-move drag so the PROGRAM strip can show match
    *  markers only while the user is actually re-aligning a cam. */
@@ -259,7 +255,7 @@ export function Timeline({
     if (!wrapRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0].contentRect.width;
-      setBaseCanvasWidth(Math.max(0, w - HEADER_W));
+      setCanvasWidth(Math.max(0, w - HEADER_W));
     });
     ro.observe(wrapRef.current);
     return () => ro.disconnect();
@@ -271,16 +267,6 @@ export function Timeline({
   useEffect(() => {
     updateLaneScroll();
   }, [clips.length]);
-
-  // When the lane stack overflows, the vertical fader claims the
-  // right SCROLLBAR_H pixels of the canvas column → shrink the
-  // effective canvas width so audio handles / waveform / clip pills
-  // don't draw under the thumb.
-  const laneOverflows = laneScroll.height > laneScroll.viewport + 0.5;
-  const canvasWidth = Math.max(
-    0,
-    baseCanvasWidth - (laneOverflows ? SCROLLBAR_H : 0),
-  );
 
   // ---- Per-cam thumbnail Image objects ----
   // Video clips: load the frames-strip (multiple stills laid out
