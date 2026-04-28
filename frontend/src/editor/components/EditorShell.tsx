@@ -137,10 +137,12 @@ function PanelHandle({
   collapsed: boolean;
   onToggle: () => void;
 }) {
-  // Outer grid has px-3 (12) + gap-3 (12). Negative right escapes the
-  // right padding so the handle is flush with the screen edge when the
-  // panel is gone; expanded sits flush with the panel's left edge.
-  const rightPx = collapsed ? -12 : EXPANDED_W + 12;
+  // Outer grid has px-3 (12) + gap-3 (12). `right: 0` puts the handle's
+  // right edge at the grid's outer right edge = the screen edge → flush.
+  // Expanded: panel takes the right column (EXPANDED_W) plus the gap-3
+  // between columns, so the handle's right edge sits exactly at the
+  // panel's left edge.
+  const rightPx = collapsed ? 0 : EXPANDED_W + 12;
 
   return (
     <button
