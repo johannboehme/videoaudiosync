@@ -1,11 +1,22 @@
 /**
- * Public sync API. Loads the WASM lazily on first call and runs the algorithm
- * inline (Phase 2 ships without an explicit Web Worker; the WASM is fast
- * enough on M1 that the main thread stalls under 1s for 90s of audio. We
- * move it into a Worker if profiling shows a UX problem in Phase 5).
+ * Public sync API.
+ *
+ * The expensive WASM matcher runs in a dedicated Web Worker
+ * ([./sync.worker.ts](./sync.worker.ts)) so the main thread (and the
+ * editor UI) stays interactive while a sync is in flight. Audio decoding
+ * stays on the main thread — `OfflineAudioContext` has rough edges in
+ * workers (especially Safari), and the resulting Float32Array buffers
+ * are handed to the worker zero-copy via the structured-clone Transfer
+ * mechanism.
+ *
+ * A small dispatch gate (`pauseSync` / `resumeSync`) lets callers defer
+ * worker submissions when the editor is actively playing back, to avoid
+ * cache/bandwidth contention with WebCodecs decoding. Phase 4 wires the
+ * editor store into this; the gate is open by default.
  */
 
 import { decodeAudioToMonoPcm } from "../codec/index";
+import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync.worker";
 
 export interface MatchCandidate {
   /** Offset (master-timeline ms) at which this candidate would align the cam. */
@@ -25,19 +36,6 @@ export interface SyncResult {
   /** Top-K alternative offsets ranked by sample-level confidence.
    *  candidates[0] mirrors offsetMs/confidence (the chosen primary). */
   candidates: MatchCandidate[];
-}
-
-let wasmInitialized: Promise<typeof import("../../../wasm/sync-core/pkg/sync_core.js")> | null = null;
-
-async function loadWasm() {
-  if (!wasmInitialized) {
-    wasmInitialized = (async () => {
-      const mod = await import("../../../wasm/sync-core/pkg/sync_core.js");
-      await mod.default();
-      return mod;
-    })();
-  }
-  return wasmInitialized;
 }
 
 const TARGET_SR = 22050;
@@ -90,12 +88,97 @@ export function mapWasmResult(raw: RawSyncResult): SyncResult {
   };
 }
 
+// -----------------------------------------------------------------------------
+// Dispatch gate: a tiny pause/resume primitive callers can use to defer
+// dispatching new sync work (e.g. while the editor is playing back).
+// -----------------------------------------------------------------------------
+
+let pauseDeferred: { promise: Promise<void>; release: () => void } | null = null;
+
+/**
+ * Pause future `syncAudio()` dispatches. In-flight worker calls keep
+ * running — the gate only affects calls that haven't yet handed work to
+ * the worker. Idempotent.
+ */
+export function pauseSync(): void {
+  if (pauseDeferred) return;
+  let release: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pauseDeferred = { promise, release };
+}
+
+/** Release any callers waiting at the gate. Idempotent. */
+export function resumeSync(): void {
+  if (!pauseDeferred) return;
+  const d = pauseDeferred;
+  pauseDeferred = null;
+  d.release();
+}
+
+/** True iff the gate is currently closed. Useful for telemetry/UI. */
+export function isSyncPaused(): boolean {
+  return pauseDeferred !== null;
+}
+
+async function awaitGate(): Promise<void> {
+  while (pauseDeferred) {
+    await pauseDeferred.promise;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Worker dispatch
+// -----------------------------------------------------------------------------
+
+function runMatchInWorker(
+  refPcm: Float32Array,
+  queryPcm: Float32Array,
+  sampleRate: number,
+): Promise<RawSyncResult> {
+  return new Promise<RawSyncResult>((resolve, reject) => {
+    const worker = new Worker(new URL("./sync.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    const cleanup = () => {
+      worker.terminate();
+    };
+    worker.addEventListener(
+      "message",
+      (e: MessageEvent<SyncWorkerResponse>) => {
+        const msg = e.data;
+        if (msg.type === "result") {
+          resolve(msg.result);
+        } else {
+          reject(new Error(msg.message));
+        }
+        cleanup();
+      },
+    );
+    worker.addEventListener("error", (e) => {
+      reject(new Error(e.message || "sync worker errored"));
+      cleanup();
+    });
+
+    const req: SyncWorkerRequest = {
+      type: "match",
+      refPcm,
+      queryPcm,
+      sampleRate,
+    };
+    // Transfer the underlying buffers — main thread loses access to them
+    // after this, which is fine since we don't reuse PCMs past the call.
+    worker.postMessage(req, [refPcm.buffer, queryPcm.buffer]);
+  });
+}
+
 export async function syncAudio(input: SyncInput): Promise<SyncResult> {
   const [refPcm, queryPcm] = await Promise.all([
     ensurePcm(input.refSource),
     ensurePcm(input.querySource),
   ]);
-  const wasm = await loadWasm();
-  const raw = wasm.syncAudioPcm(refPcm, queryPcm, TARGET_SR) as RawSyncResult;
+  await awaitGate();
+  const raw = await runMatchInWorker(refPcm, queryPcm, TARGET_SR);
   return mapWasmResult(raw);
 }
