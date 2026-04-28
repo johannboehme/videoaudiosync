@@ -53,9 +53,12 @@ export function EditorShell({
 
       {/* Desktop layout (lg+). When collapsed the side column is 0 px so
        *  the timeline and preview claim every available pixel; the
-       *  expand-handle floats over the right edge as a small grab tab. */}
+       *  expand-handle floats over the right edge as a small grab tab.
+       *  No overflow-hidden here — the handle uses negative `right`
+       *  to escape the px-3 padding and sit flush against the screen
+       *  edge when collapsed. */}
       <div
-        className="relative flex-1 hidden lg:grid gap-3 px-3 pb-3 overflow-hidden min-h-0 transition-[grid-template-columns] duration-200 ease-out"
+        className="relative flex-1 hidden lg:grid gap-3 px-3 pb-3 min-h-0 transition-[grid-template-columns] duration-200 ease-out"
         style={{
           gridTemplateColumns: sideCollapsed
             ? `1fr 0px`
@@ -122,15 +125,10 @@ export function EditorShell({
 }
 
 /**
- * Skeuomorphic drawer-pull that toggles the side panel. Floats over the
- * right side so it never reserves layout space. When collapsed it sits
- * flush against the right edge (panel is gone, full screen for the
- * editor); when expanded it sits just outside the panel's left edge.
- *
- * Look: a small chunky grip with knurled horizontal lines (mirrors the
- * fader-thumb on the time scrollbar), a brushed-cobalt face that sets
- * it apart from the paper chrome, and a hot LED dot at the top so the
- * eye lands on it.
+ * PanelHandle — anodized-aluminum drawer pull recessed into the editor's
+ * right edge. Toggles the side panel; sits flush at screen-edge when
+ * collapsed, flush at panel-edge when expanded. TE-language: brushed
+ * metal body, knurled center grip, etched direction chevron, no LEDs.
  */
 function PanelHandle({
   collapsed,
@@ -139,10 +137,10 @@ function PanelHandle({
   collapsed: boolean;
   onToggle: () => void;
 }) {
-  // Outer grid has px-3 + gap-3 (= 12 px each). When collapsed the panel
-  // is 0 so the handle sits inside the right padding; when expanded the
-  // panel takes EXPANDED_W and the handle sits at its left edge.
-  const rightPx = collapsed ? 12 : EXPANDED_W + 12 + 12;
+  // Outer grid has px-3 (12) + gap-3 (12). Negative right escapes the
+  // right padding so the handle is flush with the screen edge when the
+  // panel is gone; expanded sits flush with the panel's left edge.
+  const rightPx = collapsed ? -12 : EXPANDED_W + 12;
 
   return (
     <button
@@ -152,52 +150,53 @@ function PanelHandle({
       title={collapsed ? "Show panel" : "Hide panel"}
       className={[
         "group absolute top-1/2 -translate-y-1/2 z-20",
-        "w-3.5 h-11 rounded-l flex flex-col items-center justify-between py-1.5",
-        "transition-[right] duration-200 ease-out",
+        "w-3 h-10 rounded-l-md cursor-pointer",
+        "transition-[right,filter] duration-200 ease-out",
+        "hover:brightness-[1.05]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40",
       ].join(" ")}
-      style={{
-        right: rightPx,
-        background: "linear-gradient(180deg, #2A4F8F 0%, #1F4079 50%, #2A4F8F 100%)",
-        border: "1px solid rgba(0,0,0,0.45)",
-        boxShadow: [
-          "inset 0 1px 0 rgba(255,255,255,0.18)",
-          "inset 0 -1px 0 rgba(0,0,0,0.3)",
-          "-1px 1px 2px rgba(0,0,0,0.18)",
-        ].join(", "),
-      }}
+      style={{ right: rightPx, ...ALUMINUM_BODY }}
     >
-      {/* Hot LED at the top — small "this is interactive" cue. */}
+      {/* Knurled grip — repeating 1 px stripes read as machined ridges. */}
       <span
         aria-hidden
-        className="block w-1 h-1 rounded-full"
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-4 rounded-[1px]"
+        style={KNURLED_GRIP}
+      />
+
+      {/* Tiny etched direction chevron, painted on the metal. */}
+      <span
+        aria-hidden
+        className="absolute top-[2px] left-0 right-0 text-center font-display leading-none"
         style={{
-          background: "#FF5722",
-          boxShadow: "0 0 3px rgba(255,87,34,0.85)",
+          fontSize: 8,
+          color: "rgba(26,24,22,0.55)",
+          textShadow: "0 0.5px 0 rgba(255,255,255,0.55)",
         }}
-      />
-      {/* Knurled grip — three thin horizontal lines, brighter on hover. */}
-      <span
-        aria-hidden
-        className="flex flex-col gap-[2px] py-0.5"
       >
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="block w-[6px] h-[1px] rounded-sm"
-            style={{ background: "rgba(255,255,255,0.55)" }}
-          />
-        ))}
+        {collapsed ? "‹" : "›"}
       </span>
-      {/* Direction hint at the bottom — chevron-left when expanded
-       *  (collapse), chevron-right when collapsed (expand). Tucked
-       *  small so the grip texture stays the focal point. */}
-      <ChevronLeftIcon
-        className="w-2 h-2 transition-transform duration-200 text-paper-hi/85 group-hover:text-paper-hi"
-        style={{ transform: collapsed ? "rotate(180deg)" : "none" }}
-      />
     </button>
   );
 }
+
+const ALUMINUM_BODY: React.CSSProperties = {
+  background:
+    "linear-gradient(180deg, #E8E1D0 0%, #D5CAA8 52%, #C9BFA6 100%)",
+  border: "1px solid rgba(26,24,22,0.22)",
+  borderRight: "none",
+  boxShadow: [
+    "inset 0 1px 0 rgba(255,255,255,0.55)",
+    "inset 0 -1px 0 rgba(0,0,0,0.10)",
+    "-1px 1px 3px rgba(0,0,0,0.10)",
+  ].join(", "),
+};
+
+const KNURLED_GRIP: React.CSSProperties = {
+  background:
+    "repeating-linear-gradient(0deg, rgba(26,24,22,0.22) 0px, rgba(26,24,22,0.22) 1px, rgba(255,255,255,0.55) 1px, rgba(255,255,255,0.55) 2px, transparent 2px, transparent 3px)",
+  boxShadow: "inset 0 0 0 0.5px rgba(0,0,0,0.06)",
+};
 
 function TopBar({
   title,
