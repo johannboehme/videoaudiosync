@@ -58,6 +58,16 @@ type DragKind =
   | { kind: "trim-out" }
   | { kind: "loop"; offset: number }
   | {
+      /** Resize an image clip's right edge → updates durationS. Only
+       *  valid for image clips (video clips' source duration is fixed
+       *  by the file). */
+      kind: "image-resize-end";
+      camId: string;
+      grabT: number;
+      origDurationS: number;
+      origStartOffsetS: number;
+    }
+  | {
       kind: "clip-move";
       camId: string;
       grabT: number;
