@@ -141,10 +141,16 @@ function mix(...arrays) {
 function buildScenarios(side_a, side_b) {
   const scenarios = [];
 
-  // 30-second chunks from each side at varied positions.
+  // Chunks of varied length so we can compare how much section diversity
+  // helps the algorithm. 30 s often lands inside a single repetitive
+  // groove on pop tracks; 60–90 s usually crosses a verse/chorus boundary
+  // and breaks the local-periodicity tie.
   const a30 = sliceS(side_a, 30, 60);
   const a45 = sliceS(side_a, 60, 105);
+  const a60 = sliceS(side_a, 30, 90);
+  const a90 = sliceS(side_a, 30, 120);
   const b30 = sliceS(side_b, 0, 30);
+  void a45;
 
   // 1. Identity
   scenarios.push({
@@ -296,6 +302,38 @@ function buildScenarios(side_a, side_b) {
       name: "real-side_a-query-with-trailing-silence",
       ref: a30,
       query,
+      expectedOffsetMs: 0,
+      tolMs: TOL_MS,
+    });
+  }
+
+  // 22-25. Re-runs of the previously-failing scenarios with LONGER chunks
+  //        (60 s + 90 s) — testing the hypothesis that chord-progression
+  //        diversity across verse/chorus boundaries breaks the beat-grid
+  //        confusion that locked onto wrong peaks at ~932 ms / ~534 ms
+  //        on the 30 s bench.
+  for (const [chunk, dur] of [
+    [a60, 60],
+    [a90, 90],
+  ]) {
+    scenarios.push({
+      name: `real-side_a-${dur}s-pos-2500ms`,
+      ref: concat(silence(2.5), chunk),
+      query: chunk,
+      expectedOffsetMs: 2500,
+      tolMs: TOL_MS,
+    });
+    scenarios.push({
+      name: `real-side_a-${dur}s-chatter-then-music`,
+      ref: concat(silence(1), noise(2, 0.06, 99), chunk),
+      query: chunk,
+      expectedOffsetMs: 3000,
+      tolMs: TOL_MS,
+    });
+    scenarios.push({
+      name: `real-side_a-${dur}s-long-ref-start-0s`,
+      ref: concat(chunk, silence(10)),
+      query: chunk,
       expectedOffsetMs: 0,
       tolMs: TOL_MS,
     });
