@@ -87,7 +87,10 @@ export function SyncTuner({ lastSyncOverrideMs }: Props) {
       </header>
 
       {!selectedClip ? (
-        <SelectClipHint clips={clips} onPick={setSelectedClipId} />
+        <SelectClipHint
+          clips={clips.filter(isVideoClip)}
+          onPick={setSelectedClipId}
+        />
       ) : (
         <>
           {/* Selected clip name */}
@@ -235,7 +238,8 @@ function SelectClipHint({
     return (
       <div className="rounded-md border border-dashed border-rule px-4 py-6 text-center">
         <p className="font-mono text-xs text-ink-2 leading-relaxed">
-          No clips yet — upload at least one video to start tuning sync.
+          No video clips with sync data — only video cams that ran the
+          audio matcher show up here.
         </p>
       </div>
     );
@@ -243,24 +247,32 @@ function SelectClipHint({
   return (
     <div className="rounded-md border border-dashed border-rule px-4 py-4 flex flex-col gap-3">
       <p className="font-mono text-xs text-ink-2 leading-relaxed text-center">
-        Pick a clip in the timeline to tune its sync — or tap one here:
+        Pick a video cam to tune its sync — or tap one here:
       </p>
       <div className="flex flex-wrap gap-2 justify-center">
-        {clips.map((c, i) => (
-          <button
-            key={c.id}
-            type="button"
-            onClick={() => onPick(c.id)}
-            className="font-display tracking-label uppercase text-[10px] rounded-md border border-rule bg-paper-hi px-2.5 py-1.5 hover:bg-paper-deep transition-colors flex items-center gap-1.5"
-            style={{ borderLeftColor: c.color, borderLeftWidth: 3 }}
-          >
-            <span
-              className="inline-block w-2 h-2 rounded-full"
-              style={{ background: c.color }}
-            />
-            Cam {i + 1}
-          </button>
-        ))}
+        {clips.map((c) => {
+          // Strip "cam-" prefix to keep the label in sync with the
+          // timeline lane labels (which use the master cam index, not
+          // the filtered position).
+          const label = c.id.startsWith("cam-")
+            ? `Cam ${c.id.slice(4)}`
+            : c.id;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => onPick(c.id)}
+              className="font-display tracking-label uppercase text-[10px] rounded-md border border-rule bg-paper-hi px-2.5 py-1.5 hover:bg-paper-deep transition-colors flex items-center gap-1.5"
+              style={{ borderLeftColor: c.color, borderLeftWidth: 3 }}
+            >
+              <span
+                className="inline-block w-2 h-2 rounded-full"
+                style={{ background: c.color }}
+              />
+              {label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

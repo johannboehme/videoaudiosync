@@ -474,6 +474,21 @@ export async function addVideoToJob(
   const newCam = await persistVideoCam(jobId, file, existing.length);
   const camId = newCam.id;
 
+  // Probe dimensions BEFORE the first persist so the editor lane appears
+  // with its real duration immediately — without this the lane would be
+  // a zero-width invisible sliver until runCamPrep finishes seconds later.
+  try {
+    const { demuxVideoTrack } = await import("./codec/webcodecs/demux");
+    const v = await demuxVideoTrack(file);
+    if (v) {
+      newCam.durationS = v.info.durationS;
+      newCam.width = v.info.width;
+      newCam.height = v.info.height;
+    }
+  } catch {
+    // ignore — runCamPrep will probe again as a fallback
+  }
+
   // Append immediately (sync still undefined) so editor lane appears now.
   const next = [...existing, newCam];
   const saved = await jobsDb.updateJob(jobId, { videos: next });
@@ -997,6 +1012,48 @@ export async function resolveCamAssetUrl(
 export async function deleteJob(jobId: string): Promise<void> {
   await opfs.deletePath(`jobs/${jobId}`);
   await jobsDb.deleteJob(jobId);
+}
+
+/**
+ * Remove a single cam from an existing job. Cleans up the cam's video
+ * file and its frame-strip in OPFS, prunes any cuts that referenced it,
+ * and writes the slimmed videos[] back to IDB. Idempotent — unknown
+ * camIds are a silent no-op.
+ *
+ * Note: cam ids stay stable for cams that *remain* (no renumbering).
+ * That keeps existing cuts / overrides / persisted state valid.
+ */
+export async function removeCamFromJob(
+  jobId: string,
+  camId: string,
+): Promise<void> {
+  const job = await jobsDb.getJob(jobId);
+  if (!job?.videos) return;
+  const cam = job.videos.find((v) => v.id === camId);
+  if (!cam) return;
+
+  // Best-effort OPFS cleanup. Ignore not-found errors so a partially-
+  // prepped cam (frames still missing) deletes cleanly.
+  try {
+    await opfs.deletePath(cam.opfsPath);
+  } catch {
+    // ignore
+  }
+  if (isVideoAsset(cam) && cam.framesPath) {
+    try {
+      await opfs.deletePath(cam.framesPath);
+    } catch {
+      // ignore
+    }
+  }
+
+  const nextVideos = job.videos.filter((v) => v.id !== camId);
+  const nextCuts = (job.cuts ?? []).filter((c) => c.camId !== camId);
+  const updated = await jobsDb.updateJob(jobId, {
+    videos: nextVideos,
+    cuts: nextCuts,
+  });
+  emitJobUpdate(updated);
 }
 
 export { jobsDb };

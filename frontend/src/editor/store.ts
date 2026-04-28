@@ -169,6 +169,13 @@ interface EditorState {
    *  message text is unchanged. Null when nothing is showing. */
   notice: { message: string; key: number } | null;
 
+  /** Cams currently being prepared in the background (decode / match /
+   *  frames). The Editor's live-job-update handler sets this from the
+   *  underlying VideoAsset state — a cam is "preparing" while its
+   *  framesPath is still undefined, regardless of skipSync. The lane
+   *  header renders a small "PREP" badge while the cam is in this set. */
+  preparingCamIds: ReadonlySet<string>;
+
   // actions
   reset(): void;
   loadJob(
@@ -190,6 +197,9 @@ interface EditorState {
    *  runCamPrep finishes, the candidates / syncOffset arrive and the
    *  clip is re-derived). No-op for unknown camId. */
   updateClip(init: ClipInit): void;
+  /** Remove a clip and any cuts that referenced it. Clears the
+   *  selectedClipId if it pointed at this cam. No-op for unknown camId. */
+  removeClip(camId: string): void;
 
   setCurrentTime(t: number): void;
   setPlaying(playing: boolean): void;
@@ -288,6 +298,11 @@ interface EditorState {
   pushNotice(message: string): void;
   /** Clear the active notice. No-op when none is showing. */
   dismissNotice(): void;
+
+  /** Replace the set of cams in background-prep state. The Editor's
+   *  job-update handler calls this on every event so the badge tracks
+   *  the underlying asset state without leaks. */
+  setPreparingCamIds(ids: Iterable<string>): void;
 }
 
 const TRIM_EPS = 0.05; // seconds — minimum trim window length
@@ -382,6 +397,7 @@ export const useEditorStore = create<EditorState>()(
     holdGesture: null,
     quantizePreview: null,
     notice: null,
+    preparingCamIds: new Set<string>(),
 
     reset() {
       set({
@@ -399,6 +415,7 @@ export const useEditorStore = create<EditorState>()(
         holdGesture: null,
         quantizePreview: null,
         notice: null,
+        preparingCamIds: new Set<string>(),
       });
     },
 
@@ -489,6 +506,18 @@ export const useEditorStore = create<EditorState>()(
       const next = existing.slice();
       next[idx] = merged;
       set({ clips: next });
+    },
+
+    removeClip(camId) {
+      const state = get();
+      const idx = state.clips.findIndex((c) => c.id === camId);
+      if (idx < 0) return;
+      set({
+        clips: state.clips.filter((c) => c.id !== camId),
+        cuts: state.cuts.filter((c) => c.camId !== camId),
+        selectedClipId:
+          state.selectedClipId === camId ? null : state.selectedClipId,
+      });
     },
 
     setCurrentTime(t) {
@@ -982,6 +1011,24 @@ export const useEditorStore = create<EditorState>()(
     },
     dismissNotice() {
       set({ notice: null });
+    },
+
+    setPreparingCamIds(ids) {
+      const next = new Set(ids);
+      const cur = get().preparingCamIds;
+      // Avoid the set-state churn when the membership didn't actually
+      // change — keeps the LaneHeader from re-rendering on every event.
+      if (next.size === cur.size) {
+        let same = true;
+        for (const id of next) {
+          if (!cur.has(id)) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+      set({ preparingCamIds: next });
     },
   })),
 );

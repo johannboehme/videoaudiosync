@@ -14,20 +14,24 @@ import { useEditorStore } from "../editor/store";
 import {
   jobEvents,
   jobsDb,
+  removeCamFromJob,
   resolveJobAssetUrl,
   resolveCamAssetUrl,
   runEditRender,
   type LocalJob,
   type EditSpecLocal,
 } from "../local/jobs";
-import type { MediaAsset } from "../storage/jobs-db";
+import { isVideoAsset, type MediaAsset } from "../storage/jobs-db";
 import { decodeAudioToMonoPcm } from "../local/codec";
 import { computeWaveformPeaks } from "../local/waveform-peaks";
 import { exportSpecToRenderOpts } from "../editor/exportPresets";
 import { opfs } from "../storage/opfs";
 import type { ClipInit } from "../editor/store";
 import { useAutoPersist } from "../editor/useAutoPersist";
-import { getCachedAnalysis } from "../local/render/audio-analysis";
+import {
+  getCachedAnalysis,
+  getOrComputeAnalysis,
+} from "../local/render/audio-analysis";
 
 interface WaveformData {
   peaks: [number, number][];
@@ -303,8 +307,12 @@ export default function Editor() {
       const cam1Frames = camUrls[videos[0]?.id]?.framesUrl ?? null;
       if (cancelled || !cam1Url) return;
 
-      // Compute waveform peaks locally from the studio audio.
+      // Compute waveform peaks locally from the studio audio. Cache the
+      // decoded PCM so the audio-analysis fallback below can reuse it
+      // without a second decode pass.
       let wave: WaveformData | null = null;
+      let studioPcm: Float32Array | null = null;
+      let studioSampleRate = 22050;
       try {
         // Read the audio handle directly from OPFS so we don't fetch+blob it
         // a second time over an object URL.
@@ -316,6 +324,8 @@ export default function Editor() {
           decodeSrc = await fetch(audioUrl).then((r) => r.blob());
         }
         const decoded = await decodeAudioToMonoPcm(decodeSrc, 22050);
+        studioPcm = decoded.pcm;
+        studioSampleRate = decoded.sampleRate;
         const peaks = computeWaveformPeaks(decoded.pcm, decoded.sampleRate, 1500);
         wave = { peaks: peaks.peaks, duration: peaks.duration };
       } catch {
@@ -333,10 +343,24 @@ export default function Editor() {
 
       const clipInits: ClipInit[] = videos.map((v) => assetToClipInit(v));
 
-      // Pull cached audio analysis (BPM / beats / downbeats) if the
-      // pre-step ran. Non-fatal if missing — UI gracefully hides BPM
-      // and disables grid-snap modes.
-      const analysis = await getCachedAnalysis(j.id).catch(() => undefined);
+      // Pull cached audio analysis (BPM / beats / downbeats). If the
+      // cache is empty (older job, analysis failed in runSync, version
+      // bump) and we have decoded studio PCM in hand, compute it now —
+      // otherwise the BPM readout reads "———" and grid-snap modes stay
+      // disabled forever for this job.
+      let analysis = await getCachedAnalysis(j.id).catch(() => undefined);
+      if (!analysis && studioPcm) {
+        try {
+          analysis = await getOrComputeAnalysis(
+            j.id,
+            studioPcm,
+            studioSampleRate,
+          );
+        } catch {
+          // ignore — leaves BPM null
+        }
+      }
+      if (cancelled) return;
       const persistedBpm = j.bpm;
       const detectedTempo = analysis?.tempo;
       const detectedBpmInfo = detectedTempo
@@ -445,11 +469,65 @@ export default function Editor() {
       const store = useEditorStore.getState();
       const known = new Set(store.clips.map((c) => c.id));
       const videos = updated.videos ?? [];
+
+      // Drop store clips for assets that are no longer in videos[] (e.g.
+      // user just deleted a cam via the lane-header ×).
+      for (const c of store.clips) {
+        if (!videos.find((v) => v.id === c.id)) {
+          store.removeClip(c.id);
+        }
+      }
+      // Refresh the "preparing" set every event — a cam is preparing when
+      // its frames-strip hasn't been written yet (the prep pipeline writes
+      // it last). For image cams (no prep) the set never includes them.
+      store.setPreparingCamIds(
+        videos
+          .filter((v) => isVideoAsset(v) && !v.framesPath)
+          .map((v) => v.id),
+      );
+
       for (const asset of videos) {
         const init = assetToClipInit(asset);
         if (known.has(asset.id)) {
           // Existing cam — refresh it in case sync results just arrived.
           store.updateClip(init);
+          // The thumbnail strip lands AFTER the first event (runCamPrep
+          // writes framesPath at the end). If we don't have a framesUrl
+          // for this cam yet but the asset now has one, resolve it.
+          void (async () => {
+            const cur = (await jobsDb.getJob(id))?.videos?.find(
+              (v) => v.id === asset.id,
+            );
+            if (!cur || cur.kind === "image") return;
+            if (!cur.framesPath) return;
+            // Already have a frames URL? skip.
+            // We can't read assets directly here (closure capture); do
+            // best-effort by checking whether resolveCamAssetUrl returns
+            // something new and updating regardless — duplicate URL
+            // generation is harmless, just a minor leak that the unmount
+            // cleanup catches.
+            const framesUrl = await resolveCamAssetUrl(id, asset.id, "frames");
+            if (!framesUrl) return;
+            newCamUrls.push({ videoUrl: "", framesUrl });
+            setAssets((prev) => {
+              if (!prev) return prev;
+              const existingCam = prev.cams[asset.id];
+              // Skip if we already injected this exact URL.
+              if (existingCam?.framesUrl) {
+                URL.revokeObjectURL(framesUrl);
+                return prev;
+              }
+              return {
+                ...prev,
+                cams: {
+                  ...prev.cams,
+                  [asset.id]: existingCam
+                    ? { ...existingCam, framesUrl }
+                    : { videoUrl: "", framesUrl },
+                },
+              };
+            });
+          })();
           continue;
         }
         // New cam: resolve its URLs and inject into the editor.
@@ -586,6 +664,11 @@ export default function Editor() {
               )}
               peaks={assets.wave.peaks}
               audioDuration={assets.wave.duration}
+              onDeleteClip={(camId) => {
+                void removeCamFromJob(id, camId).catch((e) => {
+                  setErr(e instanceof Error ? e.message : "Delete failed");
+                });
+              }}
             />
           ) : (
             <div className="h-20 flex items-center justify-center text-ink-3 text-xs font-mono">

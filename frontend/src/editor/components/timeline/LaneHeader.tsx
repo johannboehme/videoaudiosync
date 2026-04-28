@@ -25,6 +25,11 @@ interface Props {
   pressed?: boolean;
   /** True once the hold has crossed the paint-mode threshold. */
   painting?: boolean;
+  /** Cam is in background prep (decoding / matching / extracting frames).
+   *  Surfaces as a pulsing "PREP" badge; the TAKE button still works
+   *  because the cam can already be cut to (the video plays even
+   *  before the matcher finishes). */
+  preparing?: boolean;
   onSelectClip?: () => void;
   /** Tap → quick cut. Hold gestures fire onTakeStart/Finish in addition. */
   onTake?: () => void;
@@ -38,6 +43,9 @@ interface Props {
   canReset?: boolean;
   /** Reset this cam to the primary candidate, no override, no startOffset. */
   onReset?: () => void;
+  /** Optional delete handler. When provided, a small × button shows on
+   *  hover. Prompts via window.confirm before firing. */
+  onDelete?: () => void;
   height?: number;
 }
 
@@ -52,12 +60,14 @@ export function LaneHeader({
   selected = false,
   pressed = false,
   painting = false,
+  preparing = false,
   onSelectClip,
   onTake,
   onTakeStart,
   onTakeFinish,
   canReset = false,
   onReset,
+  onDelete,
   height = 80,
 }: Props) {
   const handlePointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -104,7 +114,7 @@ export function LaneHeader({
     status === "on-air" ? "0 0 4px rgba(255,51,38,0.55)" : "inset 0 0 0 0.5px rgba(0,0,0,0.15)";
   return (
     <div
-      className="relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper-hi hover:bg-paper transition-colors"
+      className="group relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper-hi hover:bg-paper transition-colors"
       style={{
         width: HEADER_W,
         height,
@@ -112,6 +122,23 @@ export function LaneHeader({
       }}
       onClick={onSelectClip}
     >
+      {/* Delete affordance — shows only on hover, top-right corner. */}
+      {onDelete && (
+        <button
+          type="button"
+          aria-label={`Remove ${name}`}
+          title={`Remove ${name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (window.confirm(`Remove ${name} from this project?`)) {
+              onDelete();
+            }
+          }}
+          className="absolute top-0.5 right-0.5 z-10 w-4 h-4 flex items-center justify-center rounded-sm font-mono text-[11px] leading-none text-ink-3 hover:text-danger hover:bg-danger/10 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          ×
+        </button>
+      )}
       {/* Cam-color edge stripe — full-height solid bar. */}
       <div className="w-[5px] shrink-0" style={{ background: color }} />
 
@@ -162,6 +189,20 @@ export function LaneHeader({
           >
             {filename}
           </span>
+          {preparing && (
+            <span
+              className="inline-flex items-center gap-1 font-display tracking-label uppercase text-[8.5px] text-hot mt-0.5"
+              role="status"
+              aria-live="polite"
+            >
+              <span
+                aria-hidden
+                className="inline-block w-[5px] h-[5px] rounded-full bg-hot animate-pulse"
+                style={{ boxShadow: "0 0 4px rgba(255,87,34,0.85)" }}
+              />
+              prep
+            </span>
+          )}
         </div>
 
         {/* TAKE button — slimmer, with the keyboard-hotkey number as a

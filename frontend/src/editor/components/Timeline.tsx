@@ -46,6 +46,10 @@ interface Props {
   audioLaneHeight?: number;
   /** Per-video-lane height in px. */
   videoLaneHeight?: number;
+  /** Called when the user clicks the × on a lane header. The Editor wires
+   *  this to removeCamFromJob — undefined means the delete affordance is
+   *  hidden (e.g. for the very first cam in a single-cam project). */
+  onDeleteClip?: (camId: string) => void;
 }
 
 type DragKind =
@@ -83,6 +87,7 @@ export function Timeline({
   audioDuration,
   audioLaneHeight = 48,
   videoLaneHeight = 48,
+  onDeleteClip,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -124,6 +129,7 @@ export function Timeline({
   const setSelectedCandidateIdx = useEditorStore((s) => s.setSelectedCandidateIdx);
   const resetClipAlignment = useEditorStore((s) => s.resetClipAlignment);
   const removeCutAt = useEditorStore((s) => s.removeCutAt);
+  const preparingCamIds = useEditorStore((s) => s.preparingCamIds);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const holdGesture = useEditorStore((s) => s.holdGesture);
   const snapMode = useEditorStore((s) => s.ui.snapMode);
@@ -953,6 +959,8 @@ export function Timeline({
                     clip.selectedCandidateIdx !== 0)
                 }
                 onReset={() => resetClipAlignment(clip.id)}
+                preparing={preparingCamIds.has(clip.id)}
+                onDelete={() => onDeleteClip?.(clip.id)}
                 height={videoLaneHeight}
               />
             ))}
