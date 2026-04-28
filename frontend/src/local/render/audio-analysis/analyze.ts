@@ -24,6 +24,7 @@
  * (`i*hop / sr`) would put every onset/beat ~46 ms early at sr=22050.
  */
 import FFT from "fft.js";
+import { ANALYSIS_VERSION } from "./types";
 import type { AudioAnalysis, BandSet, Tempo } from "./types";
 
 const N_FFT = 2048;
@@ -83,16 +84,46 @@ export function analyzeAudio(
   const rms = computeRms(pcm, hopSize, totalFrames, N_FFT);
 
   // Spectral-flux onset envelope (sum of positive frame-to-frame magnitude
-  // differences across all bins, log-compressed to tame loud bursts).
+  // differences across all bins, log-compressed to tame loud bursts). We
+  // need this both for the onset/beat pipeline AND for audio-start
+  // detection — silence has flux ≈ 0 (mag is zero so the log-difference
+  // doesn't fire), so the first real musical event is also the first
+  // place onset strength rises off the floor.
   const onsetStrength = spectralFlux(mag);
 
-  // Peak-pick onsets on the global flux + per band.
+  // Audio-start: where the actual performance begins. For OP-1 / hardware
+  // synth recordings the operator hits "play" some seconds after starting
+  // capture, so the file leads with absolute silence. Without skipping the
+  // silent intro, the DP beat-tracker periodically backtracks into that
+  // silence and reports imaginary "beats" anchoring Bar 1 in the wrong
+  // place.
+  //
+  // Two-stage detection: only treat the file as having a silent intro
+  // when its first 300 ms sit at the floating-point floor (true digital
+  // silence — what hardware recorders output before play is hit). For
+  // every other case — continuous pad, loud-from-t=0, room tone — keep
+  // audioStartFrame = 0 so we don't accidentally lop off non-percussive
+  // material that just doesn't trigger the onset detector.
+  const audioStartFrame = detectAudioStartFrame(rms, onsetStrength, framesPerSec);
+  const audioStartS = frameToSec(audioStartFrame);
+
+  // Zero out the part of the onset envelope that lies in the silent intro
+  // so the peak-picker, autocorrelation, and beat-tracker all see "nothing
+  // happens here". For tracks without a silent intro audioStartFrame is 0
+  // and the gate is a no-op.
+  for (let i = 0; i < audioStartFrame && i < onsetStrength.length; i++) {
+    onsetStrength[i] = 0;
+  }
+
+  // Peak-pick onsets on the global flux + per band. Per-band envelopes are
+  // gated the same way so onsetsByBand stays consistent with the global
+  // onsets list.
   const onsets = pickOnsetFrames(onsetStrength, framesPerSec).map(frameToSec);
   const onsetsByBand: BandSet = {
-    bass: pickOnsetFrames(diffPositive(bands.bass), framesPerSec).map(frameToSec),
-    lowMids: pickOnsetFrames(diffPositive(bands.lowMids), framesPerSec).map(frameToSec),
-    mids: pickOnsetFrames(diffPositive(bands.mids), framesPerSec).map(frameToSec),
-    highs: pickOnsetFrames(diffPositive(bands.highs), framesPerSec).map(frameToSec),
+    bass: pickOnsetFrames(maskFirst(diffPositive(bands.bass), audioStartFrame), framesPerSec).map(frameToSec),
+    lowMids: pickOnsetFrames(maskFirst(diffPositive(bands.lowMids), audioStartFrame), framesPerSec).map(frameToSec),
+    mids: pickOnsetFrames(maskFirst(diffPositive(bands.mids), audioStartFrame), framesPerSec).map(frameToSec),
+    highs: pickOnsetFrames(maskFirst(diffPositive(bands.highs), audioStartFrame), framesPerSec).map(frameToSec),
   };
 
   // Coarse tempo seed via onset-strength autocorrelation. The phase it
@@ -101,9 +132,11 @@ export function analyzeAudio(
   // peak is what gets the DP beat-tracker into the right octave.
   const seedTempo = detectTempo(onsetStrength, framesPerSec);
 
-  // Beat-tracking via DP over the onset envelope, given the tempo.
+  // Beat-tracking via DP over the onset envelope, given the tempo. Gate
+  // it on the audio-start frame so the DP can't periodically backtrack
+  // into the silent intro and report imaginary "beats" there.
   const beatFrames = seedTempo
-    ? trackBeatFrames(onsetStrength, framesPerSec, seedTempo)
+    ? trackBeatFrames(onsetStrength, framesPerSec, seedTempo, audioStartFrame)
     : [];
   const beats = beatFrames.map(frameToSec);
 
@@ -118,9 +151,10 @@ export function analyzeAudio(
   const downbeats = beats.filter((_, i) => i % 4 === 0);
 
   return {
-    version: 1,
+    version: ANALYSIS_VERSION,
     sampleRate,
     duration,
+    audioStartS,
     hopSize,
     framesPerSec,
     bands,
@@ -132,6 +166,54 @@ export function analyzeAudio(
     downbeats,
     tempo,
   };
+}
+
+/**
+ * Decide whether the file leads with true digital silence (a hardware
+ * recorder running before the operator pressed play) and if so, find
+ * the frame of the first significant onset.
+ *
+ * - SILENCE_RMS = 1e-4 (~-80 dBFS). Below the noise floor of any analog
+ *   path; only digital silence sits this low. If the first 300 ms cross
+ *   this even once we treat the track as already-running.
+ * - SIGNIFICANT_ONSET = 0.1. Onset strength is normalized [0, 1]; a real
+ *   musical event clears this comfortably.
+ * - Backoff of 30 ms so the leading edge of the first transient isn't
+ *   clipped by the gate.
+ */
+const SILENCE_RMS = 1e-4;
+const SIGNIFICANT_ONSET = 0.1;
+const SILENT_INTRO_PROBE_S = 0.3;
+
+function detectAudioStartFrame(
+  rms: number[],
+  onsetStrength: number[],
+  framesPerSec: number,
+): number {
+  if (rms.length === 0 || onsetStrength.length === 0) return 0;
+
+  // Probe the first ~300 ms. Any frame above the silence floor means the
+  // file is already playing audio at t=0 — don't gate.
+  const probeFrames = Math.max(1, Math.round(SILENT_INTRO_PROBE_S * framesPerSec));
+  for (let i = 0; i < Math.min(probeFrames, rms.length); i++) {
+    if (rms[i] > SILENCE_RMS) return 0;
+  }
+
+  // Silent intro confirmed — find where the music kicks in.
+  const backoff = Math.max(1, Math.round(0.03 * framesPerSec));
+  for (let i = 0; i < onsetStrength.length; i++) {
+    if (onsetStrength[i] > SIGNIFICANT_ONSET) {
+      return Math.max(0, i - backoff);
+    }
+  }
+  return 0;
+}
+
+function maskFirst(arr: number[], n: number): number[] {
+  if (n <= 0) return arr;
+  const out = arr.slice();
+  for (let i = 0; i < n && i < out.length; i++) out[i] = 0;
+  return out;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -420,18 +502,21 @@ function trackBeatFrames(
   strength: number[],
   framesPerSec: number,
   tempo: Tempo,
+  startFrame = 0,
 ): number[] {
   const periodFrames = (60 / tempo.bpm) * framesPerSec;
   const localScore = strength.slice();
 
-  // DP: at each frame i, compute the best cumulative score reaching i,
-  // assuming the previous beat is approximately periodFrames ago.
+  // DP: at each frame i ≥ startFrame, compute the best cumulative score
+  // reaching i, assuming the previous beat is approximately periodFrames
+  // ago. Anything before startFrame stays at -Infinity so the chain can't
+  // walk back into the silent intro during backtracking.
   const cum = new Array<number>(strength.length).fill(-Infinity);
   const back = new Array<number>(strength.length).fill(-1);
   const startWindow = Math.max(1, Math.round(2 * periodFrames));
 
-  for (let i = 0; i < strength.length; i++) {
-    if (i < startWindow) {
+  for (let i = startFrame; i < strength.length; i++) {
+    if (i < startFrame + startWindow) {
       cum[i] = localScore[i];
       back[i] = -1;
       continue;
@@ -443,7 +528,7 @@ function trackBeatFrames(
     let bestPrev = -1;
     for (let dt = center - windowHalf; dt <= center + windowHalf; dt++) {
       const p = i - dt;
-      if (p < 0) continue;
+      if (p < startFrame) continue;
       // Cost: log²(period_actual / period_target) — Ellis-style.
       const ratio = dt / periodFrames;
       const cost = Math.log(ratio) ** 2;
@@ -458,7 +543,7 @@ function trackBeatFrames(
   }
 
   // Find best ending frame in the last beat-window of the track.
-  const tailStart = Math.max(0, strength.length - Math.ceil(periodFrames));
+  const tailStart = Math.max(startFrame, strength.length - Math.ceil(periodFrames));
   let endIdx = -1;
   let endVal = -Infinity;
   for (let i = tailStart; i < strength.length; i++) {
@@ -469,7 +554,7 @@ function trackBeatFrames(
   }
   if (endIdx < 0) return [];
 
-  // Backtrack.
+  // Backtrack — back[]=-1 marks the chain start, so the loop exits there.
   const beatsRev: number[] = [];
   let cur = endIdx;
   while (cur >= 0) {
@@ -543,9 +628,10 @@ function emptyAnalysis(
 ): AudioAnalysis {
   const empty: BandSet = { bass: [], lowMids: [], mids: [], highs: [] };
   return {
-    version: 1,
+    version: ANALYSIS_VERSION,
     sampleRate,
     duration,
+    audioStartS: 0,
     hopSize,
     framesPerSec,
     bands: empty,

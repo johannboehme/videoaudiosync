@@ -32,7 +32,7 @@ describe("analyzeAudio — pure pipeline", () => {
   it("populates the basic shape and bands for a normal-length track", () => {
     const pcm = buildClickTrack(120, 8); // 8 seconds, 120 BPM
     const a = analyzeAudio(pcm, SR);
-    expect(a.version).toBe(1);
+    expect(a.version).toBe(2);
     expect(a.sampleRate).toBe(SR);
     expect(a.duration).toBeCloseTo(8, 1);
     expect(a.bands.bass.length).toBeGreaterThan(0);
@@ -150,6 +150,41 @@ describe("analyzeAudio — pure pipeline", () => {
     const a = analyzeAudio(pcm, SR);
     expect(a.tempo).not.toBeNull();
     expect(Math.abs(a.tempo!.bpm - targetBpm)).toBeLessThan(0.1);
+  });
+
+  it("ignores silent intro: audioStartS lands on the first hit, not on FP-noise", () => {
+    // 5 s of dead-silence (zero PCM — what an OP-1 / digital recorder
+    // outputs before the operator hits play), then 6 s of clicks. Without
+    // gating the silent stretch, spectral-flux quantization noise gets
+    // peak-picked into evenly-spaced "onsets" at ~120 BPM and the DP
+    // beat-tracker happily anchors Bar 1 inside the silence.
+    const intro = 5.0;
+    const clicks = buildClickTrack(120, 6);
+    const pcm = new Float32Array(Math.round(SR * intro) + clicks.length);
+    pcm.set(clicks, Math.round(SR * intro));
+    const a = analyzeAudio(pcm, SR);
+
+    expect(a.tempo).not.toBeNull();
+    // audioStartS must land near (slightly before) the first real click.
+    expect(a.audioStartS).toBeGreaterThan(intro - 0.2);
+    expect(a.audioStartS).toBeLessThan(intro + 0.2);
+    // No detected beat is allowed to sit in the silent intro.
+    for (const b of a.beats) {
+      expect(b).toBeGreaterThanOrEqual(intro - 0.1);
+    }
+    // tempo.phase lands on (or right after) the first real beat.
+    expect(a.tempo!.phase).toBeGreaterThan(intro - 0.1);
+    expect(a.tempo!.phase).toBeLessThan(intro + 1.0);
+  });
+
+  it("does not gate non-silent material: audioStartS stays at 0", () => {
+    // Continuous (low-amplitude) noise from t=0 simulates a track with
+    // ambient material throughout — must NOT be treated as a silent
+    // intro, even though its RMS is well below the music.
+    const pcm = buildClickTrack(120, 12);
+    // buildClickTrack already mixes white noise across the whole span.
+    const a = analyzeAudio(pcm, SR);
+    expect(a.audioStartS).toBeLessThan(0.1);
   });
 
   it("grid (phase + k·period) tracks detected beats with no accumulating drift", () => {

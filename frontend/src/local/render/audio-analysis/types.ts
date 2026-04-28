@@ -25,11 +25,26 @@ export interface Tempo {
   phase: number;
 }
 
+/**
+ * Bump when the analysis algorithm changes in a way that should invalidate
+ * cached results (e.g. v1→v2: phase + bpm now derived from least-squares
+ * regression through detected beats; window-center frame timing).
+ */
+export const ANALYSIS_VERSION = 2;
+export type AnalysisVersion = typeof ANALYSIS_VERSION;
+
 export interface AudioAnalysis {
-  version: 1;
+  version: AnalysisVersion;
   sampleRate: number;
   /** Total duration of the analyzed audio in seconds. */
   duration: number;
+  /** When the actual performance starts in the master audio (seconds).
+   *  Detected via RMS threshold when the file leads with a clearly silent
+   *  intro (e.g. an OP-1 recording started before the operator hit play).
+   *  Returns 0 when the audio is non-silent throughout. Beat / onset
+   *  detection runs only on samples ≥ this point so the grid can't anchor
+   *  on spectral-flux quantization noise during the intro silence. */
+  audioStartS: number;
   /** Samples between consecutive analysis frames (hop). */
   hopSize: number;
   /** = sampleRate / hopSize — frames per second of the time-series fields. */

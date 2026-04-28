@@ -11,6 +11,7 @@
  *   kept here so the cache invalidation strategy is explicit.
  */
 import { jobsDb } from "../../../storage/jobs-db";
+import { ANALYSIS_VERSION } from "./types";
 import type { AudioAnalysis } from "./types";
 
 export type { AudioAnalysis } from "./types";
@@ -69,7 +70,7 @@ export async function getOrComputeAnalysis(
   sampleRate: number,
 ): Promise<AudioAnalysis> {
   const cached = await jobsDb.getAudioAnalysis<AudioAnalysis>(jobId);
-  if (cached && cached.version === 1 && cached.sampleRate === sampleRate) {
+  if (cached && cached.version === ANALYSIS_VERSION && cached.sampleRate === sampleRate) {
     return cached;
   }
   const fresh = await runAnalyzeInWorker(pcm, sampleRate);
@@ -90,5 +91,10 @@ export async function recomputeAnalysis(
 export async function getCachedAnalysis(
   jobId: string,
 ): Promise<AudioAnalysis | undefined> {
-  return jobsDb.getAudioAnalysis<AudioAnalysis>(jobId);
+  const cached = await jobsDb.getAudioAnalysis<AudioAnalysis>(jobId);
+  // Reject mismatched-version caches so callers can fall through to
+  // re-detection logic instead of acting on data the current pipeline
+  // wouldn't have produced.
+  if (!cached || cached.version !== ANALYSIS_VERSION) return undefined;
+  return cached;
 }

@@ -326,14 +326,27 @@ export default function Editor() {
             manualOverride: false,
           }
         : null;
-      const bpmInfo = persistedBpm
-        ? {
-            value: persistedBpm.value,
-            confidence: persistedBpm.confidence,
-            phase: persistedBpm.phase,
-            manualOverride: persistedBpm.manualOverride ?? false,
-          }
-        : detectedBpmInfo;
+      // Precedence: a manually-overridden BPM wins (user knows what they
+      // want, even after the algorithm changes). Otherwise prefer the
+      // fresh detection — auto-persist saves the auto-detected value back
+      // into j.bpm too, so an old persisted value would otherwise stick
+      // forever once the analysis algorithm changes.
+      const bpmInfo =
+        persistedBpm?.manualOverride
+          ? {
+              value: persistedBpm.value,
+              confidence: persistedBpm.confidence,
+              phase: persistedBpm.phase,
+              manualOverride: true,
+            }
+          : (detectedBpmInfo ?? (persistedBpm
+              ? {
+                  value: persistedBpm.value,
+                  confidence: persistedBpm.confidence,
+                  phase: persistedBpm.phase,
+                  manualOverride: false,
+                }
+              : null));
 
       loadJob(
         {
