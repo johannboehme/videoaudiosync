@@ -50,8 +50,12 @@ export function buildRulerTicks(opts: BuildRulerTicksOpts): RulerTick[] {
   const ticks: RulerTick[] = [];
 
   // Compute the first beat-index at or before startS so we can iterate
-  // forward without missing the first visible tick.
-  const firstBeatIdx = Math.floor((startS - beatPhase) / beatS);
+  // forward without missing the first visible tick. Clamp to 0 so the
+  // intro silence (before `beatPhase`, i.e. the part of the recording
+  // captured before the music started) stays empty — Bar 1 lands on the
+  // first real beat, not on a fictional negative-bar a hop before the
+  // performance.
+  const firstBeatIdx = Math.max(0, Math.floor((startS - beatPhase) / beatS));
   const lastBeatIdx = Math.ceil((endS - beatPhase) / beatS);
 
   for (let i = firstBeatIdx; i <= lastBeatIdx; i++) {

@@ -105,6 +105,26 @@ describe("buildRulerTicks — visibility tied to zoom", () => {
     }
   });
 
+  it("does not draw any pre-phase ticks (intro silence stays empty)", () => {
+    // The master audio leads with ~0.93 s of silence before the music
+    // starts. Bar 1 must land on the first real beat — no negative-bar /
+    // pre-phase ticks should appear in the silent intro.
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: 0.928,
+      startS: 0,
+      endS: 5,
+      pxPerSec: 100, // ample zoom — every kind is enabled
+    });
+    expect(ticks.length).toBeGreaterThan(0);
+    for (const t of ticks) {
+      expect(t.t).toBeGreaterThanOrEqual(0.928 - 1e-9);
+    }
+    const bars = ticks.filter((t) => t.kind === "bar");
+    expect(bars[0].t).toBeCloseTo(0.928, 6);
+    expect(bars[0].barNumber).toBe(1);
+  });
+
   it("returns empty for invalid bpm (null/zero/negative)", () => {
     for (const bpm of [null as unknown as number, 0, -120]) {
       expect(

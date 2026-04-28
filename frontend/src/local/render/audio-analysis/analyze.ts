@@ -495,15 +495,7 @@ function trackBeatFrames(
  * parabolic refinement, which compounds to hundreds of ms of grid drift
  * across a few minutes — averaging across N beats gives O(1/√N) precision
  * and effectively eliminates the drift.
- *
- * Studio recordings overwhelmingly land on integer (or occasionally
- * half-integer) BPM values. When the regression already agrees with one
- * to within INTEGER_BPM_SNAP_BPM, snap to that exact value: it removes
- * the residual numerical noise without misrepresenting tracks that were
- * genuinely recorded at non-integer BPM.
  */
-const INTEGER_BPM_SNAP_BPM = 0.3;
-
 function refineTempoFromBeats(beats: number[], seed: Tempo): Tempo {
   if (beats.length < 2) return seed;
   const n = beats.length;
@@ -522,25 +514,14 @@ function refineTempoFromBeats(beats: number[], seed: Tempo): Tempo {
   if (denom === 0) return seed;
   const period = (n * sumKT - sumK * sumT) / denom;
   if (!isFinite(period) || period <= 0) return seed;
-  let phase = (sumT - period * sumK) / n;
-  let bpm = 60 / period;
+  const phase = (sumT - period * sumK) / n;
+  const bpm = 60 / period;
 
   // Sanity check: the refit must stay inside the search window of the
   // autocorrelation (60..200 BPM). If it bolts somewhere weird, keep the
   // seed BPM but still adopt the regression intercept as phase.
   if (bpm < 30 || bpm > 240) {
     return { ...seed, phase };
-  }
-
-  // Snap to nearest 0.5 BPM when within INTEGER_BPM_SNAP_BPM. This corrects
-  // sub-BPM regression noise on studio tracks; on free-tempo recordings it's
-  // a no-op because the regression won't be that close to a half-integer.
-  const halfBpm = Math.round(bpm * 2) / 2;
-  if (Math.abs(bpm - halfBpm) < INTEGER_BPM_SNAP_BPM) {
-    bpm = halfBpm;
-    const newPeriod = 60 / bpm;
-    // Re-fit phase with the snapped period: phase = mean(t_k - k·period)
-    phase = (sumT - newPeriod * sumK) / n;
   }
 
   return {
