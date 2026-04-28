@@ -149,6 +149,12 @@ interface EditorState {
    *  Q-up via `commitQuantizePreview`, dropped on Esc via `cancelQuantizePreview`. */
   quantizePreview: QuantizePreview | null;
 
+  /** Transient toast/notice the editor can flash to the user (e.g. "no
+   *  match candidates — beat snap"). The `key` reshuffles on every push so
+   *  the toast component can re-trigger its enter animation even if the
+   *  message text is unchanged. Null when nothing is showing. */
+  notice: { message: string; key: number } | null;
+
   // actions
   reset(): void;
   loadJob(
@@ -250,6 +256,13 @@ interface EditorState {
    *  cut-set call site (TAKE-button, hotkey, REC) so cuts respect the
    *  same grid as drag-snapping. Returns `t` unchanged in mode "off". */
   snapMasterTime(t: number): number;
+
+  /** Show a transient toast. Reuses the same store slot — multiple pushes
+   *  in quick succession overwrite each other. The toast component owns
+   *  the timer and clears via dismissNotice. */
+  pushNotice(message: string): void;
+  /** Clear the active notice. No-op when none is showing. */
+  dismissNotice(): void;
 }
 
 const TRIM_EPS = 0.05; // seconds — minimum trim window length
@@ -332,6 +345,7 @@ export const useEditorStore = create<EditorState>()(
     selectedClipId: null,
     holdGesture: null,
     quantizePreview: null,
+    notice: null,
 
     reset() {
       set({
@@ -348,6 +362,7 @@ export const useEditorStore = create<EditorState>()(
         selectedClipId: null,
         holdGesture: null,
         quantizePreview: null,
+        notice: null,
       });
     },
 
@@ -560,6 +575,26 @@ export const useEditorStore = create<EditorState>()(
     },
 
     setSelectedClipId(id) {
+      const state = get();
+      // Auto-downgrade: if the user moves selection onto a clip with no
+      // match candidates while snap-mode is "match", silently switch to a
+      // beat-grid mode and surface a one-shot toast. The match-button is
+      // also visually disabled by SnapModeButtons so this only triggers
+      // when the user e.g. hotkey-jumps between cams.
+      if (id !== null && state.ui.snapMode === "match") {
+        const target = state.clips.find((c) => c.id === id);
+        if (target && target.candidates.length === 0) {
+          set({
+            selectedClipId: id,
+            ui: { ...state.ui, snapMode: "1" },
+            notice: {
+              message: "No match candidates — beat snap",
+              key: state.notice ? state.notice.key + 1 : 1,
+            },
+          });
+          return;
+        }
+      }
       set({ selectedClipId: id });
     },
     setClipSyncOverride(camId, ms) {
@@ -838,6 +873,14 @@ export const useEditorStore = create<EditorState>()(
         bpm: s.jobMeta?.bpm?.value ?? null,
         beatPhase: s.jobMeta?.bpm?.phase ?? 0,
       });
+    },
+
+    pushNotice(message) {
+      const cur = get().notice;
+      set({ notice: { message, key: cur ? cur.key + 1 : 1 } });
+    },
+    dismissNotice() {
+      set({ notice: null });
     },
   })),
 );

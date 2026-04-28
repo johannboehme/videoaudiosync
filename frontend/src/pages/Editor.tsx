@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { EditorShell } from "../editor/components/EditorShell";
 import { ExportPanel } from "../editor/components/ExportPanel";
+import { NoticeToast } from "../editor/components/NoticeToast";
 import { OverlaysPanel } from "../editor/components/OverlaysPanel";
 import { SidePanel } from "../editor/components/SidePanel";
 import { SyncTuner } from "../editor/components/SyncTuner";
@@ -528,6 +529,7 @@ export default function Editor() {
         onSubmit={onSubmit}
         submitting={submitting}
       />
+      <NoticeToast />
     </>
   );
 }

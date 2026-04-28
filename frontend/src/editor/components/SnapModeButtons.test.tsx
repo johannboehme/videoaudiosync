@@ -81,4 +81,113 @@ describe("SnapModeButtons", () => {
       screen.getByTestId("snap-mode-1/4").hasAttribute("disabled"),
     ).toBe(false);
   });
+
+  test("MATCH disabled when the selected cam has no candidates", () => {
+    // Load a job with a single B-roll cam (no candidates).
+    useEditorStore.getState().reset();
+    useEditorStore.getState().loadJob(
+      {
+        id: "j1",
+        fps: 30,
+        duration: 10,
+        width: 1920,
+        height: 1080,
+        algoOffsetMs: 0,
+        driftRatio: 1,
+      },
+      {
+        clips: [
+          {
+            id: "cam-1",
+            filename: "broll.mp4",
+            color: "#FF5722",
+            sourceDurationS: 5,
+            syncOffsetMs: 0,
+            candidates: [],
+          },
+        ],
+      },
+    );
+    // Single-cam load auto-selects cam-1.
+    render(<SnapModeButtons />);
+    expect(
+      screen.getByTestId("snap-mode-match").hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  test("MATCH stays enabled when the selected cam has candidates", () => {
+    useEditorStore.getState().reset();
+    useEditorStore.getState().loadJob(
+      {
+        id: "j1",
+        fps: 30,
+        duration: 10,
+        width: 1920,
+        height: 1080,
+        algoOffsetMs: 0,
+        driftRatio: 1,
+      },
+      {
+        clips: [
+          {
+            id: "cam-1",
+            filename: "main.mp4",
+            color: "#FF5722",
+            sourceDurationS: 5,
+            syncOffsetMs: 0,
+            candidates: [
+              { offsetMs: 0, confidence: 0.9, overlapFrames: 1024 },
+            ],
+          },
+        ],
+      },
+    );
+    render(<SnapModeButtons />);
+    expect(
+      screen.getByTestId("snap-mode-match").hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  test("MATCH stays enabled when nothing is selected", () => {
+    useEditorStore.getState().reset();
+    // Two cams → no auto-selection.
+    useEditorStore.getState().loadJob(
+      {
+        id: "j1",
+        fps: 30,
+        duration: 10,
+        width: 1920,
+        height: 1080,
+        algoOffsetMs: 0,
+        driftRatio: 1,
+      },
+      {
+        clips: [
+          {
+            id: "cam-1",
+            filename: "a.mp4",
+            color: "#FF5722",
+            sourceDurationS: 5,
+            syncOffsetMs: 0,
+            candidates: [],
+          },
+          {
+            id: "cam-2",
+            filename: "b.mp4",
+            color: "#1F4E8C",
+            sourceDurationS: 5,
+            syncOffsetMs: 0,
+            candidates: [],
+          },
+        ],
+      },
+    );
+    expect(useEditorStore.getState().selectedClipId).toBeNull();
+    render(<SnapModeButtons />);
+    // No cam selected → button is enabled (we only disable for the
+    // "currently focused B-roll" case).
+    expect(
+      screen.getByTestId("snap-mode-match").hasAttribute("disabled"),
+    ).toBe(false);
+  });
 });

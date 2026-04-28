@@ -493,4 +493,93 @@ describe("useEditorStore", () => {
       expect(c.syncOffsetMs).toBe(250);
     });
   });
+
+  describe("setSelectedClipId — match-snap auto-downgrade", () => {
+    function loadTwoCams(camsHaveCandidates: [boolean, boolean]) {
+      useEditorStore.getState().loadJob(baseJobMeta, {
+        clips: [
+          {
+            id: "cam-1",
+            filename: "main.mp4",
+            color: "#FF5722",
+            sourceDurationS: 5,
+            syncOffsetMs: 0,
+            candidates: camsHaveCandidates[0]
+              ? [{ offsetMs: 0, confidence: 0.9, overlapFrames: 1024 }]
+              : [],
+          },
+          {
+            id: "cam-2",
+            filename: "broll.mp4",
+            color: "#1F4E8C",
+            sourceDurationS: 5,
+            syncOffsetMs: 0,
+            candidates: camsHaveCandidates[1]
+              ? [{ offsetMs: 0, confidence: 0.9, overlapFrames: 1024 }]
+              : [],
+          },
+        ],
+      });
+    }
+
+    test("selecting a B-roll clip while in MATCH downgrades to '1' and pushes a notice", () => {
+      loadTwoCams([true, false]);
+      useEditorStore.getState().setSnapMode("match");
+      expect(useEditorStore.getState().ui.snapMode).toBe("match");
+
+      useEditorStore.getState().setSelectedClipId("cam-2");
+
+      const s = useEditorStore.getState();
+      expect(s.selectedClipId).toBe("cam-2");
+      expect(s.ui.snapMode).toBe("1");
+      expect(s.notice?.message).toMatch(/match/i);
+    });
+
+    test("selecting a clip with candidates leaves MATCH alone", () => {
+      loadTwoCams([true, true]);
+      useEditorStore.getState().setSnapMode("match");
+      useEditorStore.getState().setSelectedClipId("cam-2");
+
+      const s = useEditorStore.getState();
+      expect(s.ui.snapMode).toBe("match");
+      expect(s.notice).toBeNull();
+    });
+
+    test("selecting a B-roll clip when snap mode is something else leaves it alone", () => {
+      loadTwoCams([true, false]);
+      useEditorStore.getState().setSnapMode("1/4");
+      useEditorStore.getState().setSelectedClipId("cam-2");
+
+      const s = useEditorStore.getState();
+      expect(s.ui.snapMode).toBe("1/4");
+      expect(s.notice).toBeNull();
+    });
+
+    test("clearing selection (id=null) doesn't trigger the downgrade", () => {
+      loadTwoCams([true, false]);
+      useEditorStore.getState().setSnapMode("match");
+      useEditorStore.getState().setSelectedClipId(null);
+
+      const s = useEditorStore.getState();
+      expect(s.selectedClipId).toBeNull();
+      expect(s.ui.snapMode).toBe("match");
+    });
+
+    test("pushNotice rolls a new key each time so the toast can re-trigger", () => {
+      const s = useEditorStore.getState();
+      s.pushNotice("first");
+      const k1 = useEditorStore.getState().notice!.key;
+      s.pushNotice("second");
+      const k2 = useEditorStore.getState().notice!.key;
+      expect(k2).toBeGreaterThan(k1);
+      expect(useEditorStore.getState().notice!.message).toBe("second");
+    });
+
+    test("dismissNotice clears the slot", () => {
+      useEditorStore.getState().pushNotice("hi");
+      expect(useEditorStore.getState().notice).not.toBeNull();
+      useEditorStore.getState().dismissNotice();
+      expect(useEditorStore.getState().notice).toBeNull();
+    });
+  });
 });

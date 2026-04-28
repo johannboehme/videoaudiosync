@@ -22,6 +22,7 @@ import {
 import { useEditorStore } from "../store";
 import { clipRangeS, type VideoClip } from "../types";
 import { LaneHeader, type CamStatus } from "./timeline/LaneHeader";
+import { AddMediaButton } from "./AddMediaButton";
 import { ProgramStrip } from "./timeline/ProgramStrip";
 import { BeatRuler } from "./timeline/BeatRuler";
 import { BpmReadout } from "./BpmReadout";
@@ -946,6 +947,10 @@ export function Timeline({
                 MASTER · AUDIO
               </span>
             </div>
+            {/* + Media — append cams + B-roll without leaving the editor */}
+            {jobMeta?.id && (
+              <AddMediaButton jobId={jobMeta.id} width={HEADER_W} />
+            )}
           </div>
           <div className="flex-1 relative" style={{ width: canvasWidth }}>
             <canvas

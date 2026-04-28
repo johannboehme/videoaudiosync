@@ -127,6 +127,15 @@ export function SnapModeButtons() {
   const setSnapMode = useEditorStore((s) => s.setSnapMode);
   const setLanesLocked = useEditorStore((s) => s.setLanesLocked);
   const hasBpm = useEditorStore((s) => Boolean(s.jobMeta?.bpm));
+  // MATCH only makes sense for clips with audio-match candidates. When a
+  // B-roll cam (no candidates) is selected, the button greys out — the
+  // store also auto-downgrades the mode if it happens to be MATCH at that
+  // moment, but disabling here keeps the UI honest about availability.
+  const matchAvailable = useEditorStore((s) => {
+    if (s.selectedClipId === null) return true;
+    const clip = s.clips.find((c) => c.id === s.selectedClipId);
+    return !clip || clip.candidates.length > 0;
+  });
 
   return (
     <div
@@ -137,14 +146,19 @@ export function SnapModeButtons() {
     >
       {MODE_BUTTONS.map(({ mode, label, needsBpm }) => {
         const active = snapMode === mode;
-        const disabled = needsBpm && !hasBpm;
+        const disabled =
+          (needsBpm && !hasBpm) || (mode === "match" && !matchAvailable);
         return (
           <CassetteKey
             key={mode}
             active={active}
             disabled={disabled}
             testId={`snap-mode-${mode}`}
-            title={`Snap: ${label}`}
+            title={
+              mode === "match" && !matchAvailable
+                ? "Match: this cam has no audio-match candidates"
+                : `Snap: ${label}`
+            }
             onClick={() => setSnapMode(mode)}
           >
             {label}
