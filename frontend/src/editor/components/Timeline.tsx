@@ -399,9 +399,21 @@ export function Timeline({
 
     // Audio lane background — paper-panel, the only sibling tone in the
     // palette. Sets the audio band apart from the video lanes without
-    // introducing a new hex.
+    // introducing a new hex. When the lane stack overflows vertically,
+    // the audio lane is the one whose darker bg visually clashes with
+    // the fader thumb to its right; clip it short by SCROLLBAR_H so
+    // the seam falls between paper-panel and the scrollbar instead of
+    // through it.
+    const audioRightX = laneScroll.height > laneScroll.viewport + 0.5
+      ? Math.max(0, canvasWidth - SCROLLBAR_H)
+      : canvasWidth;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, audioBand.top, audioRightX, audioLaneHeight);
+    ctx.clip();
+
     ctx.fillStyle = "#DDD4BE"; // paper-panel
-    ctx.fillRect(0, audioBand.top, canvasWidth, audioLaneHeight);
+    ctx.fillRect(0, audioBand.top, audioRightX, audioLaneHeight);
 
     // Audio waveform — same logic as before.
     if (peaks.length > 0 && audioDuration > 0) {
@@ -444,8 +456,8 @@ export function Timeline({
     const xOut = tToX(trim.out);
     ctx.fillStyle = "rgba(232,225,208,0.78)";
     if (xIn > 0) ctx.fillRect(0, audioBand.top, xIn, audioLaneHeight);
-    if (xOut < canvasWidth)
-      ctx.fillRect(xOut, audioBand.top, canvasWidth - xOut, audioLaneHeight);
+    if (xOut < audioRightX)
+      ctx.fillRect(xOut, audioBand.top, audioRightX - xOut, audioLaneHeight);
 
     // Loop band on audio lane.
     if (loop) {
@@ -463,9 +475,18 @@ export function Timeline({
       );
     }
 
-    // Trim handles on the audio lane (top + bottom brackets).
+    // Trim handles on the audio lane (top + bottom brackets). Clamped to
+    // the audio's effective right edge so the rightmost handle doesn't
+    // poke under the vertical fader.
     drawHandle(ctx, xIn, audioBand.top, audioLaneHeight);
-    drawHandle(ctx, xOut, audioBand.top, audioLaneHeight);
+    drawHandle(
+      ctx,
+      Math.min(xOut, audioRightX),
+      audioBand.top,
+      audioLaneHeight,
+    );
+
+    ctx.restore();
 
     // Playhead — spans all lanes.
     const xp = tToX(currentTime);
