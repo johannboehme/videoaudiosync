@@ -396,12 +396,26 @@ export const useEditorStore = create<EditorState>()(
       set({ clips });
     },
     addCut(cut) {
-      // No-op guard: if the cam is already active at this time (either via
-      // a prior cut or the default-fallback), inserting another cut to the
-      // same cam is meaningless — skip it. Also stops accidental hold-key
-      // floods from littering the timeline with redundant markers.
+      // No-op guard #1: if the cam is already active at this time (via a
+      // prior cut or default-fallback), inserting another marker to the
+      // same cam is redundant.
       const currentActive = get().activeCamId(cut.atTimeS);
       if (currentActive === cut.camId) return false;
+
+      // No-op guard #2: if the target cam has NO material at this time,
+      // adding the cut wouldn't change anything — activeCamAt would still
+      // fall back to whatever cam has material here. This is the "single-
+      // video area" case: in a region only cam-2 covers, hitting TAKE on
+      // cam-1 used to deposit a marker that did nothing.
+      const ranges = get().camRanges();
+      const target = ranges.find((r) => r.id === cut.camId);
+      if (
+        !target ||
+        cut.atTimeS < target.startS ||
+        cut.atTimeS >= target.endS
+      ) {
+        return false;
+      }
 
       // Replace any cut at exactly the same instant on the same cam (idempotent).
       const existing = get().cuts.filter(
