@@ -192,6 +192,16 @@ const initialUi: UiSlice = {
   scrollX: 0,
 };
 
+/** True if `camId` has material at master-timeline time `t`. */
+function camHasMaterialAt(
+  camId: string,
+  t: number,
+  ranges: readonly CamRange[],
+): boolean {
+  const r = ranges.find((x) => x.id === camId);
+  return !!r && t >= r.startS && t < r.endS;
+}
+
 function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): VideoClip[] {
   if (!inits || inits.length === 0) return [];
   return inits.map((init, i) => ({
