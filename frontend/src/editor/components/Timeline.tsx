@@ -965,10 +965,6 @@ export function Timeline({
                 MASTER · AUDIO
               </span>
             </div>
-            {/* + Media — append cams + B-roll without leaving the editor */}
-            {jobMeta?.id && (
-              <AddMediaButton jobId={jobMeta.id} width={HEADER_W} />
-            )}
           </div>
           <div className="flex-1 relative" style={{ width: canvasWidth }}>
             <canvas
@@ -985,6 +981,18 @@ export function Timeline({
             />
           </div>
         </div>
+
+        {/* + Add media — sits outside the scrollable lane stack so adding
+         *  cams doesn't push the timeline into the preview area. Spans the
+         *  full row, controls hug the left under the header column. */}
+        {jobMeta?.id && (
+          <div className="flex border-t border-rule bg-paper-deep/40">
+            <div className="shrink-0" style={{ width: HEADER_W }}>
+              <AddMediaButton jobId={jobMeta.id} />
+            </div>
+            <div className="flex-1" />
+          </div>
+        )}
 
         {/* Custom scrollbar — hardware mixer fader feel */}
         <div className="flex">

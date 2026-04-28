@@ -12,6 +12,7 @@ import { TrimPanel } from "../editor/components/TrimPanel";
 import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { useEditorStore } from "../editor/store";
 import {
+  jobEvents,
   jobsDb,
   resolveJobAssetUrl,
   resolveCamAssetUrl,
@@ -19,6 +20,7 @@ import {
   type LocalJob,
   type EditSpecLocal,
 } from "../local/jobs";
+import type { MediaAsset } from "../storage/jobs-db";
 import { decodeAudioToMonoPcm } from "../local/codec";
 import { computeWaveformPeaks } from "../local/waveform-peaks";
 import { exportSpecToRenderOpts } from "../editor/exportPresets";
@@ -30,6 +32,55 @@ import { getCachedAnalysis } from "../local/render/audio-analysis";
 interface WaveformData {
   peaks: [number, number][];
   duration: number;
+}
+
+/**
+ * Translate a persisted MediaAsset into the ClipInit the editor store
+ * understands. Used both at first load (loadJob) and when videos[]
+ * grows (live "+ Media" path — addClip / updateClip).
+ *
+ * For video assets this prefers the matcher's full candidates list and
+ * falls back to a synthetic single-candidate built from the legacy
+ * primary offset. Image assets pass through their durationS verbatim.
+ */
+function assetToClipInit(v: MediaAsset): ClipInit {
+  if (v.kind === "image") {
+    return {
+      kind: "image",
+      id: v.id,
+      filename: v.filename,
+      color: v.color,
+      durationS: v.durationS,
+      startOffsetS: v.startOffsetS,
+    };
+  }
+  const persistedCandidates = v.sync?.candidates?.map((c) => ({
+    offsetMs: c.offsetMs,
+    confidence: c.confidence,
+    overlapFrames: c.overlapFrames,
+  }));
+  const fallbackCandidates =
+    v.sync && (!persistedCandidates || persistedCandidates.length === 0)
+      ? [
+          {
+            offsetMs: v.sync.offsetMs,
+            confidence: v.sync.confidence,
+            overlapFrames: 0,
+          },
+        ]
+      : undefined;
+  return {
+    id: v.id,
+    filename: v.filename,
+    color: v.color,
+    sourceDurationS: v.durationS ?? 0,
+    syncOffsetMs: v.sync?.offsetMs ?? 0,
+    syncOverrideMs: v.syncOverrideMs,
+    startOffsetS: v.startOffsetS,
+    driftRatio: v.sync?.driftRatio ?? 1,
+    candidates: persistedCandidates ?? fallbackCandidates,
+    selectedCandidateIdx: v.selectedCandidateIdx,
+  };
 }
 
 /** Per-cam OPFS URLs resolved when the editor opens. Keyed by camId. */
@@ -280,49 +331,7 @@ export default function Editor() {
         cams: camUrls,
       });
 
-      const clipInits: ClipInit[] = videos.map((v): ClipInit => {
-        if (v.kind === "image") {
-          return {
-            kind: "image",
-            id: v.id,
-            filename: v.filename,
-            color: v.color,
-            durationS: v.durationS,
-            startOffsetS: v.startOffsetS,
-          };
-        }
-        // Prefer the matcher's full candidate list when present. For
-        // legacy jobs (synced before the candidates pipe existed) we
-        // synthesize a single-element list from the primary offset so
-        // the editor still has a marker to render in MATCH mode.
-        const persistedCandidates = v.sync?.candidates?.map((c) => ({
-          offsetMs: c.offsetMs,
-          confidence: c.confidence,
-          overlapFrames: c.overlapFrames,
-        }));
-        const fallbackCandidates =
-          v.sync && (!persistedCandidates || persistedCandidates.length === 0)
-            ? [
-                {
-                  offsetMs: v.sync.offsetMs,
-                  confidence: v.sync.confidence,
-                  overlapFrames: 0,
-                },
-              ]
-            : undefined;
-        return {
-          id: v.id,
-          filename: v.filename,
-          color: v.color,
-          sourceDurationS: v.durationS ?? 0,
-          syncOffsetMs: v.sync?.offsetMs ?? 0,
-          syncOverrideMs: v.syncOverrideMs,
-          startOffsetS: v.startOffsetS,
-          driftRatio: v.sync?.driftRatio ?? 1,
-          candidates: persistedCandidates ?? fallbackCandidates,
-          selectedCandidateIdx: v.selectedCandidateIdx,
-        };
-      });
+      const clipInits: ClipInit[] = videos.map((v) => assetToClipInit(v));
 
       // Pull cached audio analysis (BPM / beats / downbeats) if the
       // pre-step ran. Non-fatal if missing — UI gracefully hides BPM
@@ -419,6 +428,61 @@ export default function Editor() {
       }
     };
   }, [id, loadJob, reset]);
+
+  // Live job updates — when addVideoToJob / addImageToJob land a new
+  // asset, surface it in the editor without re-running the full loadJob
+  // (which would reset trim/zoom/snap-mode/playback).
+  useEffect(() => {
+    if (!id) return;
+    const newCamUrls: { videoUrl: string; framesUrl: string | null }[] = [];
+    const handler = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{ jobId: string; job: LocalJob }>
+      ).detail;
+      if (detail.jobId !== id) return;
+      const updated = detail.job;
+      setJob(updated);
+      const store = useEditorStore.getState();
+      const known = new Set(store.clips.map((c) => c.id));
+      const videos = updated.videos ?? [];
+      for (const asset of videos) {
+        const init = assetToClipInit(asset);
+        if (known.has(asset.id)) {
+          // Existing cam — refresh it in case sync results just arrived.
+          store.updateClip(init);
+          continue;
+        }
+        // New cam: resolve its URLs and inject into the editor.
+        void (async () => {
+          const videoUrl = await resolveCamAssetUrl(id, asset.id, "video");
+          const framesUrl = await resolveCamAssetUrl(id, asset.id, "frames");
+          if (!videoUrl) return;
+          newCamUrls.push({ videoUrl, framesUrl });
+          setAssets((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  cams: {
+                    ...prev.cams,
+                    [asset.id]: { videoUrl, framesUrl },
+                  },
+                }
+              : prev,
+          );
+          useEditorStore.getState().addClip(init);
+        })();
+      }
+    };
+    jobEvents.addEventListener("update", handler);
+    return () => {
+      jobEvents.removeEventListener("update", handler);
+      // Revoke any object URLs we created for late-added cams.
+      for (const { videoUrl, framesUrl } of newCamUrls) {
+        URL.revokeObjectURL(videoUrl);
+        if (framesUrl) URL.revokeObjectURL(framesUrl);
+      }
+    };
+  }, [id]);
 
   async function onSubmit() {
     if (!id || !job) return;

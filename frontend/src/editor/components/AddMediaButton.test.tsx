@@ -3,7 +3,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { AddMediaButton } from "./AddMediaButton";
 import { useEditorStore } from "../store";
 
-// Stub the job entry points so the test doesn't need OPFS / WASM.
 vi.mock("../../local/jobs", () => ({
   addVideoToJob: vi.fn(async () => "cam-2"),
   addImageToJob: vi.fn(async () => "cam-3"),
@@ -17,69 +16,72 @@ describe("AddMediaButton", () => {
     useEditorStore.getState().reset();
   });
 
-  it("renders all three add modes", () => {
+  it("renders one add button + a match-audio toggle", () => {
     render(<AddMediaButton jobId="job-x" />);
-    expect(screen.getByTestId("add-media-sync")).toBeInTheDocument();
-    expect(screen.getByTestId("add-media-broll")).toBeInTheDocument();
-    expect(screen.getByTestId("add-media-image")).toBeInTheDocument();
+    expect(screen.getByTestId("add-media-button")).toBeInTheDocument();
+    expect(screen.getByTestId("add-media-match-toggle")).toBeInTheDocument();
   });
 
-  it("IMAGE mode calls addImageToJob with the file", async () => {
+  it("routes a video file through addVideoToJob with the toggle's setting (default ON)", async () => {
+    render(<AddMediaButton jobId="job-x" />);
+    const file = new File(["dummy"], "shot.mp4", { type: "video/mp4" });
+    const input = screen.getByTestId("add-media-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    fireEvent.change(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(addVideoToJob).toHaveBeenCalledWith("job-x", file, {
+      skipSync: false,
+    });
+  });
+
+  it("toggling MATCH off causes videos to skip sync", async () => {
+    render(<AddMediaButton jobId="job-x" />);
+    fireEvent.click(screen.getByTestId("add-media-match-toggle"));
+    expect(
+      screen.getByTestId("add-media-match-toggle").getAttribute("aria-checked"),
+    ).toBe("false");
+
+    const file = new File(["dummy"], "broll.mp4", { type: "video/mp4" });
+    const input = screen.getByTestId("add-media-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    fireEvent.change(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(addVideoToJob).toHaveBeenCalledWith("job-x", file, {
+      skipSync: true,
+    });
+  });
+
+  it("routes an image file through addImageToJob (toggle is irrelevant)", async () => {
     render(<AddMediaButton jobId="job-x" />);
     const file = new File(["dummy"], "still.png", { type: "image/png" });
-    const input = screen.getByTestId("add-media-image-input") as HTMLInputElement;
+    const input = screen.getByTestId("add-media-input") as HTMLInputElement;
     Object.defineProperty(input, "files", { value: [file], configurable: true });
     fireEvent.change(input);
 
     await new Promise((r) => setTimeout(r, 0));
     expect(addImageToJob).toHaveBeenCalledWith("job-x", file);
+    expect(addVideoToJob).not.toHaveBeenCalled();
   });
 
-  it("SYNC mode calls addVideoToJob without skipSync", async () => {
+  it("a mixed selection dispatches to the correct entry per file", async () => {
     render(<AddMediaButton jobId="job-x" />);
-    const file = new File(["dummy"], "shot.mp4", { type: "video/mp4" });
-    const input = screen.getByTestId("add-media-sync-input") as HTMLInputElement;
-    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    const v = new File(["v"], "a.mp4", { type: "video/mp4" });
+    const i = new File(["i"], "b.png", { type: "image/png" });
+    const input = screen.getByTestId("add-media-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [v, i], configurable: true });
     fireEvent.change(input);
 
-    // Wait a microtask
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(addVideoToJob).toHaveBeenCalledWith("job-x", file, { skipSync: false });
-  });
-
-  it("B-ROLL mode calls addVideoToJob with skipSync: true", async () => {
-    render(<AddMediaButton jobId="job-x" />);
-    const file = new File(["dummy"], "broll.mp4", { type: "video/mp4" });
-    const input = screen.getByTestId("add-media-broll-input") as HTMLInputElement;
-    Object.defineProperty(input, "files", { value: [file], configurable: true });
-    fireEvent.change(input);
-
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(addVideoToJob).toHaveBeenCalledWith("job-x", file, { skipSync: true });
-  });
-
-  it("multiple files trigger sequential addVideoToJob calls", async () => {
-    render(<AddMediaButton jobId="job-x" />);
-    const f1 = new File(["a"], "a.mp4", { type: "video/mp4" });
-    const f2 = new File(["b"], "b.mp4", { type: "video/mp4" });
-    const input = screen.getByTestId("add-media-sync-input") as HTMLInputElement;
-    Object.defineProperty(input, "files", { value: [f1, f2], configurable: true });
-    fireEvent.change(input);
-
-    // Wait long enough for both awaits to settle.
     await new Promise((r) => setTimeout(r, 5));
-
-    expect(addVideoToJob).toHaveBeenCalledTimes(2);
-    expect(addVideoToJob).toHaveBeenNthCalledWith(1, "job-x", f1, { skipSync: false });
-    expect(addVideoToJob).toHaveBeenNthCalledWith(2, "job-x", f2, { skipSync: false });
+    expect(addVideoToJob).toHaveBeenCalledTimes(1);
+    expect(addImageToJob).toHaveBeenCalledTimes(1);
   });
 
-  it("posts a notice on successful add", async () => {
+  it("posts a notice on success summarising what was added", async () => {
     render(<AddMediaButton jobId="job-x" />);
     const file = new File(["dummy"], "shot.mp4", { type: "video/mp4" });
-    const input = screen.getByTestId("add-media-sync-input") as HTMLInputElement;
+    const input = screen.getByTestId("add-media-input") as HTMLInputElement;
     Object.defineProperty(input, "files", { value: [file], configurable: true });
     fireEvent.change(input);
 

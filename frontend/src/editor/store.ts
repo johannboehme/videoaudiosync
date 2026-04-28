@@ -180,6 +180,17 @@ interface EditorState {
     },
   ): void;
 
+  /** Append a single clip to clips[] without resetting any other editor
+   *  state. Used by the Editor's "+ Media" flow when addVideoToJob /
+   *  addImageToJob lands a fresh asset in the underlying job. */
+  addClip(init: ClipInit): void;
+  /** Replace a clip in clips[] with a fresh build from the given init.
+   *  Used when an asset's sync result fills in *after* it was first
+   *  appended (the lane initially shows up without candidates; once
+   *  runCamPrep finishes, the candidates / syncOffset arrive and the
+   *  clip is re-derived). No-op for unknown camId. */
+  updateClip(init: ClipInit): void;
+
   setCurrentTime(t: number): void;
   setPlaying(playing: boolean): void;
   setLoop(loop: LoopRegion | null): void;
@@ -439,6 +450,45 @@ export const useEditorStore = create<EditorState>()(
         cuts: opts?.cuts ?? [],
         selectedClipId,
       });
+    },
+
+    addClip(init) {
+      const existing = get().clips;
+      // No-op if a clip with this id is already in the store — the
+      // Editor's job-event subscriber may fire repeatedly with the same
+      // asset before sync results arrive.
+      if (existing.some((c) => c.id === init.id)) return;
+      const [built] = buildClips([init], 0);
+      if (!built) return;
+      set({ clips: [...existing, built] });
+    },
+
+    updateClip(init) {
+      const existing = get().clips;
+      const idx = existing.findIndex((c) => c.id === init.id);
+      if (idx < 0) return;
+      const [rebuilt] = buildClips([init], 0);
+      if (!rebuilt) return;
+      // Preserve the user's drag-on-timeline offset and (for video) any
+      // syncOverrideMs / selectedCandidateIdx they've already applied.
+      const cur = existing[idx];
+      let merged: typeof rebuilt = rebuilt;
+      if (rebuilt.kind !== "image" && cur.kind !== "image") {
+        merged = {
+          ...rebuilt,
+          syncOverrideMs: cur.syncOverrideMs,
+          startOffsetS: cur.startOffsetS,
+          selectedCandidateIdx: cur.selectedCandidateIdx,
+        };
+      } else if (rebuilt.kind === "image" && cur.kind === "image") {
+        merged = {
+          ...rebuilt,
+          startOffsetS: cur.startOffsetS,
+        };
+      }
+      const next = existing.slice();
+      next[idx] = merged;
+      set({ clips: next });
     },
 
     setCurrentTime(t) {

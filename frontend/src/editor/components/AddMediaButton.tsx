@@ -1,11 +1,13 @@
 /**
- * "+ Media" entry in the lane header column. Two variants:
- *   - SYNC  : runs the audio matcher → cam can use match-snap.
- *   - B-ROLL: skips the matcher → free placement, no candidates.
+ * "+ Add" entry for the editor: one chunky button + an inline MATCH AUDIO
+ * toggle. The file picker accepts video and image; the component
+ * inspects each file's type and routes accordingly:
  *
- * Bound to addVideoToJob — appends a fresh cam to videos[] immediately
- * (lane appears) and prepares it in the background. The lane header for
- * the new cam will surface its own "syncing…" state until prep finishes.
+ *   - image/*  → addImageToJob (the MATCH toggle is irrelevant)
+ *   - video/*  → addVideoToJob with skipSync = !matchAudio
+ *
+ * One-line layout — sits outside the scrollable lane stack so adding
+ * cams doesn't push the timeline into the preview area.
  */
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
@@ -14,155 +16,135 @@ import { useEditorStore } from "../store";
 
 interface Props {
   jobId: string;
-  /** Width of the lane-header column so this strip lines up with it. */
-  width?: number;
 }
 
-const VIDEO_ACCEPT = "video/*";
-const IMAGE_ACCEPT = "image/*";
+const ACCEPT = "video/*,image/*";
 
-type AddMode = "sync" | "broll" | "image";
-
-export function AddMediaButton({ jobId, width = 156 }: Props) {
-  const syncInputRef = useRef<HTMLInputElement>(null);
-  const brollInputRef = useRef<HTMLInputElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState<AddMode | null>(null);
+export function AddMediaButton({ jobId }: Props) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [matchAudio, setMatchAudio] = useState(true);
   const pushNotice = useEditorStore((s) => s.pushNotice);
 
-  const onFiles = async (files: FileList | null, mode: AddMode) => {
+  const onFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    setBusy(mode);
+    setBusy(true);
     try {
-      // Process sequentially — multiple parallel sync workers would compete
-      // for cache/CPU and is rarely what the user wants for a quick add.
+      // Sequential — multiple parallel sync workers would compete for
+      // cache + CPU. The per-file branch dispatches to image/video.
+      let videoCount = 0;
+      let imageCount = 0;
       for (const f of Array.from(files)) {
-        if (mode === "image") {
+        if (f.type.startsWith("image/")) {
           await addImageToJob(jobId, f);
+          imageCount++;
         } else {
-          await addVideoToJob(jobId, f, { skipSync: mode === "broll" });
+          // Treat anything non-image as video. Browsers sometimes report
+          // video/* with no specific subtype on mobile pickers.
+          await addVideoToJob(jobId, f, { skipSync: !matchAudio });
+          videoCount++;
         }
       }
-      pushNotice(
-        files.length === 1
-          ? `Added ${files[0].name}`
-          : `Added ${files.length} clips`,
-      );
+      const parts: string[] = [];
+      if (videoCount > 0) {
+        parts.push(`${videoCount} ${videoCount === 1 ? "clip" : "clips"}`);
+      }
+      if (imageCount > 0) {
+        parts.push(`${imageCount} ${imageCount === 1 ? "image" : "images"}`);
+      }
+      pushNotice(`Added ${parts.join(" + ")}`);
     } catch (err) {
       pushNotice(err instanceof Error ? err.message : "Add failed");
     } finally {
-      setBusy(null);
+      setBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
   return (
     <div
-      className="flex flex-col gap-1 px-2 py-2 border-t border-rule/60 bg-paper-deep/40"
-      style={{ width }}
+      className="flex items-center gap-2 px-2 py-1.5"
+      data-testid="add-media-bar"
     >
-      <span className="font-display tracking-label uppercase text-[9px] text-ink-3 px-0.5">
-        + Media
-      </span>
-      <AddKey
-        label="SYNC CAM"
-        sublabel="match audio"
-        loading={busy === "sync"}
-        disabled={busy !== null}
-        testId="add-media-sync"
-        onClick={() => syncInputRef.current?.click()}
+      <motion.button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={busy}
+        whileTap={{ scale: 0.96 }}
+        className={[
+          "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md",
+          "bg-paper-hi border border-rule shadow-emboss",
+          "hover:bg-paper-deep disabled:opacity-50 disabled:cursor-not-allowed",
+        ].join(" ")}
+        data-testid="add-media-button"
+      >
+        <span className="text-base leading-none text-hot">+</span>
+        <span className="font-display tracking-label uppercase text-[10px] font-semibold text-ink">
+          {busy ? "Adding…" : "Add media"}
+        </span>
+      </motion.button>
+
+      <MatchToggle
+        on={matchAudio}
+        onChange={setMatchAudio}
+        disabled={busy}
       />
-      <AddKey
-        label="B-ROLL"
-        sublabel="no audio match"
-        loading={busy === "broll"}
-        disabled={busy !== null}
-        testId="add-media-broll"
-        onClick={() => brollInputRef.current?.click()}
-      />
-      <AddKey
-        label="IMAGE"
-        sublabel="still · 5 s default"
-        loading={busy === "image"}
-        disabled={busy !== null}
-        testId="add-media-image"
-        onClick={() => imageInputRef.current?.click()}
-      />
+
       <input
-        ref={syncInputRef}
+        ref={fileInputRef}
         type="file"
-        accept={VIDEO_ACCEPT}
+        accept={ACCEPT}
         multiple
         className="sr-only"
-        onChange={(e) => onFiles(e.target.files, "sync")}
-        data-testid="add-media-sync-input"
-      />
-      <input
-        ref={brollInputRef}
-        type="file"
-        accept={VIDEO_ACCEPT}
-        multiple
-        className="sr-only"
-        onChange={(e) => onFiles(e.target.files, "broll")}
-        data-testid="add-media-broll-input"
-      />
-      <input
-        ref={imageInputRef}
-        type="file"
-        accept={IMAGE_ACCEPT}
-        multiple
-        className="sr-only"
-        onChange={(e) => onFiles(e.target.files, "image")}
-        data-testid="add-media-image-input"
+        onChange={(e) => onFiles(e.target.files)}
+        data-testid="add-media-input"
       />
     </div>
   );
 }
 
-interface KeyProps {
-  label: string;
-  sublabel: string;
-  loading: boolean;
+function MatchToggle({
+  on,
+  onChange,
+  disabled,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
   disabled: boolean;
-  testId: string;
-  onClick: () => void;
-}
-
-function AddKey({ label, sublabel, loading, disabled, testId, onClick }: KeyProps) {
+}) {
   return (
-    <motion.button
+    <button
       type="button"
-      data-testid={testId}
+      role="switch"
+      aria-checked={on}
+      aria-label="Match audio for new video clips"
       disabled={disabled}
-      onClick={onClick}
-      whileTap={{ scale: 0.97 }}
+      onClick={() => onChange(!on)}
       className={[
-        "relative w-full text-left rounded-md px-2.5 py-2 border border-rule",
-        "bg-paper-hi hover:bg-paper-deep disabled:opacity-50 disabled:cursor-not-allowed",
-        "shadow-emboss flex items-center gap-2",
+        "inline-flex items-center gap-1 h-7 px-2 rounded-md select-none",
+        "border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+        on
+          ? "border-hot bg-hot/10 text-ink"
+          : "border-rule bg-paper-deep text-ink-3",
       ].join(" ")}
-      style={{
-        background: loading
-          ? "linear-gradient(180deg, #FFE3D6 0%, #FAF6EC 60%, #E8E1D0 100%)"
-          : undefined,
-      }}
+      data-testid="add-media-match-toggle"
+      title={
+        on
+          ? "Incoming videos will be audio-matched (sync candidates computed)"
+          : "Incoming videos go in unsynced — place them by hand"
+      }
     >
-      <span className="text-base leading-none text-hot">+</span>
-      <span className="flex flex-col min-w-0">
-        <span className="font-display font-semibold tracking-label uppercase text-[10px] text-ink leading-none">
-          {label}
-        </span>
-        <span className="font-mono text-[9px] text-ink-3 leading-none mt-0.5">
-          {loading ? "preparing…" : sublabel}
-        </span>
+      <span
+        aria-hidden
+        className="inline-block w-1.5 h-1.5 rounded-full"
+        style={{
+          background: on ? "#FF5722" : "#9A8F80",
+          boxShadow: on ? "0 0 4px rgba(255,87,34,0.9)" : "none",
+        }}
+      />
+      <span className="font-display tracking-label uppercase text-[9.5px] font-semibold">
+        match
       </span>
-      {loading && (
-        <motion.span
-          aria-hidden
-          className="absolute right-2 top-1/2 -translate-y-1/2 inline-block w-1.5 h-1.5 rounded-full bg-hot"
-          animate={{ opacity: [1, 0.3, 1] }}
-          transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut" }}
-        />
-      )}
-    </motion.button>
+    </button>
   );
 }
