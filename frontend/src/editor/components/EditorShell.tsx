@@ -1,9 +1,16 @@
 // Top-level editor layout. Desktop = grid; tablet/mobile = video + bottom sheet.
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChunkyButton } from "./ChunkyButton";
 import { ChevronLeftIcon, DownloadIcon } from "./icons";
 import { BottomSheet } from "./BottomSheet";
+
+const SIDE_PANEL_COLLAPSE_KEY = "editor.sidepanel.collapsed";
+
+function readCollapsed(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(SIDE_PANEL_COLLAPSE_KEY) === "1";
+}
 
 interface Props {
   jobTitle: string;
@@ -27,6 +34,12 @@ export function EditorShell({
   submitting,
 }: Props) {
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [sideCollapsed, setSideCollapsed] = useState(readCollapsed);
+
+  useEffect(() => {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(SIDE_PANEL_COLLAPSE_KEY, sideCollapsed ? "1" : "0");
+  }, [sideCollapsed]);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden paper-bg">
@@ -38,7 +51,12 @@ export function EditorShell({
       />
 
       {/* Desktop layout (lg+) */}
-      <div className="flex-1 hidden lg:grid lg:grid-cols-[1fr_380px] gap-3 px-3 pb-3 overflow-hidden min-h-0">
+      <div
+        className="flex-1 hidden lg:grid gap-3 px-3 pb-3 overflow-hidden min-h-0 transition-[grid-template-columns] duration-200 ease-out"
+        style={{
+          gridTemplateColumns: sideCollapsed ? "1fr 32px" : "1fr 380px",
+        }}
+      >
         <div className="flex flex-col gap-3 min-w-0 min-h-0">
           <div className="relative flex-1 min-h-0 rounded-lg border border-rule shadow-panel bg-sunken overflow-hidden">
             <div className="absolute inset-0">{videoArea}</div>
@@ -50,7 +68,20 @@ export function EditorShell({
             {timeline}
           </div>
         </div>
-        <div className="overflow-hidden min-h-0">{sidePanel}</div>
+        <div className="relative overflow-hidden min-h-0">
+          <CollapseToggle
+            collapsed={sideCollapsed}
+            onToggle={() => setSideCollapsed((c) => !c)}
+          />
+          <div
+            className={[
+              "h-full overflow-hidden transition-opacity duration-150",
+              sideCollapsed ? "opacity-0 pointer-events-none" : "opacity-100",
+            ].join(" ")}
+          >
+            {sidePanel}
+          </div>
+        </div>
       </div>
 
       {/* Tablet / mobile layout */}
@@ -72,6 +103,40 @@ export function EditorShell({
         </BottomSheet>
       </div>
     </div>
+  );
+}
+
+/** Slim chevron tab on the side-panel's left edge that toggles collapse. */
+function CollapseToggle({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={collapsed ? "Expand side panel" : "Collapse side panel"}
+      title={collapsed ? "Expand side panel" : "Collapse side panel"}
+      className={[
+        "absolute top-2 z-10 w-6 h-12 rounded-md flex items-center justify-center",
+        "bg-paper-hi border border-rule shadow-emboss text-ink-2",
+        "hover:bg-paper-deep hover:text-ink transition-colors",
+        // Position: at the left edge of the side area when expanded, sits
+        // tight in the slim rail when collapsed.
+        collapsed ? "left-1/2 -translate-x-1/2" : "left-0 -translate-x-1/2",
+      ].join(" ")}
+    >
+      <span
+        aria-hidden
+        className="font-mono text-xs leading-none transition-transform"
+        style={{ transform: collapsed ? "rotate(180deg)" : "rotate(0deg)" }}
+      >
+        ›
+      </span>
+    </button>
   );
 }
 

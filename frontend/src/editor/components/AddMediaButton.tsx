@@ -63,32 +63,31 @@ export function AddMediaButton({ jobId }: Props) {
 
   return (
     <div
-      className="flex items-center gap-2 px-2 py-1.5"
+      className="flex items-center gap-1.5 px-2"
       data-testid="add-media-bar"
     >
-      <motion.button
-        type="button"
-        onClick={() => fileInputRef.current?.click()}
-        disabled={busy}
-        whileTap={{ scale: 0.96 }}
-        className={[
-          "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md",
-          "bg-paper-hi border border-rule shadow-emboss",
-          "hover:bg-paper-deep disabled:opacity-50 disabled:cursor-not-allowed",
-        ].join(" ")}
-        data-testid="add-media-button"
-      >
-        <span className="text-base leading-none text-hot">+</span>
-        <span className="font-display tracking-label uppercase text-[10px] font-semibold text-ink">
-          {busy ? "Adding…" : "Add media"}
-        </span>
-      </motion.button>
-
       <MatchToggle
         on={matchAudio}
         onChange={setMatchAudio}
         disabled={busy}
       />
+      <motion.button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={busy}
+        whileTap={{ scale: 0.94 }}
+        aria-label={busy ? "Adding media" : "Add media (video or image)"}
+        title={busy ? "Adding…" : "Add media (video or image)"}
+        className={[
+          "inline-flex items-center justify-center w-6 h-6 rounded-md",
+          "bg-paper-hi border border-rule shadow-emboss",
+          "hover:bg-paper-deep disabled:opacity-50 disabled:cursor-not-allowed",
+          "font-mono leading-none",
+        ].join(" ")}
+        data-testid="add-media-button"
+      >
+        <span className="text-sm text-hot">{busy ? "·" : "+"}</span>
+      </motion.button>
 
       <input
         ref={fileInputRef}
@@ -117,11 +116,11 @@ function MatchToggle({
       type="button"
       role="switch"
       aria-checked={on}
-      aria-label="Match audio for new video clips"
+      aria-label="Match audio for incoming video clips"
       disabled={disabled}
       onClick={() => onChange(!on)}
       className={[
-        "inline-flex items-center gap-1 h-7 px-2 rounded-md select-none",
+        "inline-flex items-center gap-1 h-6 px-1.5 rounded select-none",
         "border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
         on
           ? "border-hot bg-hot/10 text-ink"
@@ -130,7 +129,7 @@ function MatchToggle({
       data-testid="add-media-match-toggle"
       title={
         on
-          ? "Incoming videos will be audio-matched (sync candidates computed)"
+          ? "Incoming videos will be audio-matched (ignored for images)"
           : "Incoming videos go in unsynced — place them by hand"
       }
     >
@@ -142,7 +141,7 @@ function MatchToggle({
           boxShadow: on ? "0 0 4px rgba(255,87,34,0.9)" : "none",
         }}
       />
-      <span className="font-display tracking-label uppercase text-[9.5px] font-semibold">
+      <span className="font-display tracking-label uppercase text-[9px] font-semibold">
         match
       </span>
     </button>

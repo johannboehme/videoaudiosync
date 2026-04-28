@@ -809,15 +809,14 @@ export function Timeline({
           </div>
         </div>
 
-        {/* PROGRAM-Strip row */}
+        {/* PROGRAM-Strip row — header cell hosts the "+ Add" entry so
+         *  there's no separate strip pushing the timeline taller. */}
         <div className="flex">
           <div
-            className="shrink-0 flex items-center px-3 border-r border-b border-rule bg-paper-hi"
+            className="shrink-0 flex items-center justify-end border-r border-b border-rule bg-paper-hi"
             style={{ width: HEADER_W, height: 32 }}
           >
-            <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
-              PROGRAM
-            </span>
+            {jobMeta?.id && <AddMediaButton jobId={jobMeta.id} />}
           </div>
           <div className="flex-1 relative" style={{ width: canvasWidth }}>
             <ProgramStrip
@@ -989,18 +988,6 @@ export function Timeline({
             />
           </div>
         </div>
-
-        {/* + Add media — sits outside the scrollable lane stack so adding
-         *  cams doesn't push the timeline into the preview area. Spans the
-         *  full row, controls hug the left under the header column. */}
-        {jobMeta?.id && (
-          <div className="flex border-t border-rule bg-paper-deep/40">
-            <div className="shrink-0" style={{ width: HEADER_W }}>
-              <AddMediaButton jobId={jobMeta.id} />
-            </div>
-            <div className="flex-1" />
-          </div>
-        )}
 
         {/* Custom scrollbar — hardware mixer fader feel */}
         <div className="flex">
