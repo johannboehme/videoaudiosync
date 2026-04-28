@@ -195,9 +195,9 @@ export function Timeline({
     const ctx: CanvasRenderingContext2D = ctx2d;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Background — warm cream, sits between paper and paper-deep so it
-    // matches the unselected-tab sepia without going stark white.
-    ctx.fillStyle = "#ECE3CC";
+    // Background — paper-deep, the same tone the unselected SidePanel tabs
+    // sit on. Keeps the timeline inside the existing palette.
+    ctx.fillStyle = "#E8E1D0"; // paper-deep
     ctx.fillRect(0, 0, canvasWidth, canvasH);
 
     // Per-video-lane: thumbnails + clip pill.
@@ -221,8 +221,10 @@ export function Timeline({
       ctx.fillRect(0, band.bottom - 1, canvasWidth, 1);
     }
 
-    // Audio lane background — slightly recessed for separation from video lanes.
-    ctx.fillStyle = "#E3D9BE";
+    // Audio lane background — paper-panel, the only sibling tone in the
+    // palette. Sets the audio band apart from the video lanes without
+    // introducing a new hex.
+    ctx.fillStyle = "#DDD4BE"; // paper-panel
     ctx.fillRect(0, audioBand.top, canvasWidth, audioLaneHeight);
 
     // Audio waveform — same logic as before.
@@ -540,11 +542,11 @@ export function Timeline({
         </div>
       </div>
 
-      <div className="rounded-md overflow-hidden border border-rule shadow-panel bg-paper-deep">
+      <div className="rounded-md overflow-hidden border border-rule shadow-panel bg-paper-hi-deep">
         {/* PROGRAM-Strip row */}
         <div className="flex">
           <div
-            className="shrink-0 flex items-center px-3 border-r border-b border-rule bg-paper"
+            className="shrink-0 flex items-center px-3 border-r border-b border-rule bg-paper-hi"
             style={{ width: HEADER_W, height: 32 }}
           >
             <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
@@ -582,7 +584,7 @@ export function Timeline({
             ))}
             {/* MASTER · AUDIO header */}
             <div
-              className="shrink-0 flex items-center px-3 border-r border-t border-rule bg-paper"
+              className="shrink-0 flex items-center px-3 border-r border-t border-rule bg-paper-hi"
               style={{ height: audioLaneHeight }}
             >
               <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
@@ -609,7 +611,7 @@ export function Timeline({
         {/* Custom scrollbar — hardware mixer fader feel */}
         <div className="flex">
           <div
-            className="shrink-0 border-r border-t border-rule bg-paper"
+            className="shrink-0 border-r border-t border-rule bg-paper-hi"
             style={{ width: HEADER_W, height: SCROLLBAR_H }}
           />
           <div
@@ -699,9 +701,9 @@ function drawVideoLane({
   aspect,
   selected,
 }: DrawVideoLaneArgs) {
-  // Lane background — warm cream, slightly lighter than the audio lane
-  // to give a subtle stack-of-tracks feel without going dark.
-  ctx.fillStyle = "#ECE3CC";
+  // Lane background — paper-deep, same as canvas BG, so video lanes feel
+  // continuous and the audio lane reads as the contrasting band below.
+  ctx.fillStyle = "#E8E1D0"; // paper-deep
   ctx.fillRect(0, bandTop, canvasWidth, bandH);
 
   // Clip range on the master timeline.

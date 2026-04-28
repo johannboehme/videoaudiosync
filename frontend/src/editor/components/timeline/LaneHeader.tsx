@@ -46,7 +46,7 @@ export function LaneHeader({
 
   return (
     <div
-      className="relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper hover:bg-paper-deep transition-colors"
+      className="relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper-hi hover:bg-paper transition-colors"
       style={{
         width: HEADER_W,
         height,
