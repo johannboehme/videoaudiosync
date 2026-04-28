@@ -2,10 +2,17 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChunkyButton } from "./ChunkyButton";
-import { ChevronLeftIcon, DownloadIcon } from "./icons";
+import {
+  ChevronLeftIcon,
+  DownloadIcon,
+  SyncIcon,
+} from "./icons";
 import { BottomSheet } from "./BottomSheet";
+import { useEditorStore, type PanelTab } from "../store";
 
 const SIDE_PANEL_COLLAPSE_KEY = "editor.sidepanel.collapsed";
+const SLIM_RAIL_W = 36;
+const EXPANDED_W = 380;
 
 function readCollapsed(): boolean {
   if (typeof localStorage === "undefined") return false;
@@ -54,7 +61,9 @@ export function EditorShell({
       <div
         className="flex-1 hidden lg:grid gap-3 px-3 pb-3 overflow-hidden min-h-0 transition-[grid-template-columns] duration-200 ease-out"
         style={{
-          gridTemplateColumns: sideCollapsed ? "1fr 32px" : "1fr 380px",
+          gridTemplateColumns: sideCollapsed
+            ? `1fr ${SLIM_RAIL_W}px`
+            : `1fr ${EXPANDED_W}px`,
         }}
       >
         <div className="flex flex-col gap-3 min-w-0 min-h-0">
@@ -68,19 +77,17 @@ export function EditorShell({
             {timeline}
           </div>
         </div>
-        <div className="relative overflow-hidden min-h-0">
-          <CollapseToggle
-            collapsed={sideCollapsed}
-            onToggle={() => setSideCollapsed((c) => !c)}
-          />
-          <div
-            className={[
-              "h-full overflow-hidden transition-opacity duration-150",
-              sideCollapsed ? "opacity-0 pointer-events-none" : "opacity-100",
-            ].join(" ")}
-          >
-            {sidePanel}
-          </div>
+        <div className="relative min-h-0">
+          {sideCollapsed ? (
+            <SlimRail onExpand={() => setSideCollapsed(false)} />
+          ) : (
+            <div className="relative h-full overflow-hidden">
+              <CollapseTab
+                onCollapse={() => setSideCollapsed(true)}
+              />
+              <div className="h-full overflow-hidden">{sidePanel}</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -106,37 +113,126 @@ export function EditorShell({
   );
 }
 
-/** Slim chevron tab on the side-panel's left edge that toggles collapse. */
-function CollapseToggle({
-  collapsed,
-  onToggle,
-}: {
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
+/**
+ * Small chevron tab on the *expanded* side panel that collapses the panel.
+ * Lives just outside the panel's left edge so it doesn't push the tab
+ * row inward, anchored to the vertical center of the panel area.
+ */
+function CollapseTab({ onCollapse }: { onCollapse: () => void }) {
   return (
     <button
       type="button"
-      onClick={onToggle}
-      aria-label={collapsed ? "Expand side panel" : "Collapse side panel"}
-      title={collapsed ? "Expand side panel" : "Collapse side panel"}
+      onClick={onCollapse}
+      aria-label="Collapse side panel"
+      title="Collapse side panel"
       className={[
-        "absolute top-2 z-10 w-6 h-12 rounded-md flex items-center justify-center",
-        "bg-paper-hi border border-rule shadow-emboss text-ink-2",
-        "hover:bg-paper-deep hover:text-ink transition-colors",
-        // Position: at the left edge of the side area when expanded, sits
-        // tight in the slim rail when collapsed.
-        collapsed ? "left-1/2 -translate-x-1/2" : "left-0 -translate-x-1/2",
+        "absolute top-1/2 -translate-y-1/2 -left-3 z-10",
+        "w-6 h-14 rounded-l-md flex items-center justify-center",
+        "bg-paper-hi border border-r-0 border-rule shadow-panel",
+        "text-ink-2 hover:text-ink hover:bg-paper-deep transition-colors",
       ].join(" ")}
     >
-      <span
-        aria-hidden
-        className="font-mono text-xs leading-none transition-transform"
-        style={{ transform: collapsed ? "rotate(180deg)" : "rotate(0deg)" }}
-      >
-        ›
-      </span>
+      <ChevronLeftIcon
+        className="w-3.5 h-3.5"
+        style={{ transform: "rotate(180deg)" }}
+      />
     </button>
+  );
+}
+
+/**
+ * Collapsed side-panel slim-rail. Doubles as a quick tab switcher: each
+ * stacked button (SYNC / TRIM / OVERLAYS / EXPORT) jumps directly to
+ * that tab AND expands the panel in one click. The currently-active
+ * tab is highlighted with a hot-orange accent stripe and the
+ * tape-deck "key pressed" inset shadow, so the user knows where they
+ * left off even while the body is hidden.
+ */
+function SlimRail({ onExpand }: { onExpand: () => void }) {
+  const activeTab = useEditorStore((s) => s.ui.activePanel);
+  const setActive = useEditorStore((s) => s.setActivePanel);
+
+  const tabs: { value: PanelTab; label: string; glyph: ReactNode }[] = [
+    {
+      value: "sync",
+      label: "Sync",
+      glyph: <SyncIcon className="w-3.5 h-3.5" />,
+    },
+    { value: "trim", label: "Trim", glyph: <RailLetter>T</RailLetter> },
+    {
+      value: "overlays",
+      label: "Overlays",
+      glyph: <RailLetter>O</RailLetter>,
+    },
+    {
+      value: "export",
+      label: "Export",
+      glyph: <DownloadIcon className="w-3.5 h-3.5" />,
+    },
+  ];
+
+  return (
+    <div
+      className="h-full flex flex-col gap-1 py-2 bg-paper-hi rounded-lg border border-rule shadow-panel"
+      role="tablist"
+      aria-label="Side panel quick tabs"
+    >
+      {tabs.map((t) => {
+        const active = t.value === activeTab;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            aria-label={`${t.label} — click to expand panel`}
+            title={`${t.label} (click to expand)`}
+            onClick={() => {
+              setActive(t.value);
+              onExpand();
+            }}
+            className={[
+              "relative mx-1.5 flex flex-col items-center justify-center gap-0.5 py-2 rounded-md",
+              "text-ink-2 hover:text-ink transition-colors",
+              active ? "bg-paper-deep" : "hover:bg-paper-deep/60",
+            ].join(" ")}
+          >
+            {/* Hot accent stripe for the active tab — left edge so it
+             *  reads as a "current" marker without dominating. */}
+            {active && (
+              <span
+                aria-hidden
+                className="absolute top-1 bottom-1 left-0 w-[2px] rounded-r bg-hot"
+                style={{ boxShadow: "0 0 4px rgba(255,87,34,0.55)" }}
+              />
+            )}
+            <span
+              className={active ? "text-hot" : "text-ink-2"}
+              aria-hidden
+            >
+              {t.glyph}
+            </span>
+            <span
+              className="font-display tracking-label uppercase text-[8.5px] leading-none font-semibold"
+              style={{ color: active ? "#1A1816" : undefined }}
+            >
+              {t.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function RailLetter({ children }: { children: ReactNode }) {
+  return (
+    <span
+      aria-hidden
+      className="font-display font-semibold text-[13px] leading-none"
+    >
+      {children}
+    </span>
   );
 }
 

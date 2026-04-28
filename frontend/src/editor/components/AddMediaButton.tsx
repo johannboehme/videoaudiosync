@@ -62,7 +62,7 @@ export function AddMediaButton({ jobId }: Props) {
 
   return (
     <div
-      className="flex items-center gap-1.5 pr-2"
+      className="flex items-center justify-between w-full pl-2 pr-2"
       data-testid="add-media-bar"
     >
       <MatchTab
@@ -157,13 +157,14 @@ function MatchTab({
           : "MATCH off — incoming videos go in unsynced (toggle to enable matching)"
       }
       className={[
-        "inline-flex items-center gap-1 px-1 select-none rounded",
+        "inline-flex items-center gap-1 px-1.5 select-none rounded",
         "transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-        on
-          ? "text-ink hover:bg-hot/10"
-          : "text-ink-3 hover:bg-paper-deep",
+        "active:translate-y-[1px]",
       ].join(" ")}
-      style={{ height: PLUS_H }}
+      style={{
+        height: PLUS_H,
+        ...(on ? MATCH_ON : MATCH_OFF),
+      }}
       data-testid="add-media-match-toggle"
     >
       <span
@@ -172,14 +173,40 @@ function MatchTab({
         style={{
           background: on ? "#FF5722" : "#9A8F80",
           boxShadow: on
-            ? "0 0 4px rgba(255,87,34,0.85)"
+            ? "0 0 4px rgba(255,87,34,0.9)"
             : "inset 0 0 0 0.5px rgba(0,0,0,0.18)",
           opacity: on ? 1 : 0.55,
         }}
       />
-      <span className="font-display tracking-label uppercase text-[9px] font-semibold leading-none">
+      <span
+        className="font-display tracking-label uppercase text-[9px] font-semibold leading-none"
+        style={{ color: on ? "#1A1816" : "#5C544A" }}
+      >
         match
       </span>
     </button>
   );
 }
+
+// Cassette-key faces for the MATCH toggle, mirroring the + button's
+// embossing so it reads as a button at a glance. The on-state lights
+// the LED orange and tints the face slightly toward the hot palette;
+// the off-state stays paper-neutral.
+const MATCH_OFF: React.CSSProperties = {
+  background: "linear-gradient(180deg, #FAF6EC 0%, #EFE7D2 100%)",
+  border: "1px solid rgba(0,0,0,0.18)",
+  boxShadow: [
+    "inset 0 1px 0 rgba(255,255,255,0.65)",
+    "inset 0 -1px 0 rgba(0,0,0,0.10)",
+  ].join(", "),
+};
+
+const MATCH_ON: React.CSSProperties = {
+  background: "linear-gradient(180deg, #FFE3D6 0%, #FFD4BD 100%)",
+  border: "1px solid rgba(255,87,34,0.55)",
+  boxShadow: [
+    "inset 0 1px 0 rgba(255,255,255,0.7)",
+    "inset 0 -1px 0 rgba(0,0,0,0.12)",
+    "0 0 0 0.5px rgba(255,87,34,0.25)",
+  ].join(", "),
+};
