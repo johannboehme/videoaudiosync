@@ -1,7 +1,13 @@
-// Muted <video> + Web Audio scheduler. Playback state mirrors the store.
+// Muted <video> + Web Audio scheduler. The video element is a *slave*
+// of the master clock managed by useOffsetScheduler — when paused the
+// useEffects below sync v.currentTime to the master playhead; when
+// playing, the RAF loop in useOffsetScheduler does that work and also
+// runs v.play() / v.pause() based on whether master is inside cam-1's
+// material range.
 import { useEffect, useRef } from "react";
 import { useOffsetScheduler } from "../useOffsetScheduler";
 import { useEditorStore } from "../store";
+import { clipRangeS } from "../types";
 
 interface Props {
   videoUrl: string;
@@ -15,35 +21,46 @@ export function VideoCanvas({ videoUrl, audioUrl }: Props) {
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const seekRequest = useEditorStore((s) => s.playback.seekRequest);
   const clearSeekRequest = useEditorStore((s) => s.clearSeekRequest);
-  const setPlaying = useEditorStore((s) => s.setPlaying);
+  // Cam-1's master-timeline startS — used to translate master-time
+  // (the canonical playhead position) into cam-1's video-file
+  // time-domain when paused.
+  const cam1StartS = useEditorStore((s) => {
+    const cam1 = s.clips[0];
+    return cam1 ? clipRangeS(cam1).startS : 0;
+  });
 
-  // Apply external play/pause
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    if (isPlaying) {
-      v.play().catch(() => setPlaying(false));
-    } else {
-      v.pause();
-    }
-  }, [isPlaying, setPlaying]);
-
-  // Apply external seek
+  // Apply external seek while paused. During play the RAF loop in
+  // useOffsetScheduler keeps the video synced; this effect is the
+  // paused-mode counterpart so the visible frame matches the playhead
+  // after seek-back / seek-to-trim-out / etc.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || seekRequest === null) return;
-    v.currentTime = seekRequest;
+    if (!isPlaying) {
+      v.currentTime = Math.max(0, seekRequest - cam1StartS);
+    }
     clearSeekRequest();
-  }, [seekRequest, clearSeekRequest]);
+  }, [seekRequest, cam1StartS, clearSeekRequest, isPlaying]);
 
-  // Reflect intrinsic ended/pause back into the store
+  // Compensate for cam1.startS changes (drag-resync or MATCH candidate
+  // switch): when the cam's master-timeline anchor moves, adjust
+  // v.currentTime so the visible frame still matches the master
+  // playhead. While playing the RAF loop already does this — this
+  // effect only matters when paused.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const onEnded = () => setPlaying(false);
-    v.addEventListener("ended", onEnded);
-    return () => v.removeEventListener("ended", onEnded);
-  }, [setPlaying]);
+    if (isPlaying) return;
+    const masterT = useEditorStore.getState().playback.currentTime;
+    const targetT = Math.max(0, masterT - cam1StartS);
+    if (Math.abs(v.currentTime - targetT) > 0.04) {
+      try {
+        v.currentTime = targetT;
+      } catch {
+        /* element not ready yet — next render */
+      }
+    }
+  }, [cam1StartS, isPlaying]);
 
   return (
     <div className="relative w-full h-full bg-sunken flex items-center justify-center overflow-hidden">

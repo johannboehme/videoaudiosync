@@ -23,7 +23,8 @@ import { computeWaveformPeaks } from "../local/waveform-peaks";
 import { exportSpecToRenderOpts } from "../editor/exportPresets";
 import { opfs } from "../storage/opfs";
 import type { ClipInit } from "../editor/store";
-import type { Cut } from "../storage/jobs-db";
+import { useAutoPersist } from "../editor/useAutoPersist";
+import { getCachedAnalysis } from "../local/render/audio-analysis";
 
 interface WaveformData {
   peaks: [number, number][];
@@ -60,17 +61,26 @@ export default function Editor() {
   const [err, setErr] = useState<string | null>(null);
 
   // Global hotkeys 1..9 = live-cut to that cam's lane (vintage vision-mixer
-  // pushbuttons). Press = insert cut at playhead. Press-and-HOLD then
-  // release = paint the held cam over the entire press→release span AND
-  // if the release falls inside someone else's block, append a trailing
-  // cut back to that previously-active cam. Ignored when typing.
+  // pushbuttons). Cassette-recorder model:
+  //   * keydown — armed cut at the press time, plus a paint-promotion
+  //     timer. If the cam was already on PROGRAM at this t, addCut is a
+  //     no-op (lives in the store guard). One hold at a time — additional
+  //     keydowns while one is active are ignored, so the user can't tangle
+  //     two simultaneous overdubs.
+  //   * after 500 ms wallclock — paint-mode lights up, the live overwrite
+  //     range visualises in the PROGRAM strip.
+  //   * keyup —
+  //     - tap (no paint reached): keep the immediate cut.
+  //     - paint: applyHoldRelease drops cuts inside (start, release], adds
+  //       a trailing resume-cut to whichever cam was originally there.
+  //   * Esc during hold — cancelHold reverts cuts to the snapshot taken
+  //     at press, dropping the immediate cut AND any paint.
   useEffect(() => {
-    // camId held + master-timeline press start + cuts snapshot at press
-    // start (needed by applyHoldRelease to resume to the original cam).
-    const holds = new Map<
-      string,
-      { camId: string; startS: number; priorCuts: Cut[] }
-    >();
+    // Which key fired the active hold. Single-active-hold model — second
+    // keydown while one is active is ignored.
+    let activeKey: string | null = null;
+    let promoteTimer: ReturnType<typeof setTimeout> | null = null;
+    const PAINT_PROMOTION_MS = 500;
 
     function isTypingTarget(t: EventTarget | null): boolean {
       const el = t as HTMLElement | null;
@@ -79,10 +89,12 @@ export default function Editor() {
       return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
     }
 
-    // Promote-to-paint timer per held key — fires after the tap-vs-hold
-    // threshold so the PROGRAM strip starts drawing the live paint range.
-    const promoteTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    const PAINT_PROMOTION_MS = 500;
+    function clearPromoteTimer() {
+      if (promoteTimer !== null) {
+        clearTimeout(promoteTimer);
+        promoteTimer = null;
+      }
+    }
 
     function onKeyDown(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -91,45 +103,98 @@ export default function Editor() {
         e.preventDefault();
         return;
       }
+      const s = useEditorStore.getState();
+
+      // Esc cancels an active hold (revert to pre-press state).
+      if (e.key === "Escape" && s.holdGesture) {
+        e.preventDefault();
+        clearPromoteTimer();
+        activeKey = null;
+        s.cancelHold();
+        return;
+      }
+
       const n = parseInt(e.key, 10);
       if (!Number.isInteger(n) || n < 1 || n > 9) return;
-      const s = useEditorStore.getState();
+      // Single-active-hold: a new TAKE while another is held is ignored.
+      if (s.holdGesture) {
+        e.preventDefault();
+        return;
+      }
       const clip = s.clips[n - 1];
       if (!clip) return;
       e.preventDefault();
-      const startS = s.playback.currentTime;
-      const priorCuts = s.cuts.slice();
-      s.addCut({ atTimeS: startS, camId: clip.id });
+      const startS = s.snapMasterTime(s.playback.currentTime);
+      // beginHoldGesture must happen BEFORE addCut, so the snapshot
+      // captures cuts as they were *before* the immediate tap-cut lands.
       s.beginHoldGesture(clip.id, startS);
-      holds.set(e.key, { camId: clip.id, startS, priorCuts });
-      // Wall-clock timer to promote to paint mode. We use setTimeout
-      // (not playhead-time) because the user might be paused while
-      // holding — paint visuals should still light up after 500 ms of
-      // wall-time pressing.
-      const t = setTimeout(() => {
+      s.addCut({ atTimeS: startS, camId: clip.id });
+      activeKey = e.key;
+      promoteTimer = setTimeout(() => {
         useEditorStore.getState().promoteHoldToPaint();
       }, PAINT_PROMOTION_MS);
-      promoteTimers.set(e.key, t);
     }
 
     function onKeyUp(e: KeyboardEvent) {
-      const hold = holds.get(e.key);
-      if (!hold) return;
-      holds.delete(e.key);
-      const promoteTimer = promoteTimers.get(e.key);
-      if (promoteTimer) {
-        clearTimeout(promoteTimer);
-        promoteTimers.delete(e.key);
-      }
+      if (e.key !== activeKey) return;
+      activeKey = null;
+      clearPromoteTimer();
       const s = useEditorStore.getState();
-      s.endHoldGesture();
-      const endS = s.playback.currentTime;
-      // Same threshold as the paint-mode promotion: a tap stays a tap.
-      if (Math.abs(endS - hold.startS) > 0.5) {
+      const hold = s.holdGesture;
+      if (!hold) return;
+      const endS = s.snapMasterTime(s.playback.currentTime);
+      if (hold.painting) {
+        // Paint-mode commit: drop everything in (start, end], add the
+        // trailing resume-cut (handled by applyHoldRelease).
         s.applyHoldRelease(hold.camId, hold.startS, endS, hold.priorCuts);
       }
+      // Else: tap. The immediate cut from keydown stays in place.
+      s.endHoldGesture();
     }
 
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      clearPromoteTimer();
+    };
+  }, []);
+
+  // Auto-persist editor state (cuts, cam-positions, trim, BPM, snap-mode)
+  // into the LocalJob record on every change, debounced. Replaces the
+  // older cuts-only writeback so changes the user makes round-trip across
+  // refreshes — see useAutoPersist for the full field list.
+  useAutoPersist(id);
+
+  // Q-hold-to-quantize: hold Q → ghost-preview off-grid markers snapped
+  // to the active grid. Release Q → commit. Esc during hold → cancel.
+  // The preview lives in the store as `quantizePreview` and the timeline
+  // canvas reads it to render ghost ticks.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const ae = document.activeElement as HTMLElement | null;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || ae?.isContentEditable) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const s = useEditorStore.getState();
+      if (e.key === "q" || e.key === "Q") {
+        if (e.repeat) return;
+        e.preventDefault();
+        s.buildAndStartQuantizePreview();
+      } else if (e.key === "Escape" && s.quantizePreview !== null) {
+        e.preventDefault();
+        s.cancelQuantizePreview();
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "q" || e.key === "Q") {
+        const s = useEditorStore.getState();
+        if (s.quantizePreview !== null) s.commitQuantizePreview();
+      }
+    };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => {
@@ -138,32 +203,22 @@ export default function Editor() {
     };
   }, []);
 
-  // Persist cuts into the job record whenever they change. Lightweight
-  // throttle (250 ms) so a hold-overwrite or rapid clicks don't hammer
-  // IndexedDB. Cleared on unmount via the unsubscribe + clearTimeout below.
+  // While Q is held the user can change the snap-mode (clicking a button
+  // in the SnapModeButtons row). The preview should refresh to show the
+  // new grid. Subscribe and rebuild whenever snapMode changes during a
+  // live preview.
   useEffect(() => {
-    if (!id) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let lastSerialized = "";
     const unsub = useEditorStore.subscribe(
-      (s) => s.cuts,
-      (cuts) => {
-        const ser = JSON.stringify(cuts);
-        if (ser === lastSerialized) return;
-        lastSerialized = ser;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          jobsDb.updateJob(id, { cuts }).catch(() => {
-            // Job may have been deleted — non-fatal.
-          });
-        }, 250);
+      (s) => s.ui.snapMode,
+      () => {
+        const s = useEditorStore.getState();
+        if (s.quantizePreview !== null) {
+          s.buildAndStartQuantizePreview();
+        }
       },
     );
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [id]);
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -224,23 +279,79 @@ export default function Editor() {
         cams: camUrls,
       });
 
-      const clipInits: ClipInit[] = videos.map((v) => ({
-        id: v.id,
-        filename: v.filename,
-        color: v.color,
-        sourceDurationS: v.durationS ?? 0,
-        syncOffsetMs: v.sync?.offsetMs ?? 0,
-      }));
+      const clipInits: ClipInit[] = videos.map((v) => {
+        // Prefer the matcher's full candidate list when present. For
+        // legacy jobs (synced before the candidates pipe existed) we
+        // synthesize a single-element list from the primary offset so
+        // the editor still has a marker to render in MATCH mode.
+        const persistedCandidates = v.sync?.candidates?.map((c) => ({
+          offsetMs: c.offsetMs,
+          confidence: c.confidence,
+          overlapFrames: c.overlapFrames,
+        }));
+        const fallbackCandidates =
+          v.sync && (!persistedCandidates || persistedCandidates.length === 0)
+            ? [
+                {
+                  offsetMs: v.sync.offsetMs,
+                  confidence: v.sync.confidence,
+                  overlapFrames: 0,
+                },
+              ]
+            : undefined;
+        return {
+          id: v.id,
+          filename: v.filename,
+          color: v.color,
+          sourceDurationS: v.durationS ?? 0,
+          syncOffsetMs: v.sync?.offsetMs ?? 0,
+          syncOverrideMs: v.syncOverrideMs,
+          startOffsetS: v.startOffsetS,
+          candidates: persistedCandidates ?? fallbackCandidates,
+          selectedCandidateIdx: v.selectedCandidateIdx,
+        };
+      });
+
+      // Pull cached audio analysis (BPM / beats / downbeats) if the
+      // pre-step ran. Non-fatal if missing — UI gracefully hides BPM
+      // and disables grid-snap modes.
+      const analysis = await getCachedAnalysis(j.id).catch(() => undefined);
+      const persistedBpm = j.bpm;
+      const detectedTempo = analysis?.tempo;
+      const detectedBpmInfo = detectedTempo
+        ? {
+            value: detectedTempo.bpm,
+            confidence: detectedTempo.confidence,
+            phase: detectedTempo.phase,
+            manualOverride: false,
+          }
+        : null;
+      const bpmInfo = persistedBpm
+        ? {
+            value: persistedBpm.value,
+            confidence: persistedBpm.confidence,
+            phase: persistedBpm.phase,
+            manualOverride: persistedBpm.manualOverride ?? false,
+          }
+        : detectedBpmInfo;
 
       loadJob(
         {
           id: j.id,
           fps: 30,
-          duration: j.durationS ?? wave?.duration ?? 0,
+          // Master timeline length = master-audio length. Skip-to-out
+          // and trim defaults are anchored here, not on cam-1's media
+          // duration (which would put trim.out somewhere mid-audio if
+          // cam-1 was shorter than the studio track).
+          duration: wave?.duration ?? j.durationS ?? 0,
           width: j.width ?? 1920,
           height: j.height ?? 1080,
           algoOffsetMs: j.sync?.offsetMs ?? 0,
           driftRatio: j.sync?.driftRatio ?? 1,
+          bpm: bpmInfo,
+          detectedBpm: detectedBpmInfo,
+          beats: analysis?.beats ?? [],
+          downbeats: analysis?.downbeats ?? [],
         },
         {
           lastSyncOverrideMs: null,
@@ -248,6 +359,27 @@ export default function Editor() {
           cuts: j.cuts ?? [],
         },
       );
+
+      // Restore persisted UI state (snap-mode, lanesLocked) and trim. Must
+      // happen AFTER loadJob, since loadJob resets ui to defaults.
+      if (j.ui) {
+        const store = useEditorStore.getState();
+        if (j.ui.snapMode) store.setSnapMode(j.ui.snapMode);
+        if (typeof j.ui.lanesLocked === "boolean") {
+          store.setLanesLocked(j.ui.lanesLocked);
+        }
+      }
+      if (j.trim) {
+        // Clamp persisted trim to the current audio range — older jobs
+        // were saved with trim values based on the cam-1 media-duration
+        // (back when cam-1 was the master clock); under the master-time
+        // architecture those are no longer meaningful and would put
+        // skip-to-end somewhere mid-audio.
+        const audioMax = wave?.duration ?? j.durationS ?? 0;
+        const tin = Math.max(0, Math.min(j.trim.in, audioMax));
+        const tout = Math.max(tin, Math.min(j.trim.out, audioMax));
+        useEditorStore.getState().setTrim({ in: tin, out: tout });
+      }
     })().catch((e) => {
       if (!cancelled) setErr(e instanceof Error ? e.message : "Could not load job");
     });

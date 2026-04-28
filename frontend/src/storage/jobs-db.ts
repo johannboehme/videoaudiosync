@@ -9,11 +9,21 @@
 import { openDB, type IDBPDatabase } from "idb";
 import { migrateV1ToV2 } from "./migrations";
 
+export interface MatchCandidate {
+  offsetMs: number;
+  confidence: number;
+  overlapFrames: number;
+}
+
 export interface SyncResult {
   offsetMs: number;
   driftRatio: number;
   confidence: number;
   warning?: string;
+  /** Top-K alternative offsets returned by the WASM matcher. The first entry
+   *  mirrors offsetMs (the chosen primary). Optional for backward-compat with
+   *  Jobs synced before this field existed. */
+  candidates?: MatchCandidate[];
 }
 
 /**
@@ -39,6 +49,13 @@ export interface VideoAsset {
   fps?: number;
   /** OPFS-Pfad zur extrahierten Thumbnail-Strip-Datei (frames.webp). */
   framesPath?: string;
+  // ---- Editor-state, persisted via auto-save ----
+  /** User-nudge (ms) on top of sync.offsetMs. */
+  syncOverrideMs?: number;
+  /** Drag-on-timeline offset (seconds). */
+  startOffsetS?: number;
+  /** Index into sync.candidates of the user-selected primary. */
+  selectedCandidateIdx?: number;
 }
 
 /**
@@ -118,11 +135,30 @@ export interface LocalJob {
 
   /** Multi-Cam-Cuts auf der Master-Timeline. Leer bei Single-Cam-Jobs. */
   cuts?: Cut[];
+
+  // ---- Editor-state, persisted via auto-save ----
+  /** Detected master-audio tempo + user override. Set after the audio-
+   *  analysis pre-step finishes. */
+  bpm?: {
+    value: number;
+    confidence: number;
+    phase: number;
+    manualOverride?: boolean;
+  };
+  /** Persistent UI bits the user expects to find on next open. */
+  ui?: {
+    snapMode?: "off" | "match" | "1" | "1/2" | "1/4" | "1/8" | "1/16";
+    lanesLocked?: boolean;
+  };
+  /** Trim region (seconds). Mirrors editSpec.segments[0] but persisted on
+   *  every drag, not only at render time. */
+  trim?: { in: number; out: number };
 }
 
 const DB_NAME = "videoaudiosync";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = "jobs";
+const ANALYSIS_STORE = "audio-analysis";
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -146,6 +182,13 @@ function db(): Promise<IDBPDatabase> {
             await cursor.update(migrated);
             cursor = await cursor.continue();
           }
+        }
+
+        // V2 → V3: separater Object-Store für Audio-Analyse. Keine
+        // Datenmigration nötig — bestehende Jobs triggern beim nächsten
+        // Editor-Open eine frische Analyse.
+        if (oldVersion < 3 && !database.objectStoreNames.contains(ANALYSIS_STORE)) {
+          database.createObjectStore(ANALYSIS_STORE, { keyPath: "jobId" });
         }
       },
     });
@@ -188,11 +231,43 @@ async function updateJob(id: string, patch: Partial<LocalJob>): Promise<LocalJob
 async function deleteJob(id: string): Promise<void> {
   const d = await db();
   await d.delete(STORE, id);
+  if (d.objectStoreNames.contains(ANALYSIS_STORE)) {
+    await d.delete(ANALYSIS_STORE, id);
+  }
 }
 
 async function wipeAll(): Promise<void> {
   const d = await db();
   await d.clear(STORE);
+  if (d.objectStoreNames.contains(ANALYSIS_STORE)) {
+    await d.clear(ANALYSIS_STORE);
+  }
+}
+
+interface AnalysisRecord<T> {
+  jobId: string;
+  payload: T;
+}
+
+async function getAudioAnalysis<T>(jobId: string): Promise<T | undefined> {
+  const d = await db();
+  const rec = (await d.get(ANALYSIS_STORE, jobId)) as
+    | AnalysisRecord<T>
+    | undefined;
+  return rec?.payload;
+}
+
+async function saveAudioAnalysis<T>(jobId: string, payload: T): Promise<void> {
+  const d = await db();
+  const rec: AnalysisRecord<T> = { jobId, payload };
+  await d.put(ANALYSIS_STORE, rec);
+}
+
+async function deleteAudioAnalysis(jobId: string): Promise<void> {
+  const d = await db();
+  if (d.objectStoreNames.contains(ANALYSIS_STORE)) {
+    await d.delete(ANALYSIS_STORE, jobId);
+  }
 }
 
 export const jobsDb = {
@@ -202,6 +277,9 @@ export const jobsDb = {
   updateJob,
   deleteJob,
   wipeAll,
+  getAudioAnalysis,
+  saveAudioAnalysis,
+  deleteAudioAnalysis,
 };
 
 export type JobsDb = typeof jobsDb;

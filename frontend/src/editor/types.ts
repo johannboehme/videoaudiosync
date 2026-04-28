@@ -64,6 +64,12 @@ export interface EditSpec {
   export?: ExportSpec;
 }
 
+export interface MatchCandidate {
+  offsetMs: number;
+  confidence: number;
+  overlapFrames: number;
+}
+
 /**
  * In-memory representation of one video clip on the master timeline.
  *
@@ -77,12 +83,20 @@ export interface VideoClip {
   filename: string;
   color: string;
   sourceDurationS: number;
-  /** Algorithm-derived sync offset (ms) of this cam vs. the master audio. */
+  /** Algorithm-derived sync offset (ms) of this cam vs. the master audio.
+   *  Mirror of `candidates[selectedCandidateIdx].offsetMs` when candidates
+   *  are present, kept as a flat field for legacy consumers. */
   syncOffsetMs: number;
   /** Per-cam user nudge (ms) — added on top of syncOffsetMs. */
   syncOverrideMs: number;
   /** Additional drag-on-timeline offset (seconds). 0 = positioned purely by sync. */
   startOffsetS: number;
+  /** Top-K alternative offsets ranked by sample-level confidence. May be
+   *  empty for legacy jobs; the editor falls back to syncOffsetMs alone. */
+  candidates: MatchCandidate[];
+  /** Index into `candidates` of the user-selected primary. Defaults to 0
+   *  (top-confidence candidate). The user can move this with match-snap. */
+  selectedCandidateIdx: number;
 }
 
 /**

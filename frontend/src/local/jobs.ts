@@ -19,6 +19,7 @@ import { jobsDb, type JobProgress, type LocalJob, type SyncResult, type VideoAss
 import { camColorAt } from "../storage/migrations";
 import { opfs } from "../storage/opfs";
 import { syncAudio } from "./sync";
+import { getOrComputeAnalysis } from "./render/audio-analysis";
 import { quickRender } from "./render/quick";
 import {
   decodeStudioAudioInterleaved,
@@ -240,6 +241,7 @@ async function runSync(jobId: string, audioExt: string): Promise<void> {
       driftRatio: result.driftRatio,
       confidence: result.confidence,
       warning: result.warning ?? undefined,
+      candidates: result.candidates,
     };
 
     // Probe video for duration / dimensions.
@@ -294,13 +296,28 @@ async function runSync(jobId: string, audioExt: string): Promise<void> {
   // Mirror cam-1's stats to the legacy top-level fields so consumers that
   // haven't moved to videos[] yet still see something sensible.
   const lead = updatedVideos[0];
-  const updated = await jobsDb.updateJob(jobId, {
+  const synced = await jobsDb.updateJob(jobId, {
     videos: updatedVideos,
     sync: lead.sync,
     durationS: lead.durationS,
     width: lead.width,
     height: lead.height,
     hasFrames: !!lead.framesPath,
+    progress: { pct: 95, stage: "analyzing-audio" },
+  });
+  emitJobUpdate(synced);
+
+  // Audio-Analyse-Phase: Spectral-Flux Onsets, Tempo, Beats. Cached per job
+  // in IDB so the editor can read it without recomputing. Failure is
+  // non-blocking — the sync result is the critical artifact, the analysis
+  // is value-add.
+  try {
+    await getOrComputeAnalysis(jobId, studioMonoPcm.pcm, studioMonoPcm.sampleRate);
+  } catch (err) {
+    console.warn(`Audio analysis failed for ${jobId} (non-fatal):`, err);
+  }
+
+  const updated = await jobsDb.updateJob(jobId, {
     status: "synced",
     progress: { pct: 100, stage: "synced" },
     finishedAt: Date.now(),

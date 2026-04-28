@@ -11,6 +11,7 @@ import { subscribeWithSelector } from "zustand/middleware";
 import {
   EditSpec,
   ExportSpec,
+  MatchCandidate,
   TextOverlay,
   VideoClip,
   VisualizerConfig,
@@ -18,7 +19,20 @@ import {
 } from "./types";
 import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
 import { activeCamAt, type CamRange } from "./cuts";
+import { snapTime, type SnapMode } from "./snap";
+import { buildQuantizePreview, type QuantizePreview } from "./quantize";
 import type { Cut } from "../storage/jobs-db";
+
+export interface BpmInfo {
+  /** BPM (detected or user-overridden). */
+  value: number;
+  /** Detection confidence 0..1 (the autocorrelation peak strength). */
+  confidence: number;
+  /** Phase of beat 0 in seconds. */
+  phase: number;
+  /** True when the user manually overrode the detected BPM. */
+  manualOverride: boolean;
+}
 
 export interface JobMeta {
   id: string;
@@ -28,6 +42,17 @@ export interface JobMeta {
   height: number;
   algoOffsetMs: number;
   driftRatio: number;
+  /** Master-audio tempo info — either the detected one or the user's
+   *  manual override (manualOverride flag distinguishes). null when no
+   *  analysis ran. */
+  bpm?: BpmInfo | null;
+  /** Original detected BPM (kept around so the user can revert from a
+   *  manual override). null when the analysis didn't detect anything. */
+  detectedBpm?: BpmInfo | null;
+  /** Beat times (seconds, master-timeline). Used by BeatRuler and snap. */
+  beats?: number[];
+  /** Every 4th beat (4/4 fixed in V1). */
+  downbeats?: number[];
 }
 
 export type PanelTab = "sync" | "trim" | "overlays" | "export";
@@ -59,6 +84,11 @@ export interface UiSlice {
   activePanel: PanelTab;
   zoom: number; // 1 = full duration fits in viewport, 2 = 50% fits, etc.
   scrollX: number; // seconds offset from start of trim region
+  /** Active snap mode for every time-mutating drag/click in the timeline. */
+  snapMode: SnapMode;
+  /** When true, cam-clip horizontal drag is disabled — only the playhead
+   *  moves. Avoids the "playhead trapped behind dense clips" problem. */
+  lanesLocked: boolean;
 }
 
 const DEFAULT_EXPORT: ExportSpec = {
@@ -81,6 +111,11 @@ export interface ClipInit {
   syncOffsetMs: number;
   syncOverrideMs?: number;
   startOffsetS?: number;
+  /** Top-K alternative offsets from the WASM matcher. Optional — falls back
+   *  to a single-element array containing just the primary offset. */
+  candidates?: MatchCandidate[];
+  /** Persisted user-selected primary candidate index. Defaults to 0. */
+  selectedCandidateIdx?: number;
 }
 
 interface EditorState {
@@ -101,8 +136,16 @@ interface EditorState {
    * a key/button is pressed, this points to the held cam + the master-time
    * the press started at. Once the press passes the tap-vs-hold threshold,
    * `painting` flips to true and the PROGRAM strip starts visualising the
-   * range. Cleared back to null on release. */
-  holdGesture: { camId: string; startS: number; painting: boolean } | null;
+   * range. `priorCuts` is the cuts-snapshot at press-time, used by
+   * `cancelHold` (Esc) to revert. Cleared back to null on release. */
+  holdGesture:
+    | { camId: string; startS: number; painting: boolean; priorCuts: Cut[] }
+    | null;
+
+  /** Transient preview of the Q-hold quantize gesture. Non-null while
+   *  Q is held; rendered as ghost markers in the timeline. Committed on
+   *  Q-up via `commitQuantizePreview`, dropped on Esc via `cancelQuantizePreview`. */
+  quantizePreview: QuantizePreview | null;
 
   // actions
   reset(): void;
@@ -137,6 +180,17 @@ interface EditorState {
   setActivePanel(tab: PanelTab): void;
   setZoom(z: number): void;
   setScrollX(x: number): void;
+  setSnapMode(m: SnapMode): void;
+  setLanesLocked(locked: boolean): void;
+  /** Reset a cam's alignment back to the algorithm's primary candidate:
+   *  selectedCandidateIdx=0, syncOverrideMs=0, startOffsetS=0. Used by
+   *  the lane-header ↺ button when the user wants to undo their nudges. */
+  resetClipAlignment(camId: string): void;
+  setBpm(patch: { value: number; manualOverride: boolean; phase?: number; confidence?: number }): void;
+  /** Restore bpm to whatever was originally detected by the analysis
+   *  (clears manualOverride). No-op if nothing was detected. */
+  resetBpmToDetected(): void;
+  setSelectedCandidateIdx(camId: string, idx: number): void;
 
   // ---- Multi-cam actions ----
   setSelectedClipId(id: string | null): void;
@@ -147,6 +201,11 @@ interface EditorState {
    * (no point recording a switch to the cam that was already on PROGRAM).
    * Returns true if a cut was actually inserted. */
   addCut(cut: Cut): boolean;
+  /** Drag-move an existing cut from `fromAtTimeS` to `toAtTimeS` on the
+   *  same cam. Returns the time the cut actually landed on (callers may
+   *  want to use it as the new identity for the next drag tick). No-op
+   *  if the source cut isn't found. */
+  moveCut(fromAtTimeS: number, camId: string, toAtTimeS: number): number;
   /**
    * Hold-to-overwrite: ensures `camId` is on PROGRAM from `fromS` through
    * `toS`. Inserts a cut at `fromS` (skipped if camId is already active
@@ -158,18 +217,37 @@ interface EditorState {
   applyHoldRelease(camId: string, fromS: number, toS: number, priorCuts: Cut[]): void;
   removeCutAt(atTimeS: number, camId?: string): void;
   clearCuts(): void;
-  /** UI-only: announce that a TAKE button / hotkey is being held. */
+  /** UI-only: announce that a TAKE button / hotkey is being held. Snapshots
+   *  the current cuts so a subsequent cancelHold can revert. */
   beginHoldGesture(camId: string, startS: number): void;
   /** Promote the active hold to "painting" once the 500 ms threshold passes. */
   promoteHoldToPaint(): void;
   /** Release: clear the indicator. The cuts mutation is done separately. */
   endHoldGesture(): void;
+  /** Cancel an active hold and revert cuts to the snapshot taken at
+   *  beginHoldGesture. Triggered by Esc during a press. No-op when no
+   *  hold is active. */
+  cancelHold(): void;
+
+  /** Build a quantize preview from current cuts/clips/trim against the
+   *  active snap-mode. Called on Q-down. Re-call to refresh after the
+   *  snap-mode changed during the hold. */
+  buildAndStartQuantizePreview(): void;
+  /** Commit the active preview into the store (mutates cuts, clips, trim).
+   *  Called on Q-up. No-op if no preview is active. */
+  commitQuantizePreview(): void;
+  /** Drop the active preview without applying. Called on Esc during hold. */
+  cancelQuantizePreview(): void;
 
   // ---- Selectors ----
   totalOffsetMs(): number;
   buildEditSpec(): EditSpec;
   camRanges(): CamRange[];
   activeCamId(t?: number): string | null;
+  /** Apply the active snap mode to a master-timeline time. Used by every
+   *  cut-set call site (TAKE-button, hotkey, REC) so cuts respect the
+   *  same grid as drag-snapping. Returns `t` unchanged in mode "off". */
+  snapMasterTime(t: number): number;
 }
 
 const TRIM_EPS = 0.05; // seconds — minimum trim window length
@@ -190,6 +268,12 @@ const initialUi: UiSlice = {
   activePanel: "sync",
   zoom: 1,
   scrollX: 0,
+  snapMode: "off",
+  // Default: lanes locked. The user has to press the LOCK button to unlock
+  // before clips become draggable — keeps the playhead reachable through
+  // dense lanes by default. Pressing the (unlock) button = lanes locked
+  // becomes false.
+  lanesLocked: true,
 };
 
 /** True if `camId` has material at master-timeline time `t`. */
@@ -204,16 +288,30 @@ function camHasMaterialAt(
 
 function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): VideoClip[] {
   if (!inits || inits.length === 0) return [];
-  return inits.map((init, i) => ({
-    id: init.id,
-    filename: init.filename,
-    color: init.color,
-    sourceDurationS: init.sourceDurationS,
-    syncOffsetMs: init.syncOffsetMs,
-    syncOverrideMs:
-      init.syncOverrideMs ?? (i === 0 ? fallbackOverrideMs : 0),
-    startOffsetS: init.startOffsetS ?? 0,
-  }));
+  return inits.map((init, i) => {
+    const candidates = init.candidates ?? [];
+    const selectedIdx = Math.max(
+      0,
+      Math.min(init.selectedCandidateIdx ?? 0, Math.max(0, candidates.length - 1)),
+    );
+    // syncOffsetMs mirrors the active candidate when present, otherwise
+    // falls back to whatever the caller passed (legacy single-offset path).
+    const syncOffsetMs = candidates.length > 0
+      ? candidates[selectedIdx].offsetMs
+      : init.syncOffsetMs;
+    return {
+      id: init.id,
+      filename: init.filename,
+      color: init.color,
+      sourceDurationS: init.sourceDurationS,
+      syncOffsetMs,
+      syncOverrideMs:
+        init.syncOverrideMs ?? (i === 0 ? fallbackOverrideMs : 0),
+      startOffsetS: init.startOffsetS ?? 0,
+      candidates,
+      selectedCandidateIdx: selectedIdx,
+    };
+  });
 }
 
 export const useEditorStore = create<EditorState>()(
@@ -230,6 +328,7 @@ export const useEditorStore = create<EditorState>()(
     cuts: [],
     selectedClipId: null,
     holdGesture: null,
+    quantizePreview: null,
 
     reset() {
       set({
@@ -245,6 +344,7 @@ export const useEditorStore = create<EditorState>()(
         cuts: [],
         selectedClipId: null,
         holdGesture: null,
+        quantizePreview: null,
       });
     },
 
@@ -256,8 +356,27 @@ export const useEditorStore = create<EditorState>()(
       const legacyOverrideMs = clips[0]?.syncOverrideMs ?? fallbackOverride;
       // Auto-select the only cam if there's just one — bequem für Single-Video-Use.
       const selectedClipId = clips.length === 1 ? clips[0].id : null;
+      // Normalize bpm/beats/downbeats so consumers can rely on null vs. value
+      // instead of having to handle undefined.
+      // If the caller didn't pass detectedBpm but did pass an
+      // auto-detected bpm (manualOverride === false), treat that as the
+      // detected reference. Lets simple test/loader call sites get away
+      // with one field instead of two.
+      const detectedFallback =
+        meta.detectedBpm !== undefined
+          ? meta.detectedBpm
+          : meta.bpm && !meta.bpm.manualOverride
+            ? meta.bpm
+            : null;
+      const normalizedMeta: JobMeta = {
+        ...meta,
+        bpm: meta.bpm ?? null,
+        detectedBpm: detectedFallback,
+        beats: meta.beats ?? [],
+        downbeats: meta.downbeats ?? [],
+      };
       set({
-        jobMeta: meta,
+        jobMeta: normalizedMeta,
         playback: initialPlayback,
         offset: {
           userOverrideMs: legacyOverrideMs,
@@ -380,6 +499,62 @@ export const useEditorStore = create<EditorState>()(
     setScrollX(x) {
       set({ ui: { ...get().ui, scrollX: Math.max(0, x) } });
     },
+    setSnapMode(m) {
+      set({ ui: { ...get().ui, snapMode: m } });
+    },
+    setLanesLocked(locked) {
+      set({ ui: { ...get().ui, lanesLocked: locked } });
+    },
+    resetClipAlignment(camId) {
+      const clips = get().clips.map((c) => {
+        if (c.id !== camId) return c;
+        const primary = c.candidates[0];
+        return {
+          ...c,
+          syncOverrideMs: 0,
+          startOffsetS: 0,
+          selectedCandidateIdx: 0,
+          syncOffsetMs: primary?.offsetMs ?? c.syncOffsetMs,
+        };
+      });
+      set({ clips });
+      // Mirror cam-1 into the legacy offset slice (SyncTuner).
+      if (clips[0]?.id === camId) {
+        set({ offset: { ...get().offset, userOverrideMs: 0 } });
+      }
+    },
+    setBpm(patch) {
+      const meta = get().jobMeta;
+      if (!meta) return;
+      const cur = meta.bpm ?? null;
+      const next: BpmInfo = {
+        value: patch.value,
+        confidence: patch.confidence ?? cur?.confidence ?? 0,
+        phase: patch.phase ?? cur?.phase ?? 0,
+        manualOverride: patch.manualOverride,
+      };
+      set({ jobMeta: { ...meta, bpm: next } });
+    },
+    resetBpmToDetected() {
+      const meta = get().jobMeta;
+      if (!meta?.detectedBpm) return;
+      set({
+        jobMeta: {
+          ...meta,
+          bpm: { ...meta.detectedBpm, manualOverride: false },
+        },
+      });
+    },
+    setSelectedCandidateIdx(camId, idx) {
+      const clips = get().clips.map((c) => {
+        if (c.id !== camId) return c;
+        const max = Math.max(0, c.candidates.length - 1);
+        const clamped = Math.max(0, Math.min(idx, max));
+        const newOffset = c.candidates[clamped]?.offsetMs ?? c.syncOffsetMs;
+        return { ...c, selectedCandidateIdx: clamped, syncOffsetMs: newOffset };
+      });
+      set({ clips });
+    },
 
     setSelectedClipId(id) {
       set({ selectedClipId: id });
@@ -434,6 +609,27 @@ export const useEditorStore = create<EditorState>()(
       const next = [...existing, cut].sort((a, b) => a.atTimeS - b.atTimeS);
       set({ cuts: next });
       return true;
+    },
+    moveCut(fromAtTimeS, camId, toAtTimeS) {
+      const cuts = get().cuts;
+      const idx = cuts.findIndex(
+        (c) => c.atTimeS === fromAtTimeS && c.camId === camId,
+      );
+      if (idx < 0) return fromAtTimeS;
+      // Clamp to the duration window so a drag can't push a cut past
+      // the end of the master timeline.
+      const dur = get().jobMeta?.duration ?? Infinity;
+      const clamped = Math.max(0, Math.min(dur, toAtTimeS));
+      // Replace, then re-sort. We don't dedupe during drag — collisions
+      // (two cuts collapsing onto the same instant) are easier to
+      // resolve visually after the user drops, and silently dropping
+      // markers mid-drag would feel like a bug.
+      const next = cuts.map((c, i) =>
+        i === idx ? { ...c, atTimeS: clamped } : c,
+      );
+      next.sort((a, b) => a.atTimeS - b.atTimeS);
+      set({ cuts: next });
+      return clamped;
     },
     overwriteCutsRange(camId, fromS, toS) {
       const lo = Math.min(fromS, toS);
@@ -498,7 +694,11 @@ export const useEditorStore = create<EditorState>()(
       set({ cuts: [] });
     },
     beginHoldGesture(camId: string, startS: number) {
-      set({ holdGesture: { camId, startS, painting: false } });
+      // Snapshot cuts at press time — used by cancelHold (Esc) to revert
+      // the immediate addCut and any paint-overwrite that was applied
+      // during the hold.
+      const priorCuts = get().cuts.slice();
+      set({ holdGesture: { camId, startS, painting: false, priorCuts } });
     },
     promoteHoldToPaint() {
       const cur = get().holdGesture;
@@ -508,11 +708,92 @@ export const useEditorStore = create<EditorState>()(
     endHoldGesture() {
       set({ holdGesture: null });
     },
+    cancelHold() {
+      const cur = get().holdGesture;
+      if (!cur) return;
+      // Revert to the snapshot — drops the immediate cut AND any paint.
+      set({ cuts: cur.priorCuts, holdGesture: null });
+    },
+    buildAndStartQuantizePreview() {
+      const s = get();
+      const preview = buildQuantizePreview(
+        { cuts: s.cuts, clips: s.clips, trim: s.trim },
+        s.ui.snapMode,
+        {
+          bpm: s.jobMeta?.bpm?.value ?? null,
+          beatPhase: s.jobMeta?.bpm?.phase ?? 0,
+        },
+      );
+      set({ quantizePreview: preview });
+    },
+    commitQuantizePreview() {
+      const preview = get().quantizePreview;
+      if (!preview) return;
+      // Apply cuts: replace each off-grid cut with its snapped target.
+      let nextCuts = get().cuts.slice();
+      for (const change of preview.cuts) {
+        nextCuts = nextCuts.map((c) =>
+          c.atTimeS === change.from && c.camId === change.camId
+            ? { ...c, atTimeS: change.to }
+            : c,
+        );
+      }
+      nextCuts.sort((a, b) => a.atTimeS - b.atTimeS);
+      // Dedupe cuts that quantize onto the same instant. Two markers can
+      // collapse onto a single grid line in two flavours:
+      //   1. Same camId, same time → exact dupe; drop one, no semantics
+      //      change (activeCamAt is identical).
+      //   2. Different camIds, same time → ambiguity. activeCamAt picks
+      //      whichever cut is *later* in the array; the earlier one is
+      //      dead. We keep the later one (matches activeCamAt) and drop
+      //      the dead one so the user doesn't end up with stacked
+      //      markers in the strip.
+      // We walk forwards keeping the *latest* cut per atTimeS.
+      const TOL = 1e-6;
+      const dedupedReverse: Cut[] = [];
+      const seenTimes = new Set<number>();
+      for (let i = nextCuts.length - 1; i >= 0; i--) {
+        const c = nextCuts[i];
+        // Use the rounded time as the key so floating-point noise doesn't
+        // hide a true dupe.
+        const key = Math.round(c.atTimeS / TOL) * TOL;
+        if (seenTimes.has(key)) continue;
+        seenTimes.add(key);
+        dedupedReverse.push(c);
+      }
+      nextCuts = dedupedReverse.reverse();
+
+      // Apply clip start-offsets.
+      const nextClips = get().clips.map((c) => {
+        const change = preview.clipStartOffsets.find((p) => p.camId === c.id);
+        return change ? { ...c, startOffsetS: change.to } : c;
+      });
+
+      // Apply trim.
+      const nextTrim = preview.trim ? preview.trim.to : get().trim;
+
+      set({
+        cuts: nextCuts,
+        clips: nextClips,
+        trim: nextTrim,
+        quantizePreview: null,
+      });
+    },
+    cancelQuantizePreview() {
+      set({ quantizePreview: null });
+    },
 
     totalOffsetMs() {
-      const { jobMeta, offset } = get();
-      const algo = jobMeta?.algoOffsetMs ?? 0;
-      return offset.abBypass ? algo : algo + offset.userOverrideMs;
+      // Read the current cam-0 sync from the clips array so that MATCH
+      // mode candidate switches (which mutate clips[0].syncOffsetMs) and
+      // drag re-syncs (which mutate clips[0].syncOverrideMs) both flow
+      // through to the audio scheduler. jobMeta.algoOffsetMs is now a
+      // historical field, kept only as a fallback when clips are empty.
+      const { clips, jobMeta, offset } = get();
+      const cam0 = clips[0];
+      const algo = cam0?.syncOffsetMs ?? jobMeta?.algoOffsetMs ?? 0;
+      const override = cam0?.syncOverrideMs ?? offset.userOverrideMs;
+      return offset.abBypass ? algo : algo + override;
     },
 
     buildEditSpec() {
@@ -541,6 +822,19 @@ export const useEditorStore = create<EditorState>()(
         return { id: c.id, startS: range.startS, endS: range.endS };
       });
       return activeCamAt(s.cuts, time, ranges);
+    },
+    snapMasterTime(t) {
+      const s = get();
+      const mode = s.ui.snapMode;
+      // MATCH mode is for clip-drag (where we have candidatePositions);
+      // for cut-set we treat it as off — the user's intent is "snap to
+      // beat", not "snap to a cam-alignment offset which is unrelated to
+      // the master-clock cut position".
+      if (mode === "off" || mode === "match") return t;
+      return snapTime(t, mode, {
+        bpm: s.jobMeta?.bpm?.value ?? null,
+        beatPhase: s.jobMeta?.bpm?.phase ?? 0,
+      });
     },
   })),
 );

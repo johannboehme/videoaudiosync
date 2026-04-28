@@ -10,7 +10,14 @@
  * lays down the visual frame; the marks themselves come later). The
  * sprocket-hole row at the top is the natural place for those ticks.
  */
-import { CSSProperties, MouseEvent, useMemo, useState } from "react";
+import {
+  CSSProperties,
+  MouseEvent,
+  PointerEvent as ReactPointerEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Cut } from "../../../storage/jobs-db";
 import { activeCamAt } from "../../cuts";
 
@@ -31,6 +38,16 @@ interface Props {
   height?: number;
   /** Called when the user clicks the × on a hovered splice to delete it. */
   onRemoveCut?: (atTimeS: number, camId: string) => void;
+  /** Called continuously while the user drags a splice tab. Receives the
+   *  raw new master-time and the modifier-key state; the parent applies
+   *  snap (or not) and returns the time the cut actually committed to
+   *  so we can use it as the next drag-tick's identity. */
+  onCutDrag?: (
+    fromAtTimeS: number,
+    camId: string,
+    rawNewAtTimeS: number,
+    e: { shiftKey: boolean },
+  ) => number;
   /** Live paint preview for an active hold gesture in paint mode. Renders
    * a translucent cam-color wash from `fromS` to the playhead and a
    * pulsing "head" at the leading edge — the on-air tape recorder vibe. */
@@ -40,6 +57,19 @@ interface Props {
     color: string;
     camLabel: string;
   } | null;
+  /** Match-snap candidates surfaced for the user — tall ticks across the
+   *  tape so they're visible during a clip-drag in MATCH mode. Coloured
+   *  entirely by confidence (red→amber→green heatmap); cam attribution
+   *  is implicit because the user is dragging exactly one cam. */
+  matchMarkers?: ReadonlyArray<{
+    /** Master-timeline time (seconds) where the candidate would land
+     *  the dragging clip's start. */
+    t: number;
+    /** 0..1 confidence — drives the heatmap colour and the badge text. */
+    confidence: number;
+    /** Whether this is the currently selected candidate (highlight). */
+    isPrimary: boolean;
+  }>;
 }
 
 const TAPE_HEIGHT = 32;
@@ -54,8 +84,58 @@ export function ProgramStrip({
   width,
   height = TAPE_HEIGHT,
   onRemoveCut,
+  onCutDrag,
   paintPreview,
+  matchMarkers,
 }: Props) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  /** Drag state for moving an existing cut. Tracks the cut's *current*
+   *  master-time (which evolves on every pointer-move tick) plus the
+   *  grab-offset so the cursor stays anchored to the same point on the
+   *  tab. The state lives here (not in SpliceTab) because the cut's
+   *  atTimeS — and therefore the SpliceTab's React key — changes during
+   *  the drag; a remount would otherwise drop the pointer capture. */
+  const dragCutRef = useRef<{
+    camId: string;
+    currentT: number;
+    grabOffsetT: number;
+  } | null>(null);
+
+  const beginCutDrag = (cut: Cut, e: ReactPointerEvent<HTMLElement>) => {
+    if (!onCutDrag) return;
+    if (!containerRef.current) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const rect = containerRef.current.getBoundingClientRect();
+    const visibleSpan = Math.max(1e-6, viewEndS - viewStartS);
+    const pointerT = viewStartS + ((e.clientX - rect.left) / width) * visibleSpan;
+    dragCutRef.current = {
+      camId: cut.camId,
+      currentT: cut.atTimeS,
+      grabOffsetT: pointerT - cut.atTimeS,
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      const drag = dragCutRef.current;
+      if (!drag || !containerRef.current) return;
+      const r = containerRef.current.getBoundingClientRect();
+      const newPointerT = viewStartS + ((ev.clientX - r.left) / width) * visibleSpan;
+      const requestedT = newPointerT - drag.grabOffsetT;
+      const committedT = onCutDrag(drag.currentT, drag.camId, requestedT, {
+        shiftKey: ev.shiftKey,
+      });
+      drag.currentT = committedT;
+    };
+    const onUp = () => {
+      dragCutRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
   const [hoveredCut, setHoveredCut] = useState<{ atTimeS: number; camId: string } | null>(null);
   // Compute the program — a flat list of {startS, endS, color} segments
   // covering [0, duration]. Each segment ends where the active cam changes
@@ -84,6 +164,7 @@ export function ProgramStrip({
 
   return (
     <div
+      ref={containerRef}
       className="relative w-full overflow-hidden border-y border-[#9F9170] select-none"
       style={tapeStyle}
     >
@@ -188,9 +269,108 @@ export function ProgramStrip({
         );
       })()}
 
+      {/* Match-snap candidate markers — shown over the tape during a
+       * clip-drag in MATCH mode. The user already knows which cam they're
+       * dragging (it's the one under their finger), so the marker itself
+       * is colored entirely by *confidence* (red→amber→green heatmap):
+       * cam attribution is irrelevant here. Numeric badges show the
+       * percentage; if two markers are too close, the lower-confidence
+       * label is hidden so they never overlap. */}
+      {matchMarkers && matchMarkers.length > 0 &&
+        (() => {
+          // Pre-compute screen positions and sort by x so we can do a
+          // single-pass collision check on the percent labels.
+          const items = matchMarkers
+            .map((m, i) => {
+              const x = tToX(m.t);
+              return { m, i, x };
+            })
+            .filter(({ x }) => x >= -10 && x <= width + 10)
+            .sort((a, b) => a.x - b.x);
+          const LABEL_W = 22;
+          const LABEL_GAP = 2;
+          // Hide the label of any marker whose label box would intersect
+          // a higher-confidence neighbour. Primary always wins.
+          const showLabel = new Array<boolean>(items.length).fill(true);
+          for (let a = 0; a < items.length; a++) {
+            for (let b = a + 1; b < items.length; b++) {
+              if (Math.abs(items[a].x - items[b].x) > LABEL_W + LABEL_GAP) break;
+              const aWins =
+                items[a].m.isPrimary ||
+                (!items[b].m.isPrimary &&
+                  items[a].m.confidence >= items[b].m.confidence);
+              if (aWins) showLabel[b] = false;
+              else showLabel[a] = false;
+            }
+          }
+          return items.map(({ m, i, x }, listIdx) => {
+            const headSize = m.isPrimary ? 11 : 8;
+            const minLeft = headSize / 2 + 1;
+            const maxLeft = width - headSize / 2 - 1;
+            const xClamped = Math.max(minLeft, Math.min(maxLeft, x));
+            const tickW = m.isPrimary ? 3 : 2;
+            const conf = Math.max(0, Math.min(1, m.confidence));
+            const heatColor = confidenceColor(conf);
+            const opacity = m.isPrimary ? 1 : Math.max(0.6, conf);
+            return (
+              <div
+                key={`mm-${i}`}
+                className="absolute pointer-events-none"
+                style={{
+                  left: Math.floor(xClamped) - tickW / 2,
+                  top: 0,
+                  bottom: 0,
+                  width: tickW,
+                  background: heatColor,
+                  opacity,
+                  boxShadow: m.isPrimary
+                    ? `0 0 6px ${heatColor}, 0 0 1px rgba(0,0,0,0.6)`
+                    : "0 0 1px rgba(0,0,0,0.5)",
+                }}
+              >
+                {/* Diamond head — same heat color as the body. Active
+                 * candidate gets a brighter inner halo. */}
+                <span
+                  className="absolute pointer-events-none"
+                  style={{
+                    top: -3,
+                    left: tickW / 2 - headSize / 2,
+                    width: headSize,
+                    height: headSize,
+                    background: heatColor,
+                    transform: "rotate(45deg)",
+                    boxShadow: m.isPrimary
+                      ? `0 0 0 1.5px rgba(0,0,0,0.5), 0 0 6px ${heatColor}`
+                      : "0 0 0 1px rgba(0,0,0,0.5)",
+                  }}
+                  title={`Match candidate · ${Math.round(conf * 100)}% confidence${m.isPrimary ? " (active)" : ""}`}
+                />
+                {showLabel[listIdx] && (
+                  <span
+                    className="absolute font-mono leading-none pointer-events-none"
+                    style={{
+                      top: 8,
+                      left: tickW / 2 - LABEL_W / 2,
+                      width: LABEL_W,
+                      fontSize: 8,
+                      textAlign: "center",
+                      color: "rgba(255,255,255,0.95)",
+                      textShadow: "0 1px 1px rgba(0,0,0,0.85)",
+                      fontWeight: m.isPrimary ? 700 : 500,
+                    }}
+                  >
+                    {Math.round(conf * 100)}
+                  </span>
+                )}
+              </div>
+            );
+          });
+        })()}
+
       {/* Brass splice tabs at every cut. Hover lifts the tab + reveals an
-        * × button for delete. The tab itself stays clickable as part of
-        * the same hit area so the user can grab it from anywhere on it. */}
+        * × button for delete. Pointer-down on the tab body starts a
+        * drag — pointermove pulls the cut along with the cursor (snap-
+        * aware via the parent's onCutDrag callback). */}
       {cuts.map((cut, i) => {
         const x = tToX(cut.atTimeS);
         if (x < -8 || x > width + 8) return null;
@@ -211,6 +391,9 @@ export function ProgramStrip({
               onRemoveCut?.(cut.atTimeS, cut.camId);
               setHoveredCut(null);
             }}
+            onDragStart={
+              onCutDrag ? (e) => beginCutDrag(cut, e) : undefined
+            }
           />
         );
       })}
@@ -225,6 +408,7 @@ function SpliceTab({
   onEnter,
   onLeave,
   onDelete,
+  onDragStart,
 }: {
   x: number;
   height: number;
@@ -232,7 +416,17 @@ function SpliceTab({
   onEnter: () => void;
   onLeave: () => void;
   onDelete: (e: MouseEvent<HTMLButtonElement>) => void;
+  /** Pointer-down on the tab body starts a drag. The parent wires this
+   *  up to its own drag-state machinery (window-level pointermove/up). */
+  onDragStart?: (e: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!onDragStart) return;
+    // Don't start a drag if the user grabbed the × button.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button")) return;
+    onDragStart(e);
+  };
   return (
     <div
       // Hit area is wider than the visible tab so it's tappable even on touch.
@@ -241,10 +435,12 @@ function SpliceTab({
         left: x - 8,
         width: 16,
         height: height + 4,
-        cursor: "pointer",
+        cursor: onDragStart ? "ew-resize" : "pointer",
+        touchAction: "none",
       }}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
+      onPointerDown={onPointerDown}
     >
       {/* Visible brass tab. When hovered, lift it ~6 px above the strip so
         * the × button has somewhere to live without being clipped. */}
@@ -366,4 +562,26 @@ function darken(hex: string, fraction: number): string {
   const g = Math.round(parseInt(c.slice(2, 4), 16) * (1 - fraction));
   const b = Math.round(parseInt(c.slice(4, 6), 16) * (1 - fraction));
   return `#${[r, g, b].map((n) => Math.max(0, n).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Map a 0..1 confidence value to a heatmap color.
+ *  Non-linear hue mapping (≈ pow 2.2) compresses the low end and
+ *  expands the high end, so 80 % vs 100 % are clearly different greens
+ *  instead of two shades of the same green. Saturation + lightness
+ *  also climb with confidence, so high-quality matches *glow* more
+ *  than weak ones. */
+function confidenceColor(c: number): string {
+  const v = Math.max(0, Math.min(1, c));
+  // Stretch the high end of the hue ramp:
+  //   v=1.00 → hue 135 (full green)
+  //   v=0.90 → hue ≈ 105 (green-cyan)
+  //   v=0.80 → hue ≈  82 (yellow-green)
+  //   v=0.70 → hue ≈  62 (yellow)
+  //   v=0.50 → hue ≈  29 (orange)
+  //   v=0.30 → hue ≈  10 (red-orange)
+  //   v=0.00 → hue   0 (red)
+  const hue = Math.pow(v, 2.2) * 135;
+  const sat = 70 + 25 * v; // 70 % → 95 %
+  const light = 38 + 18 * v; // 38 % → 56 %
+  return `hsl(${hue.toFixed(1)}, ${sat.toFixed(1)}%, ${light.toFixed(1)}%)`;
 }

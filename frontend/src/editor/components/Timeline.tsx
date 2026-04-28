@@ -23,6 +23,11 @@ import { useEditorStore } from "../store";
 import { clipRangeS, type VideoClip } from "../types";
 import { LaneHeader, type CamStatus } from "./timeline/LaneHeader";
 import { ProgramStrip } from "./timeline/ProgramStrip";
+import { BeatRuler } from "./timeline/BeatRuler";
+import { BpmReadout } from "./BpmReadout";
+import { SnapModeButtons } from "./SnapModeButtons";
+import { snapTime, type SnapCtx, type SnapMode } from "../snap";
+import { DEFAULT_MATCH_CONFIDENCE_THRESHOLD } from "../match-snap";
 
 interface CamAssetInfo {
   /** OPFS object URL for this cam's thumbnail strip (may be null). */
@@ -47,7 +52,23 @@ type DragKind =
   | { kind: "trim-in" }
   | { kind: "trim-out" }
   | { kind: "loop"; offset: number }
-  | { kind: "clip-move"; camId: string; grabT: number; origStartOffsetS: number }
+  | {
+      kind: "clip-move";
+      camId: string;
+      grabT: number;
+      origStartOffsetS: number;
+      /** syncOverrideMs at drag-start. Drag mutates this (not
+       *  startOffsetS) so the cam's audio/video alignment actually
+       *  shifts against the master audio — startOffsetS is purely
+       *  visual and would silently desync cam-1's audio. */
+      origSyncOverrideMs: number;
+      /** Visible master-timeline startS at drag-start. Used to compute
+       *  the pointer's intended new startS independently of any
+       *  candidate-switch that may happen mid-drag — without it, the
+       *  algoSync delta cascades and the user "jumps" past middle
+       *  candidates. */
+      origStartS: number;
+    }
   | { kind: "scrollbar"; offsetX: number };
 
 const HANDLE_HIT = 14;
@@ -59,13 +80,28 @@ export function Timeline({
   cams,
   peaks,
   audioDuration,
-  audioLaneHeight = 88,
-  videoLaneHeight = 80,
+  audioLaneHeight = 48,
+  videoLaneHeight = 48,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(800);
   const dragRef = useRef<DragKind | null>(null);
+  /** Set during a clip-move drag so the PROGRAM strip can show match
+   *  markers only while the user is actually re-aligning a cam. */
+  const [activeClipMoveDragId, setActiveClipMoveDragId] = useState<
+    string | null
+  >(null);
+  /** Snapshot of the timeline-range at drag-start. Frozen for the
+   *  duration of a clip-move so the canvas doesn't rescale under the
+   *  user's cursor — without this freeze, dragging right extends the
+   *  range, the pixel-per-second shrinks, and the pill seems to
+   *  asymptote to the canvas edge instead of following the pointer. */
+  const frozenTimelineRangeRef = useRef<{
+    startS: number;
+    endS: number;
+    span: number;
+  } | null>(null);
 
   // Store reads — narrow selectors to keep re-renders cheap.
   const jobMeta = useEditorStore((s) => s.jobMeta);
@@ -83,16 +119,55 @@ export function Timeline({
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const setSelectedClipId = useEditorStore((s) => s.setSelectedClipId);
   const setClipStartOffset = useEditorStore((s) => s.setClipStartOffset);
-  const addCut = useEditorStore((s) => s.addCut);
+  const setClipSyncOverride = useEditorStore((s) => s.setClipSyncOverride);
+  const setSelectedCandidateIdx = useEditorStore((s) => s.setSelectedCandidateIdx);
+  const resetClipAlignment = useEditorStore((s) => s.resetClipAlignment);
   const removeCutAt = useEditorStore((s) => s.removeCutAt);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const holdGesture = useEditorStore((s) => s.holdGesture);
-  const takeHoldStartRef = useRef<Map<string, number>>(new Map());
+  const snapMode = useEditorStore((s) => s.ui.snapMode);
+  const lanesLocked = useEditorStore((s) => s.ui.lanesLocked);
+  const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
+  const beatPhase = useEditorStore((s) => s.jobMeta?.bpm?.phase ?? 0);
+  const quantizePreview = useEditorStore((s) => s.quantizePreview);
   const takePromoteTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const duration = jobMeta?.duration || audioDuration || 0;
-  const visibleDur = duration / zoom;
-  const viewStart = Math.min(scrollX, Math.max(0, duration - visibleDur));
+  // The visible/scroll range covers the union of the master audio AND
+  // every cam's master-timeline span (incl. their match-marker positions
+  // so candidate ticks at negative master-time stay reachable). During
+  // an active clip-move drag we *freeze* this range to the snapshot
+  // captured at drag-start (`frozenTimelineRangeRef`) — without that
+  // freeze, dragging right would extend the range, shrink pxPerSec, and
+  // the pill would asymptote to the canvas edge instead of following
+  // the pointer.
+  const liveTimelineRange = useMemo(() => {
+    let lo = 0;
+    let hi = duration;
+    for (const c of clips) {
+      const r = clipRangeS(c);
+      if (r.startS < lo) lo = r.startS;
+      if (r.endS > hi) hi = r.endS;
+      for (const cand of c.candidates) {
+        const t = -(cand.offsetMs + c.syncOverrideMs) / 1000;
+        if (t < lo) lo = t;
+        if (t > hi) hi = t;
+      }
+    }
+    return { startS: lo, endS: hi, span: hi - lo };
+  }, [clips, duration]);
+  const timelineRange = activeClipMoveDragId && frozenTimelineRangeRef.current
+    ? frozenTimelineRangeRef.current
+    : liveTimelineRange;
+  const timelineStartS = timelineRange.startS;
+  const timelineSpan = Math.max(1e-6, timelineRange.span);
+  const visibleDur = timelineSpan / zoom;
+  // scrollX semantics: offset (≥0) from timelineStartS. We clamp here so
+  // a stale scrollX doesn't escape after the range changes (e.g. user
+  // drags a cam further left, shrinking timelineStartS).
+  const maxScroll = Math.max(0, timelineSpan - visibleDur);
+  const clampedScroll = Math.max(0, Math.min(maxScroll, scrollX));
+  const viewStart = timelineStartS + clampedScroll;
   const viewEnd = viewStart + visibleDur;
 
   // ---- Layout offsets (canvas y-coordinates per lane) ----
@@ -220,6 +295,19 @@ export function Timeline({
         aspect: cams[clip.id]?.aspect ?? 16 / 9,
         selected: clip.id === selectedClipId,
       });
+      // Match-point markers: vertical ticks at each candidate's implied
+      // start position. Highlighted in MATCH mode; subtle otherwise so the
+      // user can see all alternatives the matcher considered.
+      drawMatchMarkers({
+        ctx,
+        clip,
+        bandTop: band.top,
+        bandH: videoLaneHeight,
+        viewStart,
+        visibleDur,
+        canvasWidth,
+        emphasized: snapMode === "match",
+      });
       // Lane separator line below each video lane (subtle sepia rule).
       ctx.fillStyle = "#D8CFB8";
       ctx.fillRect(0, band.bottom - 1, canvasWidth, 1);
@@ -311,6 +399,37 @@ export function Timeline({
     ctx.lineTo(xp, 9);
     ctx.closePath();
     ctx.fill();
+
+    // Q-hold quantize preview: ghost markers at the snapped target
+    // positions. Drawn last so they overlay every lane.
+    if (quantizePreview) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0, 102, 204, 0.85)"; // cobalt
+      ctx.strokeStyle = "rgba(0, 102, 204, 0.85)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      for (const change of quantizePreview.cuts) {
+        const xTo = tToX(change.to);
+        if (xTo < -2 || xTo > canvasWidth + 2) continue;
+        ctx.beginPath();
+        ctx.moveTo(xTo, 0);
+        ctx.lineTo(xTo, canvasH);
+        ctx.stroke();
+      }
+      // Faded "from" line for each off-grid cut (visual hint of the move).
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.25)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      for (const change of quantizePreview.cuts) {
+        const xFrom = tToX(change.from);
+        if (xFrom < -2 || xFrom > canvasWidth + 2) continue;
+        ctx.beginPath();
+        ctx.moveTo(xFrom, 0);
+        ctx.lineTo(xFrom, canvasH);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }, [
     canvasWidth,
     canvasH,
@@ -333,6 +452,8 @@ export function Timeline({
     camImagesReady,
     tToX,
     videoBands,
+    snapMode,
+    quantizePreview,
   ]);
 
   // ---- Hit-testing & drag ----
@@ -364,19 +485,36 @@ export function Timeline({
     return null;
   }
 
+  // Build the snap context for this drag. `extraCandidates` is set during
+  // a clip-move so MATCH mode can snap the cam to its alternative offsets.
+  function buildSnapCtx(extraCandidates?: number[]): SnapCtx {
+    return {
+      bpm,
+      beatPhase,
+      candidatePositions: extraCandidates,
+    };
+  }
+
+  // Wrap a raw timeline-time through the active snap mode. Shift-hold
+  // bypasses snapping (standard NLE-style anti-snap modifier).
+  function snapped(t: number, e: { shiftKey: boolean }, candPositions?: number[]): number {
+    if (e.shiftKey || snapMode === "off") return t;
+    return snapTime(t, snapMode, buildSnapCtx(candPositions));
+  }
+
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const canvas = e.currentTarget;
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const t = xToT(x);
+    const tRaw = xToT(x);
 
     // Audio lane → existing trim/loop/playhead/seek behavior.
     if (y >= audioBand.top) {
       const k = classifyAudioHit(x);
       if (k === null) {
-        seek(t);
+        seek(snapped(tRaw, e));
         dragRef.current = { kind: "playhead" };
       } else if (k === "trim-in") {
         dragRef.current = { kind: "trim-in" };
@@ -385,33 +523,41 @@ export function Timeline({
       } else if (k === "playhead") {
         dragRef.current = { kind: "playhead" };
       } else if (k === "loop" && loop) {
-        dragRef.current = { kind: "loop", offset: t - loop.start };
+        dragRef.current = { kind: "loop", offset: tRaw - loop.start };
       }
       return;
     }
 
     // Video lane:
-    //   * Click on a clip pill — select the clip; default drag = scrub the
-    //     playhead (most common). Hold Alt while dragging to reposition the
-    //     clip in time instead. NLE-style.
-    //   * Click on empty lane — deselect, seek + scrub.
+    //   * Locked (default): click anywhere = scrub the playhead (the
+    //     playhead can be dragged through dense clips without getting
+    //     stuck).
+    //   * Unlocked: click on a clip pill = drag-move that clip; click on
+    //     empty area = scrub the playhead. Selection always happens.
     const hit = findClipAt(x, y);
     if (hit) {
       setSelectedClipId(hit.clip.id);
-      if (e.altKey) {
+      if (!lanesLocked) {
+        const r = clipRangeS(hit.clip);
         dragRef.current = {
           kind: "clip-move",
           camId: hit.clip.id,
-          grabT: t,
+          grabT: tRaw,
           origStartOffsetS: hit.clip.startOffsetS,
+          origSyncOverrideMs: hit.clip.syncOverrideMs,
+          origStartS: r.startS,
         };
+        // Freeze the timeline range so pxPerSec stays stable through
+        // the drag.
+        frozenTimelineRangeRef.current = liveTimelineRange;
+        setActiveClipMoveDragId(hit.clip.id);
       } else {
-        seek(t);
+        seek(snapped(tRaw, e));
         dragRef.current = { kind: "playhead" };
       }
     } else {
       setSelectedClipId(null);
-      seek(t);
+      seek(snapped(tRaw, e));
       dragRef.current = { kind: "playhead" };
     }
   };
@@ -420,29 +566,89 @@ export function Timeline({
     if (!dragRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const t = Math.max(0, Math.min(duration, xToT(x)));
+    const tRaw = Math.max(0, Math.min(duration, xToT(x)));
     const drag = dragRef.current;
     if (drag.kind === "playhead") {
-      seek(t);
+      seek(snapped(tRaw, e));
     } else if (drag.kind === "trim-in") {
-      setTrim({ in: t, out: trim.out });
+      setTrim({ in: snapped(tRaw, e), out: trim.out });
     } else if (drag.kind === "trim-out") {
-      setTrim({ in: trim.in, out: t });
+      setTrim({ in: trim.in, out: snapped(tRaw, e) });
     } else if (drag.kind === "loop" && loop) {
       const len = loop.end - loop.start;
-      const newStart = Math.max(trim.in, Math.min(trim.out - len, t - drag.offset));
+      const newStartRaw = Math.max(trim.in, Math.min(trim.out - len, tRaw - drag.offset));
+      const newStart = snapped(newStartRaw, e);
       setLoop({ start: newStart, end: newStart + len });
     } else if (drag.kind === "clip-move") {
-      const deltaT = xToT(x) - drag.grabT;
-      setClipStartOffset(drag.camId, drag.origStartOffsetS + deltaT);
+      const c = clips.find((cc) => cc.id === drag.camId);
+      if (!c) return;
+      // Pointer's intended new clip-startS, computed from the snapshot
+      // taken at drag-start. Stable through any candidate-switch that
+      // happens mid-drag (which would otherwise jolt algoSyncS and make
+      // middle candidates unreachable).
+      const targetStartS = drag.origStartS + (xToT(x) - drag.grabT);
+
+      // MATCH mode: always snap to the nearest candidate-implied startS.
+      // No distance threshold — every candidate is a valid lock-target.
+      // Shift bypasses snapping entirely. We use the orig syncOverrideMs
+      // to compute candidate positions, so candidate-switching mid-drag
+      // doesn't shift the math under us.
+      if (snapMode === "match" && !e.shiftKey && c.candidates.length > 0) {
+        type CandPos = { idx: number; startS: number };
+        const positions: CandPos[] = c.candidates
+          .map((cand, idx) => {
+            if (cand.confidence < DEFAULT_MATCH_CONFIDENCE_THRESHOLD) return null;
+            const totalMs = cand.offsetMs + drag.origSyncOverrideMs;
+            return { idx, startS: -totalMs / 1000 };
+          })
+          .filter((p): p is CandPos => p !== null);
+        if (positions.length > 0) {
+          let bestIdx = positions[0].idx;
+          let bestDist = Math.abs(positions[0].startS - targetStartS);
+          for (let i = 1; i < positions.length; i++) {
+            const d = Math.abs(positions[i].startS - targetStartS);
+            if (d < bestDist) {
+              bestDist = d;
+              bestIdx = positions[i].idx;
+            }
+          }
+          if (bestIdx !== c.selectedCandidateIdx) {
+            setSelectedCandidateIdx(drag.camId, bestIdx);
+          }
+          // Keep the user's syncOverrideMs untouched (their fine-tune
+          // applies on top of whichever candidate is chosen). Reset
+          // startOffsetS so the cam sits exactly on the candidate anchor.
+          if (c.syncOverrideMs !== drag.origSyncOverrideMs) {
+            setClipSyncOverride(drag.camId, drag.origSyncOverrideMs);
+          }
+          if (c.startOffsetS !== 0) setClipStartOffset(drag.camId, 0);
+          return;
+        }
+      }
+
+      // Non-MATCH (off / grid): mutate syncOverrideMs so the drag is a
+      // *true* sync change. cam1.startS becomes its new value; the
+      // VideoCanvas effect compensates by seeking cam-1.video.currentTime
+      // so the master-time playhead doesn't visually jump. Cam-2+ re-anchor
+      // automatically through their SatelliteCam sourceT computation.
+      const targetSnapped = snapped(targetStartS, e);
+      // startS = -(syncOffsetMs + syncOverrideMs)/1000 + startOffsetS
+      // → syncOverrideMs = -1000*(startS - startOffsetS) - syncOffsetMs
+      const newSyncOverrideMs =
+        -1000 * (targetSnapped - drag.origStartOffsetS) - c.syncOffsetMs;
+      setClipSyncOverride(drag.camId, newSyncOverrideMs);
     }
   };
 
   const onPointerUp = () => {
     dragRef.current = null;
+    setActiveClipMoveDragId(null);
+    frozenTimelineRangeRef.current = null;
   };
 
-  // Wheel zoom — same anchored-zoom behavior as before.
+  // Wheel zoom — anchored at the cursor's master-time. scrollX is
+  // expressed as offset (≥0) from the timeline's left edge (= the
+  // most-negative cam start, or 0).
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -450,18 +656,24 @@ export function Timeline({
     const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
     const newZoom = Math.max(1, Math.min(64, zoom * factor));
     if (newZoom === zoom) return;
-    const newVisible = duration / newZoom;
-    const newScroll = Math.max(0, Math.min(duration - newVisible, tAtCursor - (x / canvasWidth) * newVisible));
+    const newVisible = timelineSpan / newZoom;
+    const desiredViewStart = tAtCursor - (x / canvasWidth) * newVisible;
+    const newScroll = Math.max(
+      0,
+      Math.min(timelineSpan - newVisible, desiredViewStart - timelineStartS),
+    );
     setZoom(newZoom);
     setScrollX(newScroll);
   };
 
-  // ---- Custom hardware-mixer scrollbar (cherry-picked from feature/clip-studio) ----
-  const scrollbarVisible = zoom > 1.001 && duration > 0;
+  // ---- Custom hardware-mixer scrollbar ----
+  const scrollbarVisible = zoom > 1.001 && timelineSpan > 0;
   const thumbW = scrollbarVisible
-    ? Math.max(28, (visibleDur / duration) * canvasWidth)
+    ? Math.max(28, (visibleDur / timelineSpan) * canvasWidth)
     : canvasWidth;
-  const thumbX = scrollbarVisible ? (viewStart / duration) * canvasWidth : 0;
+  const thumbX = scrollbarVisible
+    ? ((viewStart - timelineStartS) / timelineSpan) * canvasWidth
+    : 0;
 
   const onScrollPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!scrollbarVisible) return;
@@ -469,9 +681,8 @@ export function Timeline({
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     if (x < thumbX || x > thumbX + thumbW) {
-      // Jump-scroll so the thumb centers under the click.
       const newThumbX = Math.max(0, Math.min(canvasWidth - thumbW, x - thumbW / 2));
-      setScrollX((newThumbX / canvasWidth) * duration);
+      setScrollX((newThumbX / canvasWidth) * timelineSpan);
       dragRef.current = { kind: "scrollbar", offsetX: thumbW / 2 };
     } else {
       dragRef.current = { kind: "scrollbar", offsetX: x - thumbX };
@@ -482,7 +693,7 @@ export function Timeline({
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const newThumbX = Math.max(0, Math.min(canvasWidth - thumbW, x - dragRef.current.offsetX));
-    setScrollX((newThumbX / canvasWidth) * duration);
+    setScrollX((newThumbX / canvasWidth) * timelineSpan);
   };
   const onScrollPointerUp = () => {
     if (dragRef.current?.kind === "scrollbar") dragRef.current = null;
@@ -534,19 +745,48 @@ export function Timeline({
 
   return (
     <div ref={wrapRef} className="w-full select-none">
-      <div className="flex items-center justify-between px-1 mb-1.5">
-        <div className="flex items-center gap-2">
-          <span className="label">Timeline</span>
+      {/* Top header row: BPM-LCD + cassette snap-buttons on the left,
+          view-range readout on the right. The BPM column and the button
+          plate are vertically centered to the row's content height. */}
+      <div className="flex items-center gap-4 px-1 mb-2">
+        <BpmReadout />
+        <SnapModeButtons />
+        <ActiveMatchReadout
+          camId={activeClipMoveDragId}
+          snapMode={snapMode}
+          clips={clips}
+        />
+        <div className="ml-auto flex items-center gap-3">
           <span className="text-[10px] tabular text-ink-3 font-mono">
             {zoomPercent}%
           </span>
-        </div>
-        <div className="text-[10px] tabular text-ink-3 font-mono">
-          {viewStart.toFixed(1)}s — {viewEnd.toFixed(1)}s
+          <span className="text-[10px] tabular text-ink-3 font-mono">
+            {viewStart.toFixed(1)}s — {viewEnd.toFixed(1)}s
+          </span>
         </div>
       </div>
 
       <div className="rounded-md overflow-hidden border border-rule shadow-panel bg-paper-hi-deep">
+        {/* Bar/beat ruler row — bars + beats + subdivisions, click to seek. */}
+        <div className="flex border-b border-rule">
+          <div
+            className="shrink-0 flex items-center justify-end px-2 border-r border-rule bg-paper-hi"
+            style={{ width: HEADER_W, height: 26 }}
+          >
+            <span className="font-mono text-[9px] tracking-label uppercase text-ink-3">
+              BARS
+            </span>
+          </div>
+          <div className="flex-1" style={{ width: canvasWidth }}>
+            <BeatRuler
+              contentWidthPx={canvasWidth}
+              viewStartS={viewStart}
+              viewEndS={viewEnd}
+              height={26}
+            />
+          </div>
+        </div>
+
         {/* PROGRAM-Strip row */}
         <div className="flex">
           <div
@@ -566,6 +806,17 @@ export function Timeline({
               viewEndS={viewEnd}
               width={canvasWidth}
               onRemoveCut={removeCutAt}
+              onCutDrag={(fromAtTimeS, camId, rawNewT, ev) => {
+                // Apply the same snap rules as the rest of the timeline:
+                // SHIFT bypasses, MATCH falls through (no candidatePositions
+                // for cut-set), grid modes round to the nearest beat/bar.
+                const snappedT = ev.shiftKey
+                  ? rawNewT
+                  : useEditorStore.getState().snapMasterTime(rawNewT);
+                return useEditorStore
+                  .getState()
+                  .moveCut(fromAtTimeS, camId, snappedT);
+              }}
               paintPreview={(() => {
                 if (!holdGesture || !holdGesture.painting) return null;
                 const clip = clips.find((c) => c.id === holdGesture.camId);
@@ -578,12 +829,49 @@ export function Timeline({
                   camLabel: `CAM ${idx + 1}`,
                 };
               })()}
+              matchMarkers={(() => {
+                // Show match markers ONLY while the user is actively
+                // dragging a clip in MATCH mode — they're an interaction
+                // affordance, not a permanent overlay. We render the
+                // markers for that one clip (so candidates from other
+                // cams don't pollute the view).
+                if (snapMode !== "match" || !activeClipMoveDragId) {
+                  return undefined;
+                }
+                const c = clips.find((cc) => cc.id === activeClipMoveDragId);
+                if (!c || !c.candidates || c.candidates.length === 0) {
+                  return undefined;
+                }
+                return c.candidates
+                  .filter(
+                    (cand) =>
+                      cand.confidence >= DEFAULT_MATCH_CONFIDENCE_THRESHOLD,
+                  )
+                  .map((cand) => {
+                    const idx = c.candidates.indexOf(cand);
+                    const totalMs = cand.offsetMs + c.syncOverrideMs;
+                    return {
+                      t: -totalMs / 1000,
+                      confidence: cand.confidence,
+                      isPrimary: idx === c.selectedCandidateIdx,
+                    };
+                  });
+              })()}
             />
           </div>
         </div>
 
-        {/* Lanes row: HTML headers on the left, single canvas on the right */}
-        <div className="flex">
+        {/* Lanes row: HTML headers on the left, single canvas on the right.
+         *  Wrapped in a max-height + overflow-y container so adding more
+         *  cams doesn't push the timeline section into the preview area —
+         *  past ~5 cam lanes a vertical scrollbar appears on the right. */}
+        <div
+          className="flex"
+          style={{
+            maxHeight: 5 * videoLaneHeight + audioLaneHeight,
+            overflowY: "auto",
+          }}
+        >
           <div className="shrink-0 flex flex-col" style={{ width: HEADER_W }}>
             {clips.map((clip, i) => (
               <LaneHeader
@@ -599,14 +887,17 @@ export function Timeline({
                   holdGesture?.camId === clip.id && holdGesture.painting
                 }
                 onSelectClip={() => setSelectedClipId(clip.id)}
-                onTake={() => addCut({ atTimeS: useEditorStore.getState().playback.currentTime, camId: clip.id })}
+                // onTake is intentionally omitted — the cassette-rec
+                // model fires the immediate cut inside onTakeStart so a
+                // tap and a hold use one code path.
                 onTakeStart={() => {
                   const s = useEditorStore.getState();
-                  const startS = s.playback.currentTime;
-                  takeHoldStartRef.current.set(clip.id, startS);
+                  // Single-active-hold guard: ignore if another TAKE is
+                  // already engaged (button or keyboard).
+                  if (s.holdGesture) return;
+                  const startS = s.snapMasterTime(s.playback.currentTime);
                   s.beginHoldGesture(clip.id, startS);
-                  // Promote to paint mode after the same 500 ms threshold
-                  // as the keyboard handler. Cleared in onTakeFinish.
+                  s.addCut({ atTimeS: startS, camId: clip.id });
                   const existing = takePromoteTimerRef.current.get(clip.id);
                   if (existing) clearTimeout(existing);
                   const t = setTimeout(() => {
@@ -615,27 +906,34 @@ export function Timeline({
                   takePromoteTimerRef.current.set(clip.id, t);
                 }}
                 onTakeFinish={() => {
-                  const startS = takeHoldStartRef.current.get(clip.id);
-                  takeHoldStartRef.current.delete(clip.id);
                   const promoteT = takePromoteTimerRef.current.get(clip.id);
                   if (promoteT) {
                     clearTimeout(promoteT);
                     takePromoteTimerRef.current.delete(clip.id);
                   }
-                  useEditorStore.getState().endHoldGesture();
-                  if (startS === undefined) return;
-                  const endS = useEditorStore.getState().playback.currentTime;
-                  if (Math.abs(endS - startS) > 0.5) {
-                    useEditorStore
-                      .getState()
-                      .applyHoldRelease(
-                        clip.id,
-                        startS,
-                        endS,
-                        useEditorStore.getState().cuts,
-                      );
+                  const s2 = useEditorStore.getState();
+                  const hold = s2.holdGesture;
+                  // Only act on releases that match this clip's hold —
+                  // otherwise a stale onTakeFinish (after a cancelHold
+                  // via Esc) shouldn't re-apply anything.
+                  if (!hold || hold.camId !== clip.id) return;
+                  const endS = s2.snapMasterTime(s2.playback.currentTime);
+                  if (hold.painting) {
+                    s2.applyHoldRelease(
+                      clip.id,
+                      hold.startS,
+                      endS,
+                      hold.priorCuts,
+                    );
                   }
+                  s2.endHoldGesture();
                 }}
+                canReset={
+                  clip.syncOverrideMs !== 0 ||
+                  clip.startOffsetS !== 0 ||
+                  clip.selectedCandidateIdx !== 0
+                }
+                onReset={() => resetClipAlignment(clip.id)}
                 height={videoLaneHeight}
               />
             ))}
@@ -865,4 +1163,132 @@ function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(c.slice(2, 4), 16);
   const b = parseInt(c.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+interface DrawMatchMarkersArgs {
+  ctx: CanvasRenderingContext2D;
+  clip: VideoClip;
+  bandTop: number;
+  bandH: number;
+  viewStart: number;
+  visibleDur: number;
+  canvasWidth: number;
+  emphasized: boolean;
+}
+
+/** Render small ticks at each candidate-implied start position. The
+ *  active candidate is rendered as a chunky filled triangle, alternates
+ *  as thinner ticks fading out with confidence. In MATCH mode the alts
+ *  brighten so the user can aim at them while dragging. */
+function drawMatchMarkers({
+  ctx,
+  clip,
+  bandTop,
+  bandH,
+  viewStart,
+  visibleDur,
+  canvasWidth,
+  emphasized,
+}: DrawMatchMarkersArgs) {
+  if (!clip.candidates || clip.candidates.length === 0) return;
+  ctx.save();
+  for (let i = 0; i < clip.candidates.length; i++) {
+    const c = clip.candidates[i];
+    const totalMs = c.offsetMs + clip.syncOverrideMs;
+    const startS = -totalMs / 1000 + clip.startOffsetS;
+    const x = ((startS - viewStart) / visibleDur) * canvasWidth;
+    if (x < -8 || x > canvasWidth + 8) continue;
+    const isPrimary = i === clip.selectedCandidateIdx;
+    const conf = Math.max(0, Math.min(1, c.confidence));
+    const baseOpacity = (isPrimary ? 1 : 0.35) * (emphasized ? 1 : 0.55);
+    const opacity = baseOpacity * (0.4 + 0.6 * conf);
+    const tickW = isPrimary ? 3 : 2;
+    const tickH = isPrimary ? bandH - 6 : Math.round(bandH * 0.45);
+    ctx.fillStyle = `rgba(255,87,34,${opacity})`; // hot
+    ctx.fillRect(Math.floor(x), bandTop + 2, tickW, tickH);
+    if (isPrimary) {
+      // Filled inverted triangle on top to mark the active alignment.
+      ctx.beginPath();
+      ctx.moveTo(x - 4, bandTop);
+      ctx.lineTo(x + 4, bandTop);
+      ctx.lineTo(x, bandTop + 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/** Big "currently snapped to" readout that lights up only while a
+ *  clip-move drag is active in MATCH mode. Mirrors the heatmap colour
+ *  used by the markers themselves so the user can correlate them, and
+ *  shows the percentage in big LCD-ish digits so they can decide
+ *  whether to commit or keep dragging without staring at tiny numbers
+ *  on the strip. */
+function ActiveMatchReadout({
+  camId,
+  snapMode,
+  clips,
+}: {
+  camId: string | null;
+  snapMode: SnapMode;
+  clips: VideoClip[];
+}) {
+  if (!camId || snapMode !== "match") return null;
+  const clip = clips.find((c) => c.id === camId);
+  if (!clip || clip.candidates.length === 0) return null;
+  const cand = clip.candidates[clip.selectedCandidateIdx];
+  if (!cand) return null;
+  const conf = Math.max(0, Math.min(1, cand.confidence));
+  const hue = Math.pow(conf, 2.2) * 135;
+  const sat = 70 + 25 * conf;
+  const light = 38 + 18 * conf;
+  const color = `hsl(${hue.toFixed(1)}, ${sat.toFixed(1)}%, ${light.toFixed(1)}%)`;
+  const pct = Math.round(conf * 100);
+  return (
+    <div
+      className="flex flex-col items-start"
+      style={{
+        background: "linear-gradient(180deg, #1A1612 0%, #0E0B08 100%)",
+        boxShadow: [
+          "inset 0 1px 0 rgba(255,255,255,0.08)",
+          "inset 0 -1px 0 rgba(0,0,0,0.5)",
+          "inset 0 0 12px rgba(0,0,0,0.55)",
+          "0 1px 0 rgba(255,255,255,0.5)",
+        ].join(", "),
+        borderRadius: 6,
+        padding: "3px 10px 4px",
+        minWidth: 86,
+      }}
+    >
+      <span
+        className="font-display text-[8px] tracking-[0.2em] uppercase leading-none"
+        style={{ color: "rgba(255,255,255,0.55)" }}
+      >
+        MATCH
+      </span>
+      <div className="flex items-baseline gap-1">
+        <span
+          className="font-mono tabular leading-none"
+          style={{
+            color,
+            textShadow: `0 0 6px ${color}`,
+            fontSize: 22,
+            fontWeight: 700,
+          }}
+        >
+          {pct}
+        </span>
+        <span
+          className="font-mono leading-none"
+          style={{
+            color: "rgba(255,255,255,0.5)",
+            fontSize: 10,
+          }}
+        >
+          %
+        </span>
+      </div>
+    </div>
+  );
 }

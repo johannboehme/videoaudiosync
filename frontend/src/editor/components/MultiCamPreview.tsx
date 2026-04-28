@@ -31,10 +31,12 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const activeCamId = useEditorStore((s) => s.activeCamId(currentTime));
 
-  // Cam-1 is the master — its <video> drives the OffsetScheduler.
+  // Cam-1 still drives the playback loop, but the store's currentTime
+  // is now master-time directly (computed by useOffsetScheduler from
+  // cam-1.video.currentTime + cam1.startS). SatelliteCams therefore
+  // can read masterT straight from the store.
   const cam1 = clips[0];
   const cam1Url = cam1 ? cams[cam1.id]?.videoUrl : null;
-  const cam1RangeStartS = cam1 ? clipRangeS(cam1).startS : 0;
 
   if (!cam1 || !cam1Url) {
     return (
@@ -68,7 +70,6 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
             videoUrl={url}
             visible={activeCamId === clip.id}
             clip={clip}
-            cam1RangeStartS={cam1RangeStartS}
           />
         );
       })}
@@ -86,7 +87,6 @@ interface SatelliteCamProps {
   videoUrl: string;
   visible: boolean;
   clip: VideoClip;
-  cam1RangeStartS: number;
 }
 
 /**
@@ -97,13 +97,14 @@ interface SatelliteCamProps {
  * the target, snap it back. Browsers handle ~50 ms drift gracefully on
  * <video.currentTime = …> seeks of preloaded sources.
  */
-function SatelliteCam({ videoUrl, visible, clip, cam1RangeStartS }: SatelliteCamProps) {
+function SatelliteCam({ videoUrl, visible, clip }: SatelliteCamProps) {
   const ref = useRef<HTMLVideoElement>(null);
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
 
-  // currentTime is cam-1's media-time → masterT = currentTime + cam-1's startS.
-  const masterT = currentTime + cam1RangeStartS;
+  // store.currentTime is master-time (master-audio reference frame).
+  // sourceT = where this satellite cam should be playing internally.
+  const masterT = currentTime;
   const range = clipRangeS(clip);
   const sourceT = masterT - range.startS;
   const hasMaterial = sourceT >= 0 && sourceT < clip.sourceDurationS;

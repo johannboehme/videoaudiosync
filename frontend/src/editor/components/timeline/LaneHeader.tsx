@@ -32,6 +32,12 @@ interface Props {
   onTakeStart?: () => void;
   /** Pointer released on TAKE — overwrite from press-start to release. */
   onTakeFinish?: () => void;
+  /** True when this cam has been nudged off its primary algorithm
+   *  alignment (override / drag / alternate candidate selected). When
+   *  true a small ↺ button appears so the user can revert. */
+  canReset?: boolean;
+  /** Reset this cam to the primary candidate, no override, no startOffset. */
+  onReset?: () => void;
   height?: number;
 }
 
@@ -50,6 +56,8 @@ export function LaneHeader({
   onTake,
   onTakeStart,
   onTakeFinish,
+  canReset = false,
+  onReset,
   height = 80,
 }: Props) {
   const handlePointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -69,63 +77,111 @@ export function LaneHeader({
     onTakeFinish?.();
   };
 
+  // The header packs into a half-height row (48 px by default). Layout:
+  //
+  //   ┌─┬───────────────────────────────┬────────┐
+  //   │ │ ● CAM 1                    ↺  │   ¹    │
+  //   │■│ try2handy.mp4 …               │  TAKE  │
+  //   └─┴───────────────────────────────┴────────┘
+  //
+  // - Left: cam-colour edge stripe (full height).
+  // - Top text row: tally dot + cam name. Status is encoded by the dot
+  //   colour alone (no "ON AIR" / "READY" text).
+  // - Bottom text row: filename, full inner width, single line truncated.
+  // - Reset (↺) tucks into the top-right of the labels area.
+  // - Right: TAKE button with the keyboard-shortcut number as a small
+  //   superscript badge in its top-right corner — replaces the standalone
+  //   hotkey "1" badge that used to look like a clickable button.
+  const TAKE_W = 44;
+  const TAKE_H = Math.max(28, height - 8);
+  const tallyColor =
+    status === "on-air"
+      ? "#FF3326"
+      : status === "available"
+        ? "#3F8F5A"
+        : "#9A8F80";
+  const tallyShadow =
+    status === "on-air" ? "0 0 4px rgba(255,51,38,0.55)" : "inset 0 0 0 0.5px rgba(0,0,0,0.15)";
   return (
     <div
       className="relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper-hi hover:bg-paper transition-colors"
       style={{
         width: HEADER_W,
         height,
-        boxShadow: selected
-          ? `inset 3px 0 0 ${color}`
-          : undefined,
+        boxShadow: selected ? `inset 3px 0 0 ${color}` : undefined,
       }}
       onClick={onSelectClip}
     >
-      {/* Cam-color edge stripe — single solid bar, no gradient, no glow. */}
-      <div
-        className="w-[5px] shrink-0"
-        style={{ background: color }}
-      />
+      {/* Cam-color edge stripe — full-height solid bar. */}
+      <div className="w-[5px] shrink-0" style={{ background: color }} />
 
-      {/* Module body — flat paper-hi, no fake metal. */}
-      <div className="flex-1 relative px-2.5 py-2 flex items-center gap-2 min-w-0">
-        {/* Labels */}
-        <div className="flex-1 min-w-0 flex flex-col gap-1 pr-1">
-          <div className="flex items-baseline gap-1.5 min-w-0">
+      {/* Module body */}
+      <div className="flex-1 relative px-2 py-1.5 flex items-center gap-2 min-w-0">
+        <div className="flex-1 min-w-0 flex flex-col gap-0.5 pr-1">
+          {/* Top row: tally dot + cam name + reset action. */}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span
+              aria-hidden
+              className="block w-[6px] h-[6px] rounded-full shrink-0"
+              style={{
+                background: tallyColor,
+                boxShadow: tallyShadow,
+                opacity: status === "off" ? 0.45 : 1,
+              }}
+              title={
+                status === "on-air"
+                  ? "On air"
+                  : status === "available"
+                    ? "Ready"
+                    : "Off"
+              }
+            />
             <span className="font-display font-semibold text-[11px] tracking-label uppercase text-ink leading-none truncate">
               {name}
             </span>
-            {hotkeyLabel && (
-              <span
-                className="font-mono text-[9px] tracking-label text-ink-2 leading-none rounded-sm border border-rule bg-paper px-[3px] py-[1px] shrink-0"
-                style={{ boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.04)" }}
+            {canReset && onReset && (
+              <button
+                type="button"
+                aria-label="Reset alignment to detected"
+                title="Reset alignment to detected"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReset();
+                }}
+                className="ml-auto shrink-0 w-4 h-4 flex items-center justify-center font-mono text-[12px] leading-none text-ink-3 hover:text-hot transition-colors"
               >
-                {hotkeyLabel}
-              </span>
+                ↺
+              </button>
             )}
           </div>
+          {/* Bottom row: filename, takes the full inner width so longer
+           * names actually fit before truncation kicks in. */}
           <span
             className="font-mono text-[9px] text-ink-3 leading-snug truncate min-w-0"
             title={filename}
           >
             {filename}
           </span>
-          <Tally status={status} color={color} />
         </div>
 
-        {/* TAKE button — vintage hardware look. Paper body with subtle inset
-         * border + emboss shadow. Cam color shows ONLY in the tally dot, not
-         * in the button face — keeps multi-cam panels from screaming. */}
+        {/* TAKE button — slimmer, with the keyboard-hotkey number as a
+         * small superscript badge in the top-right so the user knows
+         * which key fires this button. The badge is purely decorative
+         * (the global keydown handler in Editor.tsx does the dispatch). */}
         <button
           type="button"
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
-          aria-label={`Take ${name} (hold to overwrite range)`}
+          aria-label={
+            hotkeyLabel
+              ? `Take ${name} — keyboard shortcut ${hotkeyLabel} (hold to overwrite range)`
+              : `Take ${name} (hold to overwrite range)`
+          }
           className="relative shrink-0 transition-transform"
           style={{
-            width: 48,
-            height: 44,
+            width: TAKE_W,
+            height: TAKE_H,
             transform: pressed ? "translateY(2px)" : undefined,
           }}
         >
@@ -152,6 +208,22 @@ export function LaneHeader({
               {painting ? "REC" : "TAKE"}
             </span>
           </span>
+          {hotkeyLabel && (
+            <span
+              aria-hidden
+              className="absolute font-mono leading-none pointer-events-none"
+              style={{
+                top: 2,
+                right: 3,
+                fontSize: 8,
+                color: "rgba(26,24,22,0.55)",
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+              }}
+            >
+              {hotkeyLabel}
+            </span>
+          )}
         </button>
       </div>
     </div>
@@ -159,53 +231,6 @@ export function LaneHeader({
 }
 
 LaneHeader.WIDTH = HEADER_W;
-
-/**
- * Inline tally indicator: a small LED + status word. Sits on the third
- * line of the label column so the column reads name / filename / status.
- * No haloed pulsing — just a small lit dot, like the tally on a vintage
- * studio panel.
- */
-function Tally({ status, color }: { status: CamStatus; color: string }) {
-  const dotColor =
-    status === "on-air" ? "#FF3326" : status === "available" ? "#3F8F5A" : "#9A8F80";
-  const label = status === "on-air" ? "ON AIR" : status === "available" ? "READY" : "—";
-  const labelColor =
-    status === "on-air"
-      ? "#C42E20"
-      : status === "available"
-        ? "#3F8F5A"
-        : "#9A8F80";
-  return (
-    <span className="inline-flex items-center gap-1.5 mt-0.5" aria-hidden>
-      <span
-        className="block w-[6px] h-[6px] rounded-full shrink-0"
-        style={{
-          background: dotColor,
-          boxShadow:
-            status === "on-air"
-              ? "0 0 4px rgba(255,51,38,0.55)"
-              : status === "available"
-                ? "inset 0 0 0 0.5px rgba(0,0,0,0.15)"
-                : "inset 0 0 0 0.5px rgba(0,0,0,0.15)",
-          opacity: status === "off" ? 0.45 : 1,
-        }}
-      />
-      <span
-        className="font-mono text-[8px] tracking-label uppercase leading-none"
-        style={{ color: labelColor }}
-      >
-        {label}
-      </span>
-      {/* Cam color reference — tiny stripe so the tally row is colour-tagged
-        * even when status is the same across cams. */}
-      <span
-        className="block w-[14px] h-[2px] rounded-sm"
-        style={{ background: color, opacity: 0.6 }}
-      />
-    </span>
-  );
-}
 
 /**
  * Recessed paper-toned button face.

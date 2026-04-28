@@ -1,21 +1,19 @@
 /**
  * Side-effect layer for the live A/V offset preview.
  *
- * The math is in `OffsetScheduler.ts` (pure, unit-tested). This hook wires it
- * to a real `<video>` element and a real `AudioContext`:
- *
- * 1. Decode the studio audio once into an AudioBuffer (mono is enough for
- *    preview — saves RAM on long recordings).
- * 2. The video element plays muted. Time updates are driven by
- *    `requestVideoFrameCallback` for sub-frame accuracy.
- * 3. On each play() and on each loop boundary, schedule a fresh
- *    AudioBufferSourceNode at `videoTime - totalOffsetMs/1000`. Re-scheduling
- *    on the loop boundary is the natural re-sync point — no drift accumulates.
- * 4. AbortController-style cleanup: every running source is stopped before a
- *    new one is scheduled.
- *
- * The hook is small and AudioContext is hard to test in jsdom, so this layer
- * is validated manually with real footage.
+ * Architecture (master-time anchored):
+ *   - The *master clock* is derived from the AudioContext's currentTime,
+ *     not from any video element. This is what lets the playhead sit at
+ *     master t=0 even when cam-1 starts at master t=8 — the clock keeps
+ *     advancing through the "no-cam-1" pre-roll, and cam-1 simply doesn't
+ *     play until master reaches its range.
+ *   - cam-1's <video> follows: while playing, its currentTime is set to
+ *     `masterT - cam1.startS` (clamped to the video's own duration), and
+ *     it's only allowed to play() when master is inside cam-1's range.
+ *   - Master audio is scheduled once per play() / seek-during-play /
+ *     candidate-switch. The buffer offset is `max(0, masterT)` and the
+ *     audio start is delayed by `max(0, -masterT)` so a play at negative
+ *     master-time correctly waits before starting the buffer at position 0.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -23,13 +21,15 @@ import {
   shouldRescheduleOnTick,
 } from "./OffsetScheduler";
 import { useEditorStore } from "./store";
+import { clipRangeS } from "./types";
 
-type VideoFrameCallback = (now: number, metadata: { mediaTime: number }) => void;
+void computeAudioStartOffset; // kept exported via tests; not used here directly
 
-type VideoElementWithRVFC = HTMLVideoElement & {
-  requestVideoFrameCallback?: (cb: VideoFrameCallback) => number;
-  cancelVideoFrameCallback?: (handle: number) => void;
-};
+/** Read cam-1's master-timeline startS from the store. */
+function cam1StartS(state = useEditorStore.getState()): number {
+  const cam1 = state.clips[0];
+  return cam1 ? clipRangeS(cam1).startS : 0;
+}
 
 export interface OffsetSchedulerHandle {
   isReady: boolean;
@@ -44,11 +44,23 @@ export function useOffsetScheduler(
   const ctxRef = useRef<AudioContext | null>(null);
   const bufferRef = useRef<AudioBuffer | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const rvfcHandleRef = useRef<number | null>(null);
+  /** When the master clock was last (re)seeded — both via ctx.currentTime
+   *  (canonical) and via performance.now() (fallback when ctx isn't
+   *  available). The masterT at that seed point is recorded so the RAF
+   *  loop can derive masterT at any subsequent moment. */
+  const clockSeedRef = useRef<{
+    ctxTime: number | null;
+    perfNow: number;
+    masterT: number;
+  } | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   const [isReady, setIsReady] = useState(false);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const isPlaying = useEditorStore((s) => s.playback.isPlaying);
+  const seekRequest = useEditorStore((s) => s.playback.seekRequest);
 
   // Decode the studio audio once.
   useEffect(() => {
@@ -70,9 +82,6 @@ export function useOffsetScheduler(
         if (!resp.ok) throw new Error(`Audio fetch ${resp.status}`);
         const ab = await resp.arrayBuffer();
         if (cancelled) return;
-        // decodeAudioData returns the buffer; we keep it as-is (stereo if the
-        // source is stereo) — modern browsers handle this without RAM blow-ups
-        // for typical 5-minute recordings.
         const buffer: AudioBuffer = await ctx.decodeAudioData(ab);
         if (cancelled) return;
         bufferRef.current = buffer;
@@ -100,24 +109,13 @@ export function useOffsetScheduler(
         }
         sourceRef.current = null;
       }
-      const v = videoRef.current as VideoElementWithRVFC | null;
-      if (v && rvfcHandleRef.current !== null && v.cancelVideoFrameCallback) {
-        v.cancelVideoFrameCallback(rvfcHandleRef.current);
-      }
       ctxRef.current?.close().catch(() => undefined);
       ctxRef.current = null;
     };
-    // videoRef is stable (ref objects don't change identity)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Schedule an audio source corresponding to the current video position.
-  const scheduleAudio = useCallback(() => {
-    const ctx = ctxRef.current;
-    const buffer = bufferRef.current;
-    const v = videoRef.current;
-    if (!ctx || !buffer || !v) return;
-
+  /** Stop any running audio source. Idempotent. */
+  const stopAudio = useCallback(() => {
     if (sourceRef.current) {
       try {
         sourceRef.current.stop();
@@ -126,124 +124,162 @@ export function useOffsetScheduler(
       }
       sourceRef.current = null;
     }
+  }, []);
+
+  /** Schedule master audio to play starting at the current store
+   *  masterT, *and* re-seed the master clock so the RAF loop derives
+   *  masterT from the audio context's currentTime. Negative masterT is
+   *  allowed: audio is delayed so the buffer's t=0 plays exactly when
+   *  the master clock reaches t=0. */
+  const scheduleAudio = useCallback(() => {
+    const ctx = ctxRef.current;
+    const buffer = bufferRef.current;
+    if (!ctx || !buffer) return;
+
+    stopAudio();
 
     const state = useEditorStore.getState();
-    const totalMs = state.totalOffsetMs();
-    const start = computeAudioStartOffset({
-      videoTime: v.currentTime,
-      totalOffsetMs: totalMs,
-      audioDuration: buffer.duration,
-    });
-    if (start === null) return; // out of buffer; play silence
+    const masterT = state.playback.currentTime;
 
+    // Seed the master clock at "now" — masterT will advance by
+    // (ctx.currentTime - seed.ctxTime) seconds from here.
+    const leadIn = 0.01;
+    const seedCtxTime = ctx.currentTime + leadIn;
+    clockSeedRef.current = {
+      ctxTime: seedCtxTime,
+      perfNow: performance.now() + leadIn * 1000,
+      masterT,
+    };
+
+    // Audio plays only the part of the buffer that overlaps the master
+    // timeline from t=0 to t=duration. If masterT < 0, delay the audio
+    // start by abs(masterT). If masterT >= duration, don't schedule
+    // anything (the master clock will keep advancing in silence until
+    // we hit the duration and auto-pause).
+    const bufferStart = Math.max(0, masterT);
+    if (bufferStart >= buffer.duration) return;
+
+    const audioStartCtxTime = seedCtxTime + Math.max(0, -masterT);
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(ctx.destination);
-    // start now (small leadIn for safety against AudioContext currentTime jitter)
-    const leadIn = 0.01;
-    src.start(ctx.currentTime + leadIn, start);
+    src.start(audioStartCtxTime, bufferStart);
     sourceRef.current = src;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [stopAudio]);
 
-  // Public API: triggered from outside via store subscriptions in the
-  // VideoCanvas — but to keep the hook self-contained we react to play state
-  // here.
+  // Play / pause / RAF master-clock loop. The single useEffect handles
+  // (a) scheduling audio when we transition into playback, (b) tearing
+  // it down on pause, and (c) the per-frame loop that drives master-time
+  // forward and tells cam-1's <video> what to do.
   useEffect(() => {
-    const v = videoRef.current as VideoElementWithRVFC | null;
-    if (!v) return;
-
-    let lastLoop: { start: number; end: number } | null = null;
-    let lastTotalMs = useEditorStore.getState().totalOffsetMs();
-
-    const onPlay = () => {
-      ctxRef.current?.resume().catch(() => undefined);
-      scheduleAudio();
-    };
-    const onPause = () => {
-      if (sourceRef.current) {
-        try {
-          sourceRef.current.stop();
-        } catch {
-          /* already stopped */
-        }
-        sourceRef.current = null;
-      }
-    };
-    const onSeeked = () => {
-      if (!v.paused) scheduleAudio();
-    };
-
-    v.addEventListener("play", onPlay);
-    v.addEventListener("pause", onPause);
-    v.addEventListener("seeked", onSeeked);
-
-    // Frame-accurate tick: keep store.currentTime in sync, and detect loop
-    // boundaries / scrubs.
-    const tick = (_now: number, metadata: { mediaTime: number }) => {
-      const t = metadata.mediaTime;
-      const store = useEditorStore.getState();
-      // mirror video time into the store
-      store.setCurrentTime(t);
-
-      const loop = store.playback.loop;
-      const totalMs = store.totalOffsetMs();
-      const offsetChanged = totalMs !== lastTotalMs;
-
-      // Loop wrap?
-      if (
-        loop &&
-        shouldRescheduleOnTick({ videoTime: t, loop }) &&
-        store.playback.isPlaying
-      ) {
-        v.currentTime = loop.start;
-        // wait for `seeked` to schedule
-      } else if (offsetChanged && !v.paused) {
-        // Live offset adjustment while playing — reschedule audio at new offset
-        scheduleAudio();
-      }
-      lastLoop = loop;
-      lastTotalMs = totalMs;
-      void lastLoop;
-      // re-arm
-      if (v.requestVideoFrameCallback) {
-        rvfcHandleRef.current = v.requestVideoFrameCallback(tick);
-      }
-    };
-
-    if (v.requestVideoFrameCallback) {
-      rvfcHandleRef.current = v.requestVideoFrameCallback(tick);
-    } else {
-      // fallback for browsers without rVFC: 60Hz timer
-      const id = window.setInterval(() => {
-        const store = useEditorStore.getState();
-        store.setCurrentTime(v.currentTime);
-        const loop = store.playback.loop;
-        if (
-          loop &&
-          shouldRescheduleOnTick({ videoTime: v.currentTime, loop }) &&
-          store.playback.isPlaying
-        ) {
-          v.currentTime = loop.start;
-        }
-      }, 16);
-      rvfcHandleRef.current = id as unknown as number;
+    if (!isPlaying || !isReady) {
+      stopAudio();
+      clockSeedRef.current = null;
+      const v = videoRef.current;
+      if (v && !v.paused) v.pause();
+      return;
     }
 
-    return () => {
-      v.removeEventListener("play", onPlay);
-      v.removeEventListener("pause", onPause);
-      v.removeEventListener("seeked", onSeeked);
-      const handle = rvfcHandleRef.current;
-      if (handle === null) return;
-      if (typeof v.cancelVideoFrameCallback === "function") {
-        v.cancelVideoFrameCallback(handle);
-      } else {
-        clearInterval(handle);
+    ctxRef.current?.resume().catch(() => undefined);
+    scheduleAudio();
+    let lastSeenStartS = cam1StartS();
+
+    function tick() {
+      const ctx = ctxRef.current;
+      const v = videoRef.current;
+      const store = useEditorStore.getState();
+      if (!store.playback.isPlaying) {
+        rafRef.current = null;
+        return;
       }
+      const startS = cam1StartS(store);
+      const dur = store.jobMeta?.duration ?? Infinity;
+      const seed = clockSeedRef.current;
+
+      // Derive masterT. AudioContext.currentTime is monotonic and high
+      // resolution; use it whenever we have a seed. Wall-clock fallback
+      // covers the (rare) case where ctx isn't available.
+      let masterT = store.playback.currentTime;
+      if (seed) {
+        if (ctx && seed.ctxTime !== null) {
+          masterT = seed.masterT + (ctx.currentTime - seed.ctxTime);
+        } else {
+          masterT = seed.masterT + (performance.now() - seed.perfNow) / 1000;
+        }
+      }
+
+      // Auto-pause at the end of the master timeline.
+      if (masterT >= dur) {
+        store.setCurrentTime(dur);
+        store.setPlaying(false);
+        rafRef.current = null;
+        return;
+      }
+      store.setCurrentTime(masterT);
+
+      // Loop wrap (loop region is in master-time).
+      const loop = store.playback.loop;
+      if (loop && shouldRescheduleOnTick({ videoTime: masterT, loop })) {
+        store.seek(loop.start);
+        // The seekRequest watcher below reschedules audio.
+      }
+
+      // cam-1.startS changed mid-play (drag re-sync, MATCH switch).
+      // Re-anchor audio so the master clock remains accurate.
+      if (startS !== lastSeenStartS) {
+        scheduleAudio();
+        lastSeenStartS = startS;
+      }
+
+      // Drive cam-1's <video>. It plays only while masterT is inside
+      // cam-1's range; outside that window it's paused so it doesn't
+      // burn the wrong frame onto the preview surface.
+      if (v) {
+        const camDur = v.duration || 0;
+        const inRange = masterT >= startS && masterT < startS + camDur;
+        if (inRange) {
+          const targetT = masterT - startS;
+          if (Math.abs(v.currentTime - targetT) > 0.15) {
+            try {
+              v.currentTime = Math.max(0, targetT);
+            } catch {
+              /* element not ready */
+            }
+          }
+          if (v.paused) v.play().catch(() => undefined);
+        } else if (!v.paused) {
+          v.pause();
+        }
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    }
+
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      stopAudio();
+      clockSeedRef.current = null;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      const v = videoRef.current;
+      if (v && !v.paused) v.pause();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReady]);
+  }, [isPlaying, isReady]);
+
+  // Reschedule audio whenever the store fires a seek during playback.
+  // Without this the master clock would keep advancing from the old
+  // seed and skip-to-start / skip-to-end during play would drift back.
+  useEffect(() => {
+    if (seekRequest === null) return;
+    if (!useEditorStore.getState().playback.isPlaying) return;
+    if (!isReady) return;
+    scheduleAudio();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekRequest, isReady]);
 
   return { isReady, audioDuration, error };
 }
