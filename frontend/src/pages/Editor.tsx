@@ -79,6 +79,11 @@ export default function Editor() {
       return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
     }
 
+    // Promote-to-paint timer per held key — fires after the tap-vs-hold
+    // threshold so the PROGRAM strip starts drawing the live paint range.
+    const promoteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const PAINT_PROMOTION_MS = 500;
+
     function onKeyDown(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
@@ -93,24 +98,33 @@ export default function Editor() {
       if (!clip) return;
       e.preventDefault();
       const startS = s.playback.currentTime;
-      // Snapshot PRIOR to addCut — applyHoldRelease needs the pristine list
-      // to recover what would have been active at release.
       const priorCuts = s.cuts.slice();
       s.addCut({ atTimeS: startS, camId: clip.id });
+      s.beginHoldGesture(clip.id, startS);
       holds.set(e.key, { camId: clip.id, startS, priorCuts });
+      // Wall-clock timer to promote to paint mode. We use setTimeout
+      // (not playhead-time) because the user might be paused while
+      // holding — paint visuals should still light up after 500 ms of
+      // wall-time pressing.
+      const t = setTimeout(() => {
+        useEditorStore.getState().promoteHoldToPaint();
+      }, PAINT_PROMOTION_MS);
+      promoteTimers.set(e.key, t);
     }
 
     function onKeyUp(e: KeyboardEvent) {
       const hold = holds.get(e.key);
       if (!hold) return;
       holds.delete(e.key);
+      const promoteTimer = promoteTimers.get(e.key);
+      if (promoteTimer) {
+        clearTimeout(promoteTimer);
+        promoteTimers.delete(e.key);
+      }
       const s = useEditorStore.getState();
+      s.endHoldGesture();
       const endS = s.playback.currentTime;
-      // Distinguish tap from intentional hold by playhead movement. A
-      // normal human key-tap takes 80–150 ms during which the playhead
-      // moves a tiny fraction of a second; we only treat the gesture as
-      // a paint hold once the playhead clearly travelled. 500 ms is a
-      // generous floor — even a slightly-too-long tap stays a tap.
+      // Same threshold as the paint-mode promotion: a tap stays a tap.
       if (Math.abs(endS - hold.startS) > 0.5) {
         s.applyHoldRelease(hold.camId, hold.startS, endS, hold.priorCuts);
       }

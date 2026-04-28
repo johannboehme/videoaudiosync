@@ -86,7 +86,9 @@ export function Timeline({
   const addCut = useEditorStore((s) => s.addCut);
   const removeCutAt = useEditorStore((s) => s.removeCutAt);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
+  const holdGesture = useEditorStore((s) => s.holdGesture);
   const takeHoldStartRef = useRef<Map<string, number>>(new Map());
+  const takePromoteTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const duration = jobMeta?.duration || audioDuration || 0;
   const visibleDur = duration / zoom;
@@ -564,6 +566,18 @@ export function Timeline({
               viewEndS={viewEnd}
               width={canvasWidth}
               onRemoveCut={removeCutAt}
+              paintPreview={(() => {
+                if (!holdGesture || !holdGesture.painting) return null;
+                const clip = clips.find((c) => c.id === holdGesture.camId);
+                if (!clip) return null;
+                const idx = clips.findIndex((c) => c.id === clip.id);
+                return {
+                  fromS: holdGesture.startS,
+                  toS: currentTime,
+                  color: clip.color,
+                  camLabel: `CAM ${idx + 1}`,
+                };
+              })()}
             />
           </div>
         </div>
@@ -580,21 +594,37 @@ export function Timeline({
                 status={camStatusByCamId[clip.id] ?? "off"}
                 hotkeyLabel={i < 9 ? String(i + 1) : undefined}
                 selected={clip.id === selectedClipId}
+                pressed={holdGesture?.camId === clip.id}
+                painting={
+                  holdGesture?.camId === clip.id && holdGesture.painting
+                }
                 onSelectClip={() => setSelectedClipId(clip.id)}
                 onTake={() => addCut({ atTimeS: useEditorStore.getState().playback.currentTime, camId: clip.id })}
                 onTakeStart={() => {
-                  takeHoldStartRef.current.set(
-                    clip.id,
-                    useEditorStore.getState().playback.currentTime,
-                  );
+                  const s = useEditorStore.getState();
+                  const startS = s.playback.currentTime;
+                  takeHoldStartRef.current.set(clip.id, startS);
+                  s.beginHoldGesture(clip.id, startS);
+                  // Promote to paint mode after the same 500 ms threshold
+                  // as the keyboard handler. Cleared in onTakeFinish.
+                  const existing = takePromoteTimerRef.current.get(clip.id);
+                  if (existing) clearTimeout(existing);
+                  const t = setTimeout(() => {
+                    useEditorStore.getState().promoteHoldToPaint();
+                  }, 500);
+                  takePromoteTimerRef.current.set(clip.id, t);
                 }}
                 onTakeFinish={() => {
                   const startS = takeHoldStartRef.current.get(clip.id);
                   takeHoldStartRef.current.delete(clip.id);
+                  const promoteT = takePromoteTimerRef.current.get(clip.id);
+                  if (promoteT) {
+                    clearTimeout(promoteT);
+                    takePromoteTimerRef.current.delete(clip.id);
+                  }
+                  useEditorStore.getState().endHoldGesture();
                   if (startS === undefined) return;
                   const endS = useEditorStore.getState().playback.currentTime;
-                  // Same tap-vs-hold guard as the hotkeys: only treat as a
-                  // paint gesture when the playhead clearly moved.
                   if (Math.abs(endS - startS) > 0.5) {
                     useEditorStore
                       .getState()

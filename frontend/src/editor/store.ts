@@ -97,6 +97,12 @@ interface EditorState {
   clips: VideoClip[];
   cuts: Cut[];
   selectedClipId: string | null;
+  /** Live indicator for an in-progress TAKE-button-or-hotkey hold. While
+   * a key/button is pressed, this points to the held cam + the master-time
+   * the press started at. Once the press passes the tap-vs-hold threshold,
+   * `painting` flips to true and the PROGRAM strip starts visualising the
+   * range. Cleared back to null on release. */
+  holdGesture: { camId: string; startS: number; painting: boolean } | null;
 
   // actions
   reset(): void;
@@ -152,6 +158,12 @@ interface EditorState {
   applyHoldRelease(camId: string, fromS: number, toS: number, priorCuts: Cut[]): void;
   removeCutAt(atTimeS: number, camId?: string): void;
   clearCuts(): void;
+  /** UI-only: announce that a TAKE button / hotkey is being held. */
+  beginHoldGesture(camId: string, startS: number): void;
+  /** Promote the active hold to "painting" once the 500 ms threshold passes. */
+  promoteHoldToPaint(): void;
+  /** Release: clear the indicator. The cuts mutation is done separately. */
+  endHoldGesture(): void;
 
   // ---- Selectors ----
   totalOffsetMs(): number;
@@ -207,6 +219,7 @@ export const useEditorStore = create<EditorState>()(
     clips: [],
     cuts: [],
     selectedClipId: null,
+    holdGesture: null,
 
     reset() {
       set({
@@ -221,6 +234,7 @@ export const useEditorStore = create<EditorState>()(
         clips: [],
         cuts: [],
         selectedClipId: null,
+        holdGesture: null,
       });
     },
 
@@ -454,6 +468,17 @@ export const useEditorStore = create<EditorState>()(
     },
     clearCuts() {
       set({ cuts: [] });
+    },
+    beginHoldGesture(camId: string, startS: number) {
+      set({ holdGesture: { camId, startS, painting: false } });
+    },
+    promoteHoldToPaint() {
+      const cur = get().holdGesture;
+      if (!cur || cur.painting) return;
+      set({ holdGesture: { ...cur, painting: true } });
+    },
+    endHoldGesture() {
+      set({ holdGesture: null });
     },
 
     totalOffsetMs() {

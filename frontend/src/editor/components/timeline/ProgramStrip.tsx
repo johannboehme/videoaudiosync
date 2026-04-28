@@ -31,6 +31,15 @@ interface Props {
   height?: number;
   /** Called when the user clicks the × on a hovered splice to delete it. */
   onRemoveCut?: (atTimeS: number, camId: string) => void;
+  /** Live paint preview for an active hold gesture in paint mode. Renders
+   * a translucent cam-color wash from `fromS` to the playhead and a
+   * pulsing "head" at the leading edge — the on-air tape recorder vibe. */
+  paintPreview?: {
+    fromS: number;
+    toS: number;
+    color: string;
+    camLabel: string;
+  } | null;
 }
 
 const TAPE_HEIGHT = 32;
@@ -45,6 +54,7 @@ export function ProgramStrip({
   width,
   height = TAPE_HEIGHT,
   onRemoveCut,
+  paintPreview,
 }: Props) {
   const [hoveredCut, setHoveredCut] = useState<{ atTimeS: number; camId: string } | null>(null);
   // Compute the program — a flat list of {startS, endS, color} segments
@@ -120,6 +130,63 @@ export function ProgramStrip({
           );
         })}
       </div>
+
+      {/* Live paint preview — translucent wash from press start to current
+        * playhead, plus a pulsing "head" at the leading edge. Sits above
+        * the cam-color program segments so the user sees what their hold
+        * gesture will commit on release. */}
+      {paintPreview && (() => {
+        const lo = Math.min(paintPreview.fromS, paintPreview.toS);
+        const hi = Math.max(paintPreview.fromS, paintPreview.toS);
+        const x1 = tToX(lo);
+        const x2 = tToX(hi);
+        if (x2 <= 0 || x1 >= width) return null;
+        const left = Math.max(0, x1);
+        const right = Math.min(width, x2);
+        const headIsRight = paintPreview.toS >= paintPreview.fromS;
+        return (
+          <>
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                left,
+                width: right - left,
+                top: 9,
+                bottom: 3,
+                background: `linear-gradient(180deg, ${paintPreview.color}cc 0%, ${paintPreview.color} 50%, ${darken(paintPreview.color, 0.18)}cc 100%)`,
+                boxShadow:
+                  "inset 0 1px 1px rgba(255,255,255,0.55), inset 0 -1px 1px rgba(0,0,0,0.32), 0 0 6px rgba(255,51,38,0.45)",
+              }}
+            />
+            {/* Leading edge — the "tape recorder head" */}
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                left: (headIsRight ? right : left) - 1,
+                top: 5,
+                bottom: -1,
+                width: 2,
+                background: "#FFF",
+                boxShadow: `0 0 6px ${paintPreview.color}, 0 0 10px rgba(255,51,38,0.7)`,
+                animation: "vas-paint-head 0.7s ease-in-out infinite",
+              }}
+            />
+            {/* "REC · CAM N" badge floating above the head */}
+            <div
+              className="absolute font-display font-semibold text-[9px] tracking-label uppercase pointer-events-none"
+              style={{
+                left: Math.max(2, Math.min(width - 60, (headIsRight ? right : left) - 28)),
+                top: -16,
+                color: "#FF3326",
+                textShadow: "0 0 6px rgba(255,51,38,0.8), 0 1px 0 rgba(0,0,0,0.25)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ● REC · {paintPreview.camLabel}
+            </div>
+          </>
+        );
+      })()}
 
       {/* Brass splice tabs at every cut. Hover lifts the tab + reveals an
         * × button for delete. The tab itself stays clickable as part of

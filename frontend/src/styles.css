@@ -48,6 +48,30 @@ body,
   border-radius: 4px;
 }
 
+/* TAKE-button "REC" pulse — fired while a hold gesture is in paint mode.
+ * Mimics a vintage video-mixer ON-AIR tally winking once a second. */
+@keyframes vas-rec-pulse {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(255, 255, 255, 0.45),
+      inset 0 2px 3px rgba(0, 0, 0, 0.35),
+      0 0 8px rgba(255, 51, 38, 0.55);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(255, 255, 255, 0.7),
+      inset 0 2px 3px rgba(0, 0, 0, 0.35),
+      0 0 14px rgba(255, 51, 38, 0.85);
+  }
+}
+
+/* PROGRAM-strip live paint head — leading edge of the cam-color wash that
+ * follows the playhead during a hold-to-paint gesture. */
+@keyframes vas-paint-head {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 /* Reduce motion respectfully */
 @media (prefers-reduced-motion: reduce) {
   *,
