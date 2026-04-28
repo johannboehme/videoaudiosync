@@ -280,7 +280,17 @@ export default function Editor() {
         cams: camUrls,
       });
 
-      const clipInits: ClipInit[] = videos.map((v) => {
+      const clipInits: ClipInit[] = videos.map((v): ClipInit => {
+        if (v.kind === "image") {
+          return {
+            kind: "image",
+            id: v.id,
+            filename: v.filename,
+            color: v.color,
+            durationS: v.durationS,
+            startOffsetS: v.startOffsetS,
+          };
+        }
         // Prefer the matcher's full candidate list when present. For
         // legacy jobs (synced before the candidates pipe existed) we
         // synthesize a single-element list from the primary offset so
@@ -430,7 +440,8 @@ export default function Editor() {
     const liveState = useEditorStore.getState();
     const clipOverrides = liveState.clips.map((c) => ({
       id: c.id,
-      syncOverrideMs: c.syncOverrideMs,
+      // Image clips don't have a syncOverrideMs — only video clips do.
+      syncOverrideMs: c.kind === "image" ? 0 : c.syncOverrideMs,
       startOffsetS: c.startOffsetS,
     }));
     const cuts = liveState.cuts;

@@ -10,7 +10,7 @@
  */
 import { motion, useReducedMotion } from "framer-motion";
 import { useMemo } from "react";
-import type { LocalJob, VideoAsset } from "../../storage/jobs-db";
+import type { LocalJob, MediaAsset } from "../../storage/jobs-db";
 import {
   buildSyncProgressView,
   type CamProgressView,
@@ -20,7 +20,7 @@ import {
 import { RuleStrip } from "../../editor/components/RuleStrip";
 
 export function SyncProgressPanel({ job }: { job: LocalJob }) {
-  const cams: VideoAsset[] = useMemo(() => job.videos ?? [], [job.videos]);
+  const cams: MediaAsset[] = useMemo(() => job.videos ?? [], [job.videos]);
   const view = useMemo(
     () =>
       buildSyncProgressView({
@@ -268,7 +268,7 @@ function CamStrip({
 }: {
   view: CamProgressView;
   index: number;
-  asset: VideoAsset | undefined;
+  asset: MediaAsset | undefined;
   allCount: number;
 }) {
   const color = asset?.color ?? "#9A8F80";

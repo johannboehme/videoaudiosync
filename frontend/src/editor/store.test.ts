@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { useEditorStore } from "./store";
+import { isVideoClip, type VideoClip } from "./types";
+
+/** Test helper: assert a clip is a VideoClip and narrow its type. Tests in
+ *  this file build video clips exclusively. */
+function asVideo(clip: unknown): VideoClip {
+  if (!clip || typeof clip !== "object" || !isVideoClip(clip as VideoClip)) {
+    throw new Error("expected a VideoClip");
+  }
+  return clip as VideoClip;
+}
 
 const baseJobMeta = {
   id: "j1",
@@ -130,12 +140,12 @@ describe("useEditorStore", () => {
       useEditorStore.getState().setClipSyncOverride("cam-1", -50);
       useEditorStore.getState().setClipStartOffset("cam-1", 0.42);
       useEditorStore.getState().setSelectedCandidateIdx("cam-1", 1);
-      expect(useEditorStore.getState().clips[0].syncOverrideMs).toBe(-50);
-      expect(useEditorStore.getState().clips[0].selectedCandidateIdx).toBe(1);
+      expect(asVideo(useEditorStore.getState().clips[0]).syncOverrideMs).toBe(-50);
+      expect(asVideo(useEditorStore.getState().clips[0]).selectedCandidateIdx).toBe(1);
 
       useEditorStore.getState().resetClipAlignment("cam-1");
 
-      const c = useEditorStore.getState().clips[0];
+      const c = asVideo(useEditorStore.getState().clips[0]);
       expect(c.syncOverrideMs).toBe(0);
       expect(c.startOffsetS).toBe(0);
       expect(c.selectedCandidateIdx).toBe(0);
@@ -158,7 +168,7 @@ describe("useEditorStore", () => {
       });
       useEditorStore.getState().setClipSyncOverride("cam-1", -10);
       useEditorStore.getState().resetClipAlignment("cam-XX");
-      expect(useEditorStore.getState().clips[0].syncOverrideMs).toBe(-10);
+      expect(asVideo(useEditorStore.getState().clips[0]).syncOverrideMs).toBe(-10);
     });
   });
 
@@ -450,7 +460,7 @@ describe("useEditorStore", () => {
           },
         ],
       });
-      const c = useEditorStore.getState().clips[0];
+      const c = asVideo(useEditorStore.getState().clips[0]);
       expect(c.candidates).toEqual(cands);
       expect(c.selectedCandidateIdx).toBe(0);
       expect(c.syncOffsetMs).toBe(250);
@@ -470,7 +480,7 @@ describe("useEditorStore", () => {
         ],
       });
       useEditorStore.getState().setSelectedCandidateIdx("cam-1", 1);
-      const c = useEditorStore.getState().clips[0];
+      const c = asVideo(useEditorStore.getState().clips[0]);
       expect(c.selectedCandidateIdx).toBe(1);
       expect(c.syncOffsetMs).toBe(750);
     });
@@ -487,7 +497,7 @@ describe("useEditorStore", () => {
           },
         ],
       });
-      const c = useEditorStore.getState().clips[0];
+      const c = asVideo(useEditorStore.getState().clips[0]);
       expect(c.candidates).toEqual([]);
       expect(c.selectedCandidateIdx).toBe(0);
       expect(c.syncOffsetMs).toBe(250);

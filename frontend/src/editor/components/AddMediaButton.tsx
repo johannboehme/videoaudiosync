@@ -9,7 +9,7 @@
  */
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { addVideoToJob } from "../../local/jobs";
+import { addImageToJob, addVideoToJob } from "../../local/jobs";
 import { useEditorStore } from "../store";
 
 interface Props {
@@ -19,21 +19,29 @@ interface Props {
 }
 
 const VIDEO_ACCEPT = "video/*";
+const IMAGE_ACCEPT = "image/*";
+
+type AddMode = "sync" | "broll" | "image";
 
 export function AddMediaButton({ jobId, width = 156 }: Props) {
   const syncInputRef = useRef<HTMLInputElement>(null);
   const brollInputRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState<"sync" | "broll" | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<AddMode | null>(null);
   const pushNotice = useEditorStore((s) => s.pushNotice);
 
-  const onFiles = async (files: FileList | null, mode: "sync" | "broll") => {
+  const onFiles = async (files: FileList | null, mode: AddMode) => {
     if (!files || files.length === 0) return;
     setBusy(mode);
     try {
       // Process sequentially — multiple parallel sync workers would compete
       // for cache/CPU and is rarely what the user wants for a quick add.
       for (const f of Array.from(files)) {
-        await addVideoToJob(jobId, f, { skipSync: mode === "broll" });
+        if (mode === "image") {
+          await addImageToJob(jobId, f);
+        } else {
+          await addVideoToJob(jobId, f, { skipSync: mode === "broll" });
+        }
       }
       pushNotice(
         files.length === 1
@@ -71,6 +79,14 @@ export function AddMediaButton({ jobId, width = 156 }: Props) {
         testId="add-media-broll"
         onClick={() => brollInputRef.current?.click()}
       />
+      <AddKey
+        label="IMAGE"
+        sublabel="still · 5 s default"
+        loading={busy === "image"}
+        disabled={busy !== null}
+        testId="add-media-image"
+        onClick={() => imageInputRef.current?.click()}
+      />
       <input
         ref={syncInputRef}
         type="file"
@@ -88,6 +104,15 @@ export function AddMediaButton({ jobId, width = 156 }: Props) {
         className="sr-only"
         onChange={(e) => onFiles(e.target.files, "broll")}
         data-testid="add-media-broll-input"
+      />
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        multiple
+        className="sr-only"
+        onChange={(e) => onFiles(e.target.files, "image")}
+        data-testid="add-media-image-input"
       />
     </div>
   );

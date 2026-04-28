@@ -21,7 +21,7 @@ import {
   shouldRescheduleOnTick,
 } from "./OffsetScheduler";
 import { useEditorStore } from "./store";
-import { clipRangeS } from "./types";
+import { clipRangeS, isVideoClip } from "./types";
 import { camSourceTimeS, type CamTimeRef } from "../local/timing/cam-time";
 
 void computeAudioStartOffset; // kept exported via tests; not used here directly
@@ -32,13 +32,14 @@ function cam1StartS(state = useEditorStore.getState()): number {
   return cam1 ? clipRangeS(cam1).startS : 0;
 }
 
-/** Build a time-mapping ref for cam-1 — startS + per-cam driftRatio. */
+/** Build a time-mapping ref for cam-1 — startS + per-cam driftRatio. Image
+ *  cams have no drift (durationS-based); their effective driftRatio is 1. */
 function cam1TimeRef(state = useEditorStore.getState()): CamTimeRef {
   const cam1 = state.clips[0];
   if (!cam1) return { masterStartS: 0, driftRatio: 1 };
   return {
     masterStartS: clipRangeS(cam1).startS,
-    driftRatio: cam1.driftRatio,
+    driftRatio: isVideoClip(cam1) ? cam1.driftRatio : 1,
   };
 }
 

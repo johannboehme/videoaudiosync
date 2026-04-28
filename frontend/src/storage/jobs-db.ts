@@ -33,6 +33,9 @@ export interface SyncResult {
  * Sync-Versatz und seine eigene Cam-Farbe für die Timeline-Visualisierung.
  */
 export interface VideoAsset {
+  /** Discriminator. Optional + defaults to "video" so existing rows pre-V3
+   *  (no kind field) keep working without a DB migration. */
+  kind?: "video";
   /** Stabile Cam-ID (cam-1, cam-2, …). Bleibt zwischen Sessions gleich. */
   id: string;
   /** Original-Dateiname vom User (für Anzeige in der UI). */
@@ -56,6 +59,37 @@ export interface VideoAsset {
   startOffsetS?: number;
   /** Index into sync.candidates of the user-selected primary. */
   selectedCandidateIdx?: number;
+}
+
+/**
+ * Standbild-Asset auf der Master-Timeline. Hat keine Audiospur, keine
+ * Sync-Kandidaten, kein Drift — nur eine User-gewählte Dauer. Wird über
+ * die gleichen Cuts (cam-id-basiert) als Programm-Quelle eingeblendet.
+ */
+export interface ImageAsset {
+  kind: "image";
+  /** Stabile ID, gleicher Namespace wie VideoAsset (cam-1, cam-2, …). */
+  id: string;
+  filename: string;
+  opfsPath: string;
+  color: string;
+  width?: number;
+  height?: number;
+  /** User-gewählte Dauer auf der Master-Timeline (Sekunden). */
+  durationS: number;
+  // ---- Editor-state, persisted via auto-save ----
+  startOffsetS?: number;
+}
+
+export type MediaAsset = VideoAsset | ImageAsset;
+
+/** True iff the asset is an image clip (kind === "image"). VideoAssets
+ *  may have kind undefined (legacy rows) or "video"; both count as video. */
+export function isImageAsset(a: MediaAsset): a is ImageAsset {
+  return a.kind === "image";
+}
+export function isVideoAsset(a: MediaAsset): a is VideoAsset {
+  return a.kind !== "image";
 }
 
 /**
@@ -130,8 +164,11 @@ export interface LocalJob {
    * geschrieben wurden. */
   schemaVersion?: 2;
 
-  /** Multi-Cam-Quellen. Bei V1-Jobs nach Migration genau ein Element. */
-  videos?: VideoAsset[];
+  /** Multi-Cam-Quellen. Bei V1-Jobs nach Migration genau ein Element.
+   *  Heißt historisch "videos" — enthält ab dem Image-Clip-Schema eine
+   *  Mischung aus VideoAsset und ImageAsset. Discriminator ist `kind`
+   *  (undefined / "video" → VideoAsset). */
+  videos?: MediaAsset[];
 
   /** Multi-Cam-Cuts auf der Master-Timeline. Leer bei Single-Cam-Jobs. */
   cuts?: Cut[];

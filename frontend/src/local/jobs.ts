@@ -15,7 +15,15 @@
  * can subscribe (JobPage, History) without coupling to the orchestrator.
  */
 
-import { jobsDb, type JobProgress, type LocalJob, type SyncResult, type VideoAsset } from "../storage/jobs-db";
+import {
+  isImageAsset,
+  isVideoAsset,
+  jobsDb,
+  type JobProgress,
+  type LocalJob,
+  type SyncResult,
+  type VideoAsset,
+} from "../storage/jobs-db";
 import { camColorAt } from "../storage/migrations";
 import { opfs } from "../storage/opfs";
 import { syncAudio } from "./sync";
@@ -313,7 +321,13 @@ async function runSync(jobId: string, audioExt: string): Promise<void> {
   if (!job?.videos?.length) {
     throw new Error(`Job ${jobId} has no videos to sync`);
   }
-  const videos = job.videos;
+  // runSync only runs at upload time, when videos[] is exclusively
+  // VideoAssets (createJob never appends images). Filter defensively in
+  // case a future caller sneaks images in — they don't get prep here.
+  const videos = job.videos.filter(isVideoAsset);
+  if (videos.length === 0) {
+    throw new Error(`Job ${jobId}: no video cams to sync`);
+  }
 
   // Decode the master studio audio once; every cam syncs against this.
   const audioFile = await opfs.readFile(audioPath(jobId, audioExt));
@@ -461,6 +475,72 @@ export async function addVideoToJob(
       // "not synced" — user can remove or retry.
     }
   })();
+
+  return camId;
+}
+
+// -----------------------------------------------------------------------------
+// addImageToJob — append a still-image clip to an existing project
+// -----------------------------------------------------------------------------
+
+export interface AddImageOptions {
+  /** Initial duration on the master timeline (seconds). User can resize
+   *  via the lane handle later. */
+  durationS?: number;
+}
+
+const DEFAULT_IMAGE_DURATION_S = 5;
+
+/**
+ * Append an image asset to an existing job. Images don't have audio, sync
+ * candidates, or thumbnail strips — only a user-set duration and a free
+ * placement offset. Probing dimensions runs synchronously here (it's
+ * cheap for an image: decode → naturalWidth/Height) so the lane gets
+ * its aspect ratio without a background pass.
+ */
+export async function addImageToJob(
+  jobId: string,
+  file: File,
+  opts: AddImageOptions = {},
+): Promise<string> {
+  const job = await jobsDb.getJob(jobId);
+  if (!job) throw new Error(`Job ${jobId} not found`);
+
+  const existing = job.videos ?? [];
+  const camId = `cam-${existing.length + 1}`;
+  const ext = fileExtension(file, "png");
+  const opfsPath = camVideoPath(jobId, camId, ext);
+
+  await opfs.writeFile(opfsPath, file);
+
+  // Probe dimensions for the lane aspect / preview sizing.
+  let width: number | undefined;
+  let height: number | undefined;
+  try {
+    const bitmap = await createImageBitmap(file);
+    width = bitmap.width;
+    height = bitmap.height;
+    bitmap.close();
+  } catch {
+    // ignore — non-fatal, lane will use fallback aspect
+  }
+
+  const durationS = opts.durationS ?? DEFAULT_IMAGE_DURATION_S;
+
+  const newAsset = {
+    kind: "image" as const,
+    id: camId,
+    filename: file.name,
+    opfsPath,
+    color: camColorAt(existing.length),
+    durationS,
+    width,
+    height,
+  };
+
+  const next = [...existing, newAsset];
+  const saved = await jobsDb.updateJob(jobId, { videos: next });
+  emitJobUpdate(saved);
 
   return camId;
 }
@@ -636,8 +716,21 @@ export async function runEditRender(
     const overridesById = new Map(
       (spec.clipOverrides ?? []).map((o) => [o.id, o] as const),
     );
-    const camInputs: CamWorkerInput[] = videos.map((v) => {
+    const camInputs: CamWorkerInput[] = videos.map((v): CamWorkerInput => {
       const ov = overridesById.get(v.id);
+      if (isImageAsset(v)) {
+        // Image cams have no sync offset and no drift — masterStartS is
+        // the user-set placement, sourceDurationS is the user-set length.
+        const startOffsetS = ov?.startOffsetS ?? v.startOffsetS ?? 0;
+        return {
+          id: v.id,
+          opfsPath: v.opfsPath,
+          masterStartS: startOffsetS,
+          sourceDurationS: v.durationS,
+          driftRatio: 1,
+          kind: "image",
+        };
+      }
       const algoMs = v.sync?.offsetMs ?? 0;
       const userMs = ov?.syncOverrideMs ?? 0;
       const startOffsetS = ov?.startOffsetS ?? 0;
@@ -827,7 +920,10 @@ export async function resolveJobAssetUrl(
   if (!job) return null;
 
   if (kind === "frames") {
-    const path = job.videos?.[0]?.framesPath ?? `jobs/${jobId}/frames.webp`;
+    const cam0 = job.videos?.[0];
+    const cam0Frames =
+      cam0 && isVideoAsset(cam0) ? cam0.framesPath : undefined;
+    const path = cam0Frames ?? `jobs/${jobId}/frames.webp`;
     if (!(await opfs.exists(path))) return null;
     return opfs.objectUrl(path);
   }
@@ -854,7 +950,17 @@ export async function resolveCamAssetUrl(
   if (!job?.videos) return null;
   const cam = job.videos.find((v) => v.id === camId);
   if (!cam) return null;
-  const path = kind === "video" ? cam.opfsPath : cam.framesPath;
+  // For "video" kind, return the asset's URL — works for both video and
+  // image cams (browsers serve any blob URL to <video src> or <img src>
+  // appropriately based on MIME). For "frames", only video assets have a
+  // thumbnail strip; image assets return null (the caller falls back to
+  // showing the image directly in the lane).
+  let path: string | undefined;
+  if (kind === "video") {
+    path = cam.opfsPath;
+  } else if (isVideoAsset(cam)) {
+    path = cam.framesPath;
+  }
   if (!path) return null;
   if (!(await opfs.exists(path))) return null;
   return opfs.objectUrl(path);

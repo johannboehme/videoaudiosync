@@ -13,7 +13,7 @@ import {
   runQuickRender,
   type LocalJob,
 } from "../local/jobs";
-import type { VideoAsset } from "../storage/jobs-db";
+import { isVideoAsset, type VideoAsset } from "../storage/jobs-db";
 
 export default function JobPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -206,7 +206,8 @@ function JobSubtitle({ job }: { job: LocalJob }) {
  * `job.videos[i].sync` directly — single source of truth, no mirror layer.
  */
 function SyncPatchPanel({ job }: { job: LocalJob }) {
-  const videos: VideoAsset[] = job.videos ?? [];
+  // Image cams have no sync result — they're not part of this panel.
+  const videos: VideoAsset[] = (job.videos ?? []).filter(isVideoAsset);
 
   if (videos.length === 0) {
     return (

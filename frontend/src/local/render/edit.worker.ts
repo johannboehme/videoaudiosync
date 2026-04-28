@@ -45,6 +45,10 @@ export interface CamWorkerInput {
   sourceDurationS: number;
   /** Per-cam drift vs. master audio. Default 1 = no drift. */
   driftRatio?: number;
+  /** Discriminator. Optional with default "video" so existing payloads
+   *  keep working unchanged. "image" tells the worker to decode the file
+   *  as a still image and emit it as a static frame for the entire range. */
+  kind?: "video" | "image";
 }
 
 export interface EditWorkerInput {
@@ -131,6 +135,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
           masterStartS: c.masterStartS,
           sourceDurationS: c.sourceDurationS,
           driftRatio: c.driftRatio ?? 1,
+          kind: c.kind ?? "video",
         })),
         cuts: input.cuts ?? [],
         masterDurationS: input.masterDurationS,

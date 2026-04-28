@@ -59,12 +59,13 @@ describe("buildPersistPatch", () => {
     useEditorStore.getState().setSelectedCandidateIdx("cam-1", 1);
 
     const patch = buildPersistPatch(useEditorStore.getState(), baseJob);
-    expect(patch.videos?.[0].syncOverrideMs).toBe(-50);
-    expect(patch.videos?.[0].startOffsetS).toBe(0.25);
-    expect(patch.videos?.[0].selectedCandidateIdx).toBe(1);
+    const video0 = patch.videos?.[0] as VideoAsset;
+    expect(video0.syncOverrideMs).toBe(-50);
+    expect(video0.startOffsetS).toBe(0.25);
+    expect(video0.selectedCandidateIdx).toBe(1);
     // Existing fields (filename, color, sync) preserved.
-    expect(patch.videos?.[0].filename).toBe("v.mp4");
-    expect(patch.videos?.[0].sync?.offsetMs).toBe(250);
+    expect(video0.filename).toBe("v.mp4");
+    expect(video0.sync?.offsetMs).toBe(250);
   });
 
   test("includes trim, cuts, ui, bpm in the patch", () => {
@@ -106,9 +107,10 @@ describe("buildPersistPatch", () => {
       ],
     });
     const patch = buildPersistPatch(useEditorStore.getState(), baseJob);
+    const video0 = patch.videos?.[0] as VideoAsset;
     // cam-1 in baseJob has no matching clip → unchanged
-    expect(patch.videos?.[0].id).toBe("cam-1");
-    expect(patch.videos?.[0].syncOverrideMs).toBeUndefined();
-    expect(patch.videos?.[0].startOffsetS).toBeUndefined();
+    expect(video0.id).toBe("cam-1");
+    expect(video0.syncOverrideMs).toBeUndefined();
+    expect(video0.startOffsetS).toBeUndefined();
   });
 });

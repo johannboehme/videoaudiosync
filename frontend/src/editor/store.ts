@@ -9,13 +9,14 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import {
+  Clip,
   EditSpec,
   ExportSpec,
   MatchCandidate,
   TextOverlay,
-  VideoClip,
   VisualizerConfig,
   clipRangeS,
+  isVideoClip,
 } from "./types";
 import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
 import { activeCamAt, type CamRange } from "./cuts";
@@ -102,8 +103,9 @@ const DEFAULT_EXPORT: ExportSpec = {
   quality: "good",
 };
 
-/** Initial-bare data needed to construct in-memory clips when loading a job. */
-export interface ClipInit {
+/** Initial-bare data needed to construct an in-memory video clip. */
+export interface VideoClipInit {
+  kind?: "video";
   id: string;
   filename: string;
   color: string;
@@ -120,6 +122,18 @@ export interface ClipInit {
   selectedCandidateIdx?: number;
 }
 
+/** Initial data for an image clip. */
+export interface ImageClipInit {
+  kind: "image";
+  id: string;
+  filename: string;
+  color: string;
+  durationS: number;
+  startOffsetS?: number;
+}
+
+export type ClipInit = VideoClipInit | ImageClipInit;
+
 interface EditorState {
   jobMeta: JobMeta | null;
   playback: PlaybackSlice;
@@ -131,7 +145,7 @@ interface EditorState {
   ui: UiSlice;
 
   // ---- Multi-cam ----
-  clips: VideoClip[];
+  clips: Clip[];
   cuts: Cut[];
   selectedClipId: string | null;
   /** Live indicator for an in-progress TAKE-button-or-hotkey hold. While
@@ -301,9 +315,19 @@ function camHasMaterialAt(
   return !!r && t >= r.startS && t < r.endS;
 }
 
-function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): VideoClip[] {
+function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): Clip[] {
   if (!inits || inits.length === 0) return [];
-  return inits.map((init, i) => {
+  return inits.map((init, i): Clip => {
+    if (init.kind === "image") {
+      return {
+        kind: "image",
+        id: init.id,
+        filename: init.filename,
+        color: init.color,
+        durationS: init.durationS,
+        startOffsetS: init.startOffsetS ?? 0,
+      };
+    }
     const candidates = init.candidates ?? [];
     const selectedIdx = Math.max(
       0,
@@ -315,6 +339,7 @@ function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): 
       ? candidates[selectedIdx].offsetMs
       : init.syncOffsetMs;
     return {
+      kind: "video",
       id: init.id,
       filename: init.filename,
       color: init.color,
@@ -370,8 +395,13 @@ export const useEditorStore = create<EditorState>()(
       const fallbackOverride = opts?.lastSyncOverrideMs ?? 0;
       const clips = buildClips(opts?.clips, fallbackOverride);
       // Mirror cam-1's override into the legacy offset slice so existing
-      // OffsetScheduler / SyncTuner consumers see the same number.
-      const legacyOverrideMs = clips[0]?.syncOverrideMs ?? fallbackOverride;
+      // OffsetScheduler / SyncTuner consumers see the same number. Image
+      // cams have no sync, so fall back to the caller's override hint.
+      const cam1 = clips[0];
+      const legacyOverrideMs =
+        cam1 && isVideoClip(cam1)
+          ? cam1.syncOverrideMs
+          : fallbackOverride;
       // Auto-select the only cam if there's just one — bequem für Single-Video-Use.
       const selectedClipId = clips.length === 1 ? clips[0].id : null;
       // Normalize bpm/beats/downbeats so consumers can rely on null vs. value
@@ -524,8 +554,12 @@ export const useEditorStore = create<EditorState>()(
       set({ ui: { ...get().ui, lanesLocked: locked } });
     },
     resetClipAlignment(camId) {
-      const clips = get().clips.map((c) => {
+      const clips = get().clips.map((c): Clip => {
         if (c.id !== camId) return c;
+        // Image clips have no sync alignment — only their startOffsetS.
+        if (!isVideoClip(c)) {
+          return { ...c, startOffsetS: 0 };
+        }
         const primary = c.candidates[0];
         return {
           ...c,
@@ -564,8 +598,9 @@ export const useEditorStore = create<EditorState>()(
       });
     },
     setSelectedCandidateIdx(camId, idx) {
-      const clips = get().clips.map((c) => {
+      const clips = get().clips.map((c): Clip => {
         if (c.id !== camId) return c;
+        if (!isVideoClip(c)) return c; // image clips have no candidates
         const max = Math.max(0, c.candidates.length - 1);
         const clamped = Math.max(0, Math.min(idx, max));
         const newOffset = c.candidates[clamped]?.offsetMs ?? c.syncOffsetMs;
@@ -583,7 +618,10 @@ export const useEditorStore = create<EditorState>()(
       // when the user e.g. hotkey-jumps between cams.
       if (id !== null && state.ui.snapMode === "match") {
         const target = state.clips.find((c) => c.id === id);
-        if (target && target.candidates.length === 0) {
+        const noCandidates =
+          !!target &&
+          (!isVideoClip(target) || target.candidates.length === 0);
+        if (noCandidates) {
           set({
             selectedClipId: id,
             ui: { ...state.ui, snapMode: "1" },
@@ -598,18 +636,22 @@ export const useEditorStore = create<EditorState>()(
       set({ selectedClipId: id });
     },
     setClipSyncOverride(camId, ms) {
-      const clips = get().clips.map((c) =>
-        c.id === camId ? { ...c, syncOverrideMs: ms } : c,
-      );
+      const clips = get().clips.map((c): Clip => {
+        if (c.id !== camId) return c;
+        if (!isVideoClip(c)) return c; // images have no sync override
+        return { ...c, syncOverrideMs: ms };
+      });
       set({ clips });
-      // Mirror cam-1 changes into legacy offset slice.
-      if (clips[0]?.id === camId) {
+      // Mirror cam-1 changes into legacy offset slice (SyncTuner).
+      const cam1 = clips[0];
+      if (cam1 && cam1.id === camId && isVideoClip(cam1)) {
         set({ offset: { ...get().offset, userOverrideMs: ms } });
       }
     },
     nudgeClipSyncOverride(camId, deltaMs) {
-      const cur = get().clips.find((c) => c.id === camId)?.syncOverrideMs ?? 0;
-      const next = Math.round((cur + deltaMs) * 1000) / 1000;
+      const found = get().clips.find((c) => c.id === camId);
+      if (!found || !isVideoClip(found)) return;
+      const next = Math.round((found.syncOverrideMs + deltaMs) * 1000) / 1000;
       get().setClipSyncOverride(camId, next);
     },
     setClipStartOffset(camId, startOffsetS) {
@@ -754,8 +796,11 @@ export const useEditorStore = create<EditorState>()(
     },
     buildAndStartQuantizePreview() {
       const s = get();
+      // Quantize is sync-aligned (snaps cut times to beat grid). Image
+      // clips don't participate — feed only video clips to the helper.
+      const videoClips = s.clips.filter(isVideoClip);
       const preview = buildQuantizePreview(
-        { cuts: s.cuts, clips: s.clips, trim: s.trim },
+        { cuts: s.cuts, clips: videoClips, trim: s.trim },
         s.ui.snapMode,
         {
           bpm: s.jobMeta?.bpm?.value ?? null,
@@ -827,10 +872,16 @@ export const useEditorStore = create<EditorState>()(
       // drag re-syncs (which mutate clips[0].syncOverrideMs) both flow
       // through to the audio scheduler. jobMeta.algoOffsetMs is now a
       // historical field, kept only as a fallback when clips are empty.
+      // If cam-0 is an image (no sync), fall back to legacy fields.
       const { clips, jobMeta, offset } = get();
       const cam0 = clips[0];
-      const algo = cam0?.syncOffsetMs ?? jobMeta?.algoOffsetMs ?? 0;
-      const override = cam0?.syncOverrideMs ?? offset.userOverrideMs;
+      if (cam0 && isVideoClip(cam0)) {
+        const algo = cam0.syncOffsetMs ?? jobMeta?.algoOffsetMs ?? 0;
+        const override = cam0.syncOverrideMs ?? offset.userOverrideMs;
+        return offset.abBypass ? algo : algo + override;
+      }
+      const algo = jobMeta?.algoOffsetMs ?? 0;
+      const override = offset.userOverrideMs;
       return offset.abBypass ? algo : algo + override;
     },
 

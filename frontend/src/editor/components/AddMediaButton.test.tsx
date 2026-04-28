@@ -3,12 +3,13 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { AddMediaButton } from "./AddMediaButton";
 import { useEditorStore } from "../store";
 
-// Stub addVideoToJob so the test doesn't need OPFS / WASM.
+// Stub the job entry points so the test doesn't need OPFS / WASM.
 vi.mock("../../local/jobs", () => ({
   addVideoToJob: vi.fn(async () => "cam-2"),
+  addImageToJob: vi.fn(async () => "cam-3"),
 }));
 
-import { addVideoToJob } from "../../local/jobs";
+import { addImageToJob, addVideoToJob } from "../../local/jobs";
 
 describe("AddMediaButton", () => {
   beforeEach(() => {
@@ -16,10 +17,22 @@ describe("AddMediaButton", () => {
     useEditorStore.getState().reset();
   });
 
-  it("renders both add modes", () => {
+  it("renders all three add modes", () => {
     render(<AddMediaButton jobId="job-x" />);
     expect(screen.getByTestId("add-media-sync")).toBeInTheDocument();
     expect(screen.getByTestId("add-media-broll")).toBeInTheDocument();
+    expect(screen.getByTestId("add-media-image")).toBeInTheDocument();
+  });
+
+  it("IMAGE mode calls addImageToJob with the file", async () => {
+    render(<AddMediaButton jobId="job-x" />);
+    const file = new File(["dummy"], "still.png", { type: "image/png" });
+    const input = screen.getByTestId("add-media-image-input") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    fireEvent.change(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(addImageToJob).toHaveBeenCalledWith("job-x", file);
   });
 
   it("SYNC mode calls addVideoToJob without skipSync", async () => {

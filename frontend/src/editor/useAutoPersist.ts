@@ -15,19 +15,35 @@
  */
 import { useEffect } from "react";
 import { useEditorStore } from "./store";
-import { jobsDb, type LocalJob, type VideoAsset } from "../storage/jobs-db";
+import {
+  isImageAsset,
+  jobsDb,
+  type LocalJob,
+  type MediaAsset,
+} from "../storage/jobs-db";
+import { isVideoClip } from "./types";
 
 const DEBOUNCE_MS = 300;
 
 /** Pure helper: derive the persist-patch for `updateJob` from an editor
- *  state snapshot and the current LocalJob row. Exported for testing. */
+ *  state snapshot and the current LocalJob row. Exported for testing.
+ *
+ *  Handles both video assets (sync override + candidate idx) and image
+ *  assets (only startOffsetS to persist). */
 export function buildPersistPatch(
   s: ReturnType<typeof useEditorStore.getState>,
   job: LocalJob,
 ): Partial<LocalJob> {
-  const updatedVideos: VideoAsset[] = (job.videos ?? []).map((v) => {
+  const updatedVideos: MediaAsset[] = (job.videos ?? []).map((v): MediaAsset => {
     const clip = s.clips.find((c) => c.id === v.id);
     if (!clip) return v;
+    if (isImageAsset(v)) {
+      return {
+        ...v,
+        startOffsetS: clip.startOffsetS,
+      };
+    }
+    if (!isVideoClip(clip)) return v; // shouldn't happen, defensive
     return {
       ...v,
       syncOverrideMs: clip.syncOverrideMs,

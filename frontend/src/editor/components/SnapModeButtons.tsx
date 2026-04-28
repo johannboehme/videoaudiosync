@@ -12,6 +12,7 @@
  */
 import { useEditorStore } from "../store";
 import type { SnapMode } from "../snap";
+import { isVideoClip } from "../types";
 
 const MODE_BUTTONS: { mode: SnapMode; label: string; needsBpm: boolean }[] = [
   { mode: "off", label: "OFF", needsBpm: false },
@@ -134,7 +135,10 @@ export function SnapModeButtons() {
   const matchAvailable = useEditorStore((s) => {
     if (s.selectedClipId === null) return true;
     const clip = s.clips.find((c) => c.id === s.selectedClipId);
-    return !clip || clip.candidates.length > 0;
+    if (!clip) return true;
+    // Image clips never have audio match candidates.
+    if (!isVideoClip(clip)) return false;
+    return clip.candidates.length > 0;
   });
 
   return (

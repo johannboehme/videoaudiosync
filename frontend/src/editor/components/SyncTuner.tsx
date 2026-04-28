@@ -2,6 +2,7 @@
 // In multi-cam mode it follows whichever clip is selected in the Timeline,
 // so each cam can be nudged independently.
 import { useEditorStore } from "../store";
+import { isVideoClip } from "../types";
 import { ChunkyButton } from "./ChunkyButton";
 import { Knob } from "./Knob";
 import { MonoReadout, formatMs } from "./MonoReadout";
@@ -25,7 +26,9 @@ export function SyncTuner({ lastSyncOverrideMs }: Props) {
   const setLoop = useEditorStore((s) => s.setLoop);
   const loop = useEditorStore((s) => s.playback.loop);
 
-  const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
+  const found = clips.find((c) => c.id === selectedClipId) ?? null;
+  // Sync tuner only operates on video clips; image clips have no sync.
+  const selectedClip = found && isVideoClip(found) ? found : null;
   const selectedIdx = selectedClip
     ? clips.findIndex((c) => c.id === selectedClip.id)
     : -1;

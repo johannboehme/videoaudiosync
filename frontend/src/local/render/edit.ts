@@ -462,13 +462,18 @@ export interface CamSourceInput {
   file: Blob | ArrayBuffer;
   /** Cam's start time on the master timeline (seconds). */
   masterStartS: number;
-  /** Source duration of this cam's video (seconds). */
+  /** Source duration of this cam's video (seconds). For image cams this
+   *  is the user-set length on the master timeline. */
   sourceDurationS: number;
   /** Per-cam drift relative to the master audio. Default 1 (no drift).
    *  See `cam-time.ts` for the sign convention — `driftRatio > 1` means
    *  the cam clock ran faster than master, so source-time advances
-   *  faster per master-second. */
+   *  faster per master-second. Ignored for image cams. */
   driftRatio?: number;
+  /** Discriminator. Optional with default "video" for backward-compat.
+   *  "image" means the file is decoded once via createImageBitmap and the
+   *  same frame is emitted for every output frame in the cam's range. */
+  kind?: "video" | "image";
 }
 
 export interface MultiCamRenderInput
@@ -500,18 +505,48 @@ export async function editRenderMulti(
     throw new Error("editRenderMulti: at least one cam is required");
   }
 
-  // Demux all cams in parallel.
+  // Demux all cams in parallel. Video cams go through the WebCodecs
+  // demux path; image cams decode once via createImageBitmap and reuse
+  // the same bitmap as the source for every frame in their range.
   input.onProgress?.({
     stage: "demux",
     framesDone: 0,
     framesTotal: 0,
   });
-  const demuxResults = await Promise.all(
-    input.cams.map(async (cam) => {
+  type PreparedVideo = {
+    cam: CamSourceInput;
+    kind: "video";
+    info: { width: number; height: number; rotationDeg: 0 | 90 | 180 | 270 };
+    stream: CamFrameStream;
+  };
+  type PreparedImage = {
+    cam: CamSourceInput;
+    kind: "image";
+    info: { width: number; height: number; rotationDeg: 0 };
+    bitmap: ImageBitmap;
+  };
+  type Prepared = PreparedVideo | PreparedImage;
+  const demuxResults: Prepared[] = await Promise.all(
+    input.cams.map(async (cam): Promise<Prepared> => {
+      if (cam.kind === "image") {
+        const blob =
+          cam.file instanceof Blob ? cam.file : new Blob([cam.file]);
+        const bitmap = await createImageBitmap(blob);
+        return {
+          cam,
+          kind: "image",
+          info: {
+            width: bitmap.width,
+            height: bitmap.height,
+            rotationDeg: 0 as const,
+          },
+          bitmap,
+        };
+      }
       const d = await demuxVideoTrack(cam.file);
       if (!d) throw new Error(`editRenderMulti: ${cam.id} has no video track`);
       const stream = await CamFrameStream.create(cam.file);
-      return { cam, info: d.info, stream };
+      return { cam, kind: "video", info: d.info, stream };
     }),
   );
 
@@ -538,7 +573,10 @@ export async function editRenderMulti(
     const ok = await isVideoCodecSupported("h265", outputWidth, outputHeight, fps);
     if (!ok) {
       // Tear down decoders before bailing.
-      for (const d of demuxResults) d.stream.close();
+      for (const d of demuxResults) {
+        if (d.kind === "video") d.stream.close();
+        else d.bitmap.close();
+      }
       throw new Error(
         "This browser cannot encode H.265 at the requested resolution. Please choose H.264.",
       );
@@ -633,20 +671,28 @@ export async function editRenderMulti(
         let srcRot: 0 | 90 | 180 | 270 = 0;
         if (camId) {
           const cam = demuxResults.find((d) => d.cam.id === camId)!;
-          const sourceTimeUs = camSourceTimeUs(tMaster, {
-            masterStartS: cam.cam.masterStartS,
-            driftRatio: cam.cam.driftRatio ?? 1,
-          });
-          const frame = await cam.stream.frameAtOrBefore(sourceTimeUs);
-          if (frame) {
-            source = frame as unknown as CanvasImageSource;
+          if (cam.kind === "image") {
+            // Image cam: same bitmap for every frame in range. No
+            // source-time math, no drift — the bitmap *is* the frame.
+            source = cam.bitmap;
             srcW = cam.info.width;
             srcH = cam.info.height;
-            srcRot = cam.info.rotationDeg;
           } else {
-            source = testPattern;
-            srcW = outputWidth;
-            srcH = outputHeight;
+            const sourceTimeUs = camSourceTimeUs(tMaster, {
+              masterStartS: cam.cam.masterStartS,
+              driftRatio: cam.cam.driftRatio ?? 1,
+            });
+            const frame = await cam.stream.frameAtOrBefore(sourceTimeUs);
+            if (frame) {
+              source = frame as unknown as CanvasImageSource;
+              srcW = cam.info.width;
+              srcH = cam.info.height;
+              srcRot = cam.info.rotationDeg;
+            } else {
+              source = testPattern;
+              srcW = outputWidth;
+              srcH = outputHeight;
+            }
           }
         } else {
           source = testPattern;
@@ -790,6 +836,9 @@ export async function editRenderMulti(
     };
   } finally {
     compositor.destroy();
-    for (const d of demuxResults) d.stream.close();
+    for (const d of demuxResults) {
+      if (d.kind === "video") d.stream.close();
+      else d.bitmap.close();
+    }
   }
 }

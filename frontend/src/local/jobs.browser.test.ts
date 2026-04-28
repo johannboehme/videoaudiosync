@@ -7,8 +7,21 @@ import {
   deleteJob,
   resolveJobAssetUrl,
 } from "./jobs";
-import { jobsDb } from "../storage/jobs-db";
+import {
+  isVideoAsset,
+  jobsDb,
+  type MediaAsset,
+  type VideoAsset,
+} from "../storage/jobs-db";
 import { opfs } from "../storage/opfs";
+
+/** Test helper: assert a media asset is a VideoAsset and narrow its type. */
+function asVideo(asset: MediaAsset | undefined): VideoAsset {
+  if (!asset || !isVideoAsset(asset)) {
+    throw new Error("expected a VideoAsset");
+  }
+  return asset;
+}
 
 const VIDEO_FIXTURE_URL = "/__test_fixtures__/tone-3s.mp4";
 
@@ -103,9 +116,10 @@ describe("local jobs lifecycle", () => {
     expect(job!.status).toBe("synced");
     expect(job!.schemaVersion).toBe(2);
     expect(job!.videos).toHaveLength(1);
-    expect(job!.videos![0].id).toBe("cam-1");
-    expect(job!.videos![0].sync).toBeDefined();
-    expect(job!.videos![0].sync!.driftRatio).toBeCloseTo(1.0, 1);
+    const cam0 = asVideo(job!.videos![0]);
+    expect(cam0.id).toBe("cam-1");
+    expect(cam0.sync).toBeDefined();
+    expect(cam0.sync!.driftRatio).toBeCloseTo(1.0, 1);
     // Legacy mirror still populated for backward compat.
     expect(job!.sync).toBeDefined();
     expect(typeof job!.sync!.offsetMs).toBe("number");
@@ -114,7 +128,7 @@ describe("local jobs lifecycle", () => {
     // Pre-processing also extracted the timeline frame strip — now per-cam.
     expect(job!.hasFrames).toBe(true);
     expect(await opfs.exists(`jobs/${jobId}/frames-cam-1.webp`)).toBe(true);
-    expect(job!.videos![0].framesPath).toBe(`jobs/${jobId}/frames-cam-1.webp`);
+    expect(cam0.framesPath).toBe(`jobs/${jobId}/frames-cam-1.webp`);
     const framesUrl = await resolveJobAssetUrl(jobId, "frames");
     expect(framesUrl).toMatch(/^blob:/);
     if (framesUrl) URL.revokeObjectURL(framesUrl);
@@ -136,13 +150,13 @@ describe("local jobs lifecycle", () => {
     expect(job!.videos![0].id).toBe("cam-1");
     expect(job!.videos![1].id).toBe("cam-2");
     // Each cam got its own sync result.
-    expect(job!.videos![0].sync).toBeDefined();
-    expect(job!.videos![1].sync).toBeDefined();
+    expect(asVideo(job!.videos![0]).sync).toBeDefined();
+    expect(asVideo(job!.videos![1]).sync).toBeDefined();
     // Each cam got its own thumbnail strip.
     expect(await opfs.exists(`jobs/${jobId}/frames-cam-1.webp`)).toBe(true);
     expect(await opfs.exists(`jobs/${jobId}/frames-cam-2.webp`)).toBe(true);
     // Cam-1 stats are mirrored to legacy top-level fields.
-    expect(job!.sync).toEqual(job!.videos![0].sync);
+    expect(job!.sync).toEqual(asVideo(job!.videos![0]).sync);
     expect(job!.cuts).toEqual([]);
   }, 180_000);
 
@@ -273,18 +287,19 @@ describe("addVideoToJob", () => {
     const immediate = await jobsDb.getJob(jobId);
     expect(immediate!.videos).toHaveLength(2);
     expect(immediate!.videos![1].id).toBe("cam-2");
-    expect(immediate!.videos![1].sync).toBeUndefined();
+    expect(asVideo(immediate!.videos![1]).sync).toBeUndefined();
 
     // Eventually the sync result fills in.
     await waitForCamReady(jobId, "cam-2", "sync");
     const after = await jobsDb.getJob(jobId);
-    expect(after!.videos![1].sync).toBeDefined();
-    expect(after!.videos![1].framesPath).toBeDefined();
+    const cam2 = asVideo(after!.videos![1]);
+    expect(cam2.sync).toBeDefined();
+    expect(cam2.framesPath).toBeDefined();
     expect(await opfs.exists(`jobs/${jobId}/cam-2.mp4`)).toBe(true);
     expect(await opfs.exists(`jobs/${jobId}/frames-cam-2.webp`)).toBe(true);
     // Cam-1 untouched.
     expect(after!.videos![0].id).toBe("cam-1");
-    expect(after!.videos![0].sync).toBeDefined();
+    expect(asVideo(after!.videos![0]).sync).toBeDefined();
   }, 180_000);
 
   it("with skipSync, leaves sync undefined but still extracts thumbnails", async () => {
@@ -299,7 +314,7 @@ describe("addVideoToJob", () => {
     // Wait for frames since that's the marker that prep finished.
     await waitForCamReady(jobId, camId, "framesPath");
     const after = await jobsDb.getJob(jobId);
-    const cam = after!.videos!.find((v) => v.id === camId)!;
+    const cam = asVideo(after!.videos!.find((v) => v.id === camId));
     expect(cam.sync).toBeUndefined();
     expect(cam.framesPath).toBeDefined();
     // Dimensions still probed.

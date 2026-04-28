@@ -79,6 +79,9 @@ export interface MatchCandidate {
  * sign convention between the sync algorithm and the master clock.
  */
 export interface VideoClip {
+  /** Discriminator. Optional for backward-compat in tests; defaults to
+   *  "video" when absent. */
+  kind?: "video";
   id: string;
   filename: string;
   color: string;
@@ -105,14 +108,49 @@ export interface VideoClip {
 }
 
 /**
+ * In-memory representation of a still-image clip on the master timeline.
+ *
+ * Image clips have no audio track, no sync, no drift — only a user-set
+ * duration and a free placement offset. They share the cam-id namespace
+ * with VideoClips so cuts (which reference cam IDs) work transparently.
+ */
+export interface ImageClip {
+  kind: "image";
+  id: string;
+  filename: string;
+  color: string;
+  /** User-chosen length on the master timeline (seconds). */
+  durationS: number;
+  /** Master-timeline placement offset (seconds). The clip occupies
+   *  [startOffsetS, startOffsetS + durationS). */
+  startOffsetS: number;
+}
+
+export type Clip = VideoClip | ImageClip;
+
+/** True iff the clip is an image clip (kind === "image"). VideoClips may
+ *  have kind undefined or "video"; both count as video. */
+export function isImageClip(c: Clip): c is ImageClip {
+  return c.kind === "image";
+}
+export function isVideoClip(c: Clip): c is VideoClip {
+  return c.kind !== "image";
+}
+
+/**
  * Compute the [startS, endS) range a clip occupies on the master timeline.
  *
- * Sign convention: `syncOffsetMs` is the delay applied to the master audio
- * to align with this video's audio. When positive, the master audio starts
- * later than the video → the video begins *before* master t=0, so its
- * startS is negative. `syncOverrideMs` and `startOffsetS` add to this.
+ * Video sign convention: `syncOffsetMs` is the delay applied to the master
+ * audio to align with this video's audio. When positive, the master audio
+ * starts later than the video → the video begins *before* master t=0, so
+ * its startS is negative. `syncOverrideMs` and `startOffsetS` add to this.
+ *
+ * Image clips have no sync — they sit at `startOffsetS` for `durationS`.
  */
-export function clipRangeS(clip: VideoClip): { startS: number; endS: number } {
+export function clipRangeS(clip: Clip): { startS: number; endS: number } {
+  if (isImageClip(clip)) {
+    return { startS: clip.startOffsetS, endS: clip.startOffsetS + clip.durationS };
+  }
   const totalSyncS = (clip.syncOffsetMs + clip.syncOverrideMs) / 1000;
   const startS = -totalSyncS + clip.startOffsetS;
   return { startS, endS: startS + clip.sourceDurationS };

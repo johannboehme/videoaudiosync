@@ -20,7 +20,7 @@ import {
   useState,
 } from "react";
 import { useEditorStore } from "../store";
-import { clipRangeS, type VideoClip } from "../types";
+import { clipRangeS, isVideoClip, type Clip } from "../types";
 import { LaneHeader, type CamStatus } from "./timeline/LaneHeader";
 import { AddMediaButton } from "./AddMediaButton";
 import { ProgramStrip } from "./timeline/ProgramStrip";
@@ -149,10 +149,13 @@ export function Timeline({
       const r = clipRangeS(c);
       if (r.startS < lo) lo = r.startS;
       if (r.endS > hi) hi = r.endS;
-      for (const cand of c.candidates) {
-        const t = -(cand.offsetMs + c.syncOverrideMs) / 1000;
-        if (t < lo) lo = t;
-        if (t > hi) hi = t;
+      // Candidate-marker positions only apply to video clips.
+      if (isVideoClip(c)) {
+        for (const cand of c.candidates) {
+          const t = -(cand.offsetMs + c.syncOverrideMs) / 1000;
+          if (t < lo) lo = t;
+          if (t > hi) hi = t;
+        }
       }
     }
     return { startS: lo, endS: hi, span: hi - lo };
@@ -458,7 +461,7 @@ export function Timeline({
   ]);
 
   // ---- Hit-testing & drag ----
-  function findClipAt(x: number, y: number): { clip: VideoClip; band: { top: number; bottom: number } } | null {
+  function findClipAt(x: number, y: number): { clip: Clip; band: { top: number; bottom: number } } | null {
     for (let i = 0; i < clips.length; i++) {
       const band = videoBands[i];
       if (y < band.top || y >= band.bottom) continue;
@@ -545,7 +548,9 @@ export function Timeline({
           camId: hit.clip.id,
           grabT: tRaw,
           origStartOffsetS: hit.clip.startOffsetS,
-          origSyncOverrideMs: hit.clip.syncOverrideMs,
+          // Image clips have no syncOverrideMs; the field is irrelevant
+          // for them but the drag struct keeps a slot to keep the shape stable.
+          origSyncOverrideMs: isVideoClip(hit.clip) ? hit.clip.syncOverrideMs : 0,
           origStartS: r.startS,
         };
         // Freeze the timeline range so pxPerSec stays stable through
@@ -588,6 +593,16 @@ export function Timeline({
       // happens mid-drag (which would otherwise jolt algoSyncS and make
       // middle candidates unreachable).
       const targetStartS = drag.origStartS + (xToT(x) - drag.grabT);
+
+      // Image clips: drag simply moves the placement offset. No sync
+      // override, no candidate logic — startOffsetS *is* the placement.
+      if (!isVideoClip(c)) {
+        const snappedStart = snapped(targetStartS, e);
+        if (c.startOffsetS !== snappedStart) {
+          setClipStartOffset(drag.camId, snappedStart);
+        }
+        return;
+      }
 
       // MATCH mode: always snap to the nearest candidate-implied startS.
       // No distance threshold — every candidate is a valid lock-target.
@@ -839,8 +854,10 @@ export function Timeline({
                 if (snapMode !== "match" || !activeClipMoveDragId) {
                   return undefined;
                 }
-                const c = clips.find((cc) => cc.id === activeClipMoveDragId);
-                if (!c || !c.candidates || c.candidates.length === 0) {
+                const found = clips.find((cc) => cc.id === activeClipMoveDragId);
+                if (!found || !isVideoClip(found)) return undefined;
+                const c = found;
+                if (!c.candidates || c.candidates.length === 0) {
                   return undefined;
                 }
                 return c.candidates
@@ -930,9 +947,10 @@ export function Timeline({
                   s2.endHoldGesture();
                 }}
                 canReset={
-                  clip.syncOverrideMs !== 0 ||
-                  clip.startOffsetS !== 0 ||
-                  clip.selectedCandidateIdx !== 0
+                  isVideoClip(clip) &&
+                  (clip.syncOverrideMs !== 0 ||
+                    clip.startOffsetS !== 0 ||
+                    clip.selectedCandidateIdx !== 0)
                 }
                 onReset={() => resetClipAlignment(clip.id)}
                 height={videoLaneHeight}
@@ -1038,7 +1056,7 @@ export function Timeline({
 
 interface DrawVideoLaneArgs {
   ctx: CanvasRenderingContext2D;
-  clip: VideoClip;
+  clip: Clip;
   bandTop: number;
   bandH: number;
   canvasWidth: number;
@@ -1172,7 +1190,7 @@ function hexToRgba(hex: string, alpha: number): string {
 
 interface DrawMatchMarkersArgs {
   ctx: CanvasRenderingContext2D;
-  clip: VideoClip;
+  clip: Clip;
   bandTop: number;
   bandH: number;
   viewStart: number;
@@ -1184,7 +1202,8 @@ interface DrawMatchMarkersArgs {
 /** Render small ticks at each candidate-implied start position. The
  *  active candidate is rendered as a chunky filled triangle, alternates
  *  as thinner ticks fading out with confidence. In MATCH mode the alts
- *  brighten so the user can aim at them while dragging. */
+ *  brighten so the user can aim at them while dragging. Image clips have
+ *  no candidates → early-out. */
 function drawMatchMarkers({
   ctx,
   clip,
@@ -1195,6 +1214,7 @@ function drawMatchMarkers({
   canvasWidth,
   emphasized,
 }: DrawMatchMarkersArgs) {
+  if (!isVideoClip(clip)) return;
   if (!clip.candidates || clip.candidates.length === 0) return;
   ctx.save();
   for (let i = 0; i < clip.candidates.length; i++) {
@@ -1237,11 +1257,13 @@ function ActiveMatchReadout({
 }: {
   camId: string | null;
   snapMode: SnapMode;
-  clips: VideoClip[];
+  clips: Clip[];
 }) {
   if (!camId || snapMode !== "match") return null;
-  const clip = clips.find((c) => c.id === camId);
-  if (!clip || clip.candidates.length === 0) return null;
+  const found = clips.find((c) => c.id === camId);
+  if (!found || !isVideoClip(found)) return null;
+  const clip = found;
+  if (clip.candidates.length === 0) return null;
   const cand = clip.candidates[clip.selectedCandidateIdx];
   if (!cand) return null;
   const conf = Math.max(0, Math.min(1, cand.confidence));

@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../store";
-import { clipRangeS, type VideoClip } from "../types";
+import { clipRangeS, isVideoClip, type VideoClip } from "../types";
 import { camSourceTimeS } from "../../local/timing/cam-time";
 import { TestPattern } from "./TestPattern";
 import { VideoCanvas } from "./VideoCanvas";
@@ -65,12 +65,24 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
       {clips.slice(1).map((clip) => {
         const url = cams[clip.id]?.videoUrl;
         if (!url) return null;
+        if (isVideoClip(clip)) {
+          return (
+            <SatelliteCam
+              key={clip.id}
+              videoUrl={url}
+              visible={activeCamId === clip.id}
+              clip={clip}
+            />
+          );
+        }
+        // Image clip: render an <img> overlay, only visible when this is the
+        // active programme source.
         return (
-          <SatelliteCam
+          <ImageOverlay
             key={clip.id}
-            videoUrl={url}
+            imageUrl={url}
             visible={activeCamId === clip.id}
-            clip={clip}
+            filename={clip.filename}
           />
         );
       })}
@@ -146,6 +158,29 @@ function SatelliteCam({ videoUrl, visible, clip }: SatelliteCamProps) {
       playsInline
       crossOrigin="anonymous"
       preload="auto"
+      className="absolute inset-0 w-full h-full"
+      style={{
+        display: visible ? "block" : "none",
+        objectFit: "contain",
+        background: "#1A1816",
+      }}
+    />
+  );
+}
+
+interface ImageOverlayProps {
+  imageUrl: string;
+  visible: boolean;
+  filename: string;
+}
+
+/** Static image clip — shown as the programme source while it's the active
+ *  cam. Object-contained so portrait/landscape images don't get squished. */
+function ImageOverlay({ imageUrl, visible, filename }: ImageOverlayProps) {
+  return (
+    <img
+      src={imageUrl}
+      alt={filename}
       className="absolute inset-0 w-full h-full"
       style={{
         display: visible ? "block" : "none",
