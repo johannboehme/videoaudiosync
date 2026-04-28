@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ChunkyButton } from "../editor/components/ChunkyButton";
 import { RuleStrip } from "../editor/components/RuleStrip";
 import { DownloadIcon } from "../editor/components/icons";
+import { SyncProgressPanel } from "../components/sync/SyncProgressPanel";
 import {
   deleteJob,
   jobEvents,
@@ -12,14 +14,6 @@ import {
   type LocalJob,
 } from "../local/jobs";
 import type { VideoAsset } from "../storage/jobs-db";
-
-const PIPELINE = [
-  { key: "queued", label: "Queue" },
-  { key: "syncing", label: "Sync" },
-  { key: "synced", label: "Synced" },
-  { key: "rendering", label: "Render" },
-  { key: "rendered", label: "Done" },
-] as const;
 
 export default function JobPage() {
   const { id = "" } = useParams<{ id: string }>();
@@ -118,11 +112,28 @@ export default function JobPage() {
       </header>
 
       <section className="mb-6">
-        <Pipeline status={job.status} progressPct={job.progress.pct} />
-      </section>
-
-      <section className="mb-6">
-        <SyncPatchPanel job={job} />
+        <AnimatePresence mode="wait" initial={false}>
+          {(job.status === "queued" || job.status === "syncing") ? (
+            <motion.div
+              key="progress"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <SyncProgressPanel job={job} />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="patch"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <SyncPatchPanel job={job} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </section>
 
       {isFailed && job.error && <Banner kind="error" text={job.error} />}
@@ -161,38 +172,6 @@ export default function JobPage() {
         </div>
       )}
     </main>
-  );
-}
-
-function Pipeline({ status, progressPct }: { status: string; progressPct: number }) {
-  // Find the active stage index.
-  const activeIdx = Math.max(
-    0,
-    PIPELINE.findIndex((s) => s.key === status),
-  );
-  return (
-    <ol className="flex items-stretch gap-1 bg-paper-hi border border-rule rounded-md p-2">
-      {PIPELINE.map((stage, i) => {
-        const passed = i < activeIdx;
-        const active = i === activeIdx;
-        return (
-          <li
-            key={stage.key}
-            className={[
-              "flex-1 px-3 py-3 rounded text-center font-display tracking-label uppercase text-[11px]",
-              active ? "bg-hot text-paper-hi" : passed ? "bg-success/20 text-success" : "text-ink-3",
-            ].join(" ")}
-          >
-            <div>{stage.label}</div>
-            {active && (
-              <div className="mt-1 font-mono text-[10px] text-paper-hi/80 tabular">
-                {Math.round(progressPct)}%
-              </div>
-            )}
-          </li>
-        );
-      })}
-    </ol>
   );
 }
 
