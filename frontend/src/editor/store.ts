@@ -446,7 +446,10 @@ export const useEditorStore = create<EditorState>()(
         return { id: c.id, startS: r.startS, endS: r.endS };
       });
       const activeAtLo = activeCamAt(next, lo, ranges);
-      if (activeAtLo !== camId) {
+      // Same guard as addCut: only emit the in-marker when the held cam
+      // actually has material at lo. Otherwise the marker is visually
+      // inert (activeCamAt falls back to whoever else covers the spot).
+      if (activeAtLo !== camId && camHasMaterialAt(camId, lo, ranges)) {
         next = [...next, { atTimeS: lo, camId }].sort(
           (a, b) => a.atTimeS - b.atTimeS,
         );
@@ -467,15 +470,16 @@ export const useEditorStore = create<EditorState>()(
       const prevActiveAtRelease = activeCamAt(priorCuts, hi, ranges);
 
       // Paint: drop cuts in [lo, hi], insert lead cut if camId wasn't
-      // already active at lo.
+      // already active at lo AND it actually has material there.
       let next: Cut[] = priorCuts.filter((c) => c.atTimeS < lo || c.atTimeS > hi);
       const activeAtLo = activeCamAt(next, lo, ranges);
-      if (activeAtLo !== camId) {
+      if (activeAtLo !== camId && camHasMaterialAt(camId, lo, ranges)) {
         next.push({ atTimeS: lo, camId });
       }
 
       // Trailing resume cut at hi — only if the original would have shown
-      // a different cam there.
+      // a different cam there. activeCamAt only returns a cam that has
+      // material, so the trailing cut already targets a valid spot.
       if (prevActiveAtRelease !== null && prevActiveAtRelease !== camId) {
         next.push({ atTimeS: hi, camId: prevActiveAtRelease });
       }
