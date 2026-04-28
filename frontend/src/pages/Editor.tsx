@@ -108,11 +108,10 @@ export default function Editor() {
       const endS = s.playback.currentTime;
       // Distinguish tap from intentional hold by playhead movement. A
       // normal human key-tap takes 80–150 ms during which the playhead
-      // moves a tiny fraction of a second; we only treat that as a hold
-      // (and apply paint + resume) when the playhead really travelled.
-      // 250 ms is a comfortable threshold that rejects taps but still
-      // catches deliberate beat-length holds.
-      if (Math.abs(endS - hold.startS) > 0.25) {
+      // moves a tiny fraction of a second; we only treat the gesture as
+      // a paint hold once the playhead clearly travelled. 500 ms is a
+      // generous floor — even a slightly-too-long tap stays a tap.
+      if (Math.abs(endS - hold.startS) > 0.5) {
         s.applyHoldRelease(hold.camId, hold.startS, endS, hold.priorCuts);
       }
     }

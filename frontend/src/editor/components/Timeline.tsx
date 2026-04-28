@@ -84,7 +84,6 @@ export function Timeline({
   const setSelectedClipId = useEditorStore((s) => s.setSelectedClipId);
   const setClipStartOffset = useEditorStore((s) => s.setClipStartOffset);
   const addCut = useEditorStore((s) => s.addCut);
-  const overwriteCutsRange = useEditorStore((s) => s.overwriteCutsRange);
   const removeCutAt = useEditorStore((s) => s.removeCutAt);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const takeHoldStartRef = useRef<Map<string, number>>(new Map());
@@ -596,7 +595,7 @@ export function Timeline({
                   const endS = useEditorStore.getState().playback.currentTime;
                   // Same tap-vs-hold guard as the hotkeys: only treat as a
                   // paint gesture when the playhead clearly moved.
-                  if (Math.abs(endS - startS) > 0.25) {
+                  if (Math.abs(endS - startS) > 0.5) {
                     useEditorStore
                       .getState()
                       .applyHoldRelease(
