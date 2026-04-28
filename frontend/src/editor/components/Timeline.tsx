@@ -594,8 +594,17 @@ export function Timeline({
                   takeHoldStartRef.current.delete(clip.id);
                   if (startS === undefined) return;
                   const endS = useEditorStore.getState().playback.currentTime;
-                  if (Math.abs(endS - startS) > 0.05) {
-                    overwriteCutsRange(clip.id, startS, endS);
+                  // Same tap-vs-hold guard as the hotkeys: only treat as a
+                  // paint gesture when the playhead clearly moved.
+                  if (Math.abs(endS - startS) > 0.25) {
+                    useEditorStore
+                      .getState()
+                      .applyHoldRelease(
+                        clip.id,
+                        startS,
+                        endS,
+                        useEditorStore.getState().cuts,
+                      );
                   }
                 }}
                 height={videoLaneHeight}

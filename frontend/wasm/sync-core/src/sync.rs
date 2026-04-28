@@ -5,7 +5,8 @@
 use crate::chroma::{self, ChromaMatrix, HOP, N_PITCH_CLASSES};
 use crate::drift::{windowed_drift_refinement, DriftConfig};
 use crate::dtw::dtw_drift;
-use crate::ncc::{align_with_candidates, MatchCandidate};
+use crate::ncc::{align_with_onset, MatchCandidate};
+use crate::onset::onset_envelope;
 use crate::util::peak_normalize;
 use crate::xcorr::correlate_full;
 
@@ -136,22 +137,30 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
     let cr = chroma::chroma_features(&ref_y, opts.sr);
     let cq = chroma::chroma_features(&query_y, opts.sr);
 
-    // Primary alignment uses NCC + multi-candidate peak picking. Fixes the
-    // unnormalized-correlation undershoot the legacy chroma_alignment had on
-    // ref-with-silent-prefix scenarios, and surfaces alternates so the UI
-    // can offer "snap to alternate match" when the user disagrees.
-    let report = align_with_candidates(&cr, &cq, opts.sr, /*max_alternates=*/ 5);
+    // Primary alignment uses NCC + onset-envelope fusion + multi-candidate
+    // peak picking. The onset envelope is folded into the NCC array
+    // BEFORE peak picking so it can promote a true-but-quiet chroma peak
+    // over a wrong-but-loud one (self-similar bar boundaries in
+    // repetitive music are the classic failure case).
+    let onset_ref = onset_envelope(&ref_y, opts.sr);
+    let onset_query = onset_envelope(&query_y, opts.sr);
+    let report = align_with_onset(
+        &cr,
+        &cq,
+        &onset_ref,
+        &onset_query,
+        opts.sr,
+        /*max_alternates=*/ 5,
+    );
+
     let (mut lag, mut confidence, mut candidates) = match report {
         Some(r) => {
             let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
                 .chain(r.alternates.iter())
                 .map(|c| cand_to_out(c, opts.sr))
                 .collect();
-            // Primary is always cands[0].
             let primary_lag = r.primary.offset_samples;
             let primary_conf = r.primary.ncc as f64;
-            // Patch primary entry's confidence so the consumer sees the same
-            // value that lands in SyncResult.confidence.
             if let Some(p) = cands.get_mut(0) {
                 p.confidence = primary_conf;
             }
@@ -159,12 +168,12 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         }
         None => (0, 0.0, Vec::new()),
     };
-    let mut method = "ncc".to_string();
+    let mut method = "ncc+onset".to_string();
     let mut drift = 1.0f64;
     let mut warning: Option<String> = None;
 
     if confidence < opts.confidence_threshold {
-        method = "ncc+dtw".to_string();
+        method = "ncc+onset+dtw".to_string();
         let cr_dtw = compute_chroma_with_hop(&ref_y, opts.sr, 1024);
         let cq_dtw = compute_chroma_with_hop(&query_y, opts.sr, 1024);
         let (offset_dtw, drift_dtw) = dtw_drift(&cr_dtw, &cq_dtw, 1024);

@@ -149,6 +149,7 @@ interface EditorState {
    * "paints" the cam over the held span.
    */
   overwriteCutsRange(camId: string, fromS: number, toS: number): void;
+  applyHoldRelease(camId: string, fromS: number, toS: number, priorCuts: Cut[]): void;
   removeCutAt(atTimeS: number, camId?: string): void;
   clearCuts(): void;
 
@@ -397,36 +398,51 @@ export const useEditorStore = create<EditorState>()(
       return true;
     },
     overwriteCutsRange(camId, fromS, toS) {
-      // Normalize so callers can hand in either order.
       const lo = Math.min(fromS, toS);
       const hi = Math.max(fromS, toS);
       const cuts = get().cuts;
-
-      // 1. Drop every cut to a different cam in the (lo, hi] window — those
-      //    were the marks the press just "painted over".
-      let next = cuts.filter(
-        (c) => !(c.atTimeS > lo && c.atTimeS <= hi && c.camId !== camId),
-      );
-
-      // 2. Insert the leading cut at `lo` if `camId` isn't already active
-      //    there. Same no-op rule as addCut.
-      // We have to compute activeCamAt against the FILTERED list — if the
-      // cut at `lo` was the only thing keeping the previous cam alive
-      // before our overwrite, the fallback may now point to a different
-      // cam.
-      const cutsForActive = next.filter((c) => c.atTimeS <= lo);
-      // Reuse the resolver via a local cam-range build.
+      // Drop every cut inside [lo, hi] — the held cam painted over them.
+      let next = cuts.filter((c) => c.atTimeS < lo || c.atTimeS > hi);
       const ranges = get().clips.map((c) => {
         const r = clipRangeS(c);
         return { id: c.id, startS: r.startS, endS: r.endS };
       });
-      const activeAtLo = activeCamAt(cutsForActive, lo, ranges);
+      const activeAtLo = activeCamAt(next, lo, ranges);
       if (activeAtLo !== camId) {
-        // Replace any existing cut at exactly `lo` on the same cam.
-        next = next.filter((c) => !(c.atTimeS === lo && c.camId === camId));
-        next.push({ atTimeS: lo, camId });
-        next.sort((a, b) => a.atTimeS - b.atTimeS);
+        next = [...next, { atTimeS: lo, camId }].sort(
+          (a, b) => a.atTimeS - b.atTimeS,
+        );
       }
+      set({ cuts: next });
+    },
+    applyHoldRelease(camId: string, fromS: number, toS: number, priorCuts: Cut[]) {
+      const lo = Math.min(fromS, toS);
+      const hi = Math.max(fromS, toS);
+      const ranges = get().clips.map((c) => {
+        const r = clipRangeS(c);
+        return { id: c.id, startS: r.startS, endS: r.endS };
+      });
+      // What WOULD have been on PROGRAM at the release moment if we hadn't
+      // painted? That's the cam we want to resume to (unless it's the cam
+      // we were holding, in which case the hold was redundant and no
+      // trailing cut is needed).
+      const prevActiveAtRelease = activeCamAt(priorCuts, hi, ranges);
+
+      // Paint: drop cuts in [lo, hi], insert lead cut if camId wasn't
+      // already active at lo.
+      let next: Cut[] = priorCuts.filter((c) => c.atTimeS < lo || c.atTimeS > hi);
+      const activeAtLo = activeCamAt(next, lo, ranges);
+      if (activeAtLo !== camId) {
+        next.push({ atTimeS: lo, camId });
+      }
+
+      // Trailing resume cut at hi — only if the original would have shown
+      // a different cam there.
+      if (prevActiveAtRelease !== null && prevActiveAtRelease !== camId) {
+        next.push({ atTimeS: hi, camId: prevActiveAtRelease });
+      }
+
+      next.sort((a, b) => a.atTimeS - b.atTimeS);
       set({ cuts: next });
     },
     removeCutAt(atTimeS, camId) {

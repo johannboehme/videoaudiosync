@@ -23,6 +23,7 @@ import { computeWaveformPeaks } from "../local/waveform-peaks";
 import { exportSpecToRenderOpts } from "../editor/exportPresets";
 import { opfs } from "../storage/opfs";
 import type { ClipInit } from "../editor/store";
+import type { Cut } from "../storage/jobs-db";
 
 interface WaveformData {
   peaks: [number, number][];
@@ -59,12 +60,17 @@ export default function Editor() {
   const [err, setErr] = useState<string | null>(null);
 
   // Global hotkeys 1..9 = live-cut to that cam's lane (vintage vision-mixer
-  // pushbuttons). Press = insert cut at playhead. Press-and-HOLD = also
-  // overwrite any cuts to other cams during the held span — paint the cam
-  // over the held window. Ignored when the user is typing in an input.
+  // pushbuttons). Press = insert cut at playhead. Press-and-HOLD then
+  // release = paint the held cam over the entire press→release span AND
+  // if the release falls inside someone else's block, append a trailing
+  // cut back to that previously-active cam. Ignored when typing.
   useEffect(() => {
-    // camId currently held + the master-timeline time the press started at.
-    const holds = new Map<string, { camId: string; startS: number }>();
+    // camId held + master-timeline press start + cuts snapshot at press
+    // start (needed by applyHoldRelease to resume to the original cam).
+    const holds = new Map<
+      string,
+      { camId: string; startS: number; priorCuts: Cut[] }
+    >();
 
     function isTypingTarget(t: EventTarget | null): boolean {
       const el = t as HTMLElement | null;
@@ -76,7 +82,6 @@ export default function Editor() {
     function onKeyDown(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
-      // Ignore browser auto-repeat — we only want the very first keydown.
       if (e.repeat) {
         e.preventDefault();
         return;
@@ -88,8 +93,11 @@ export default function Editor() {
       if (!clip) return;
       e.preventDefault();
       const startS = s.playback.currentTime;
+      // Snapshot PRIOR to addCut — applyHoldRelease needs the pristine list
+      // to recover what would have been active at release.
+      const priorCuts = s.cuts.slice();
       s.addCut({ atTimeS: startS, camId: clip.id });
-      holds.set(e.key, { camId: clip.id, startS });
+      holds.set(e.key, { camId: clip.id, startS, priorCuts });
     }
 
     function onKeyUp(e: KeyboardEvent) {
@@ -98,10 +106,14 @@ export default function Editor() {
       holds.delete(e.key);
       const s = useEditorStore.getState();
       const endS = s.playback.currentTime;
-      // Only overwrite if the playhead actually moved — a quick tap should
-      // just leave the addCut alone (the no-op rule already handles dupes).
-      if (Math.abs(endS - hold.startS) > 0.05) {
-        s.overwriteCutsRange(hold.camId, hold.startS, endS);
+      // Distinguish tap from intentional hold by playhead movement. A
+      // normal human key-tap takes 80–150 ms during which the playhead
+      // moves a tiny fraction of a second; we only treat that as a hold
+      // (and apply paint + resume) when the playhead really travelled.
+      // 250 ms is a comfortable threshold that rejects taps but still
+      // catches deliberate beat-length holds.
+      if (Math.abs(endS - hold.startS) > 0.25) {
+        s.applyHoldRelease(hold.camId, hold.startS, endS, hold.priorCuts);
       }
     }
 

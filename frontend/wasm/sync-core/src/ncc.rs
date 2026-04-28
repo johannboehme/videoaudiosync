@@ -101,12 +101,79 @@ fn idx_to_offset_samples(idx: usize, n_ref_frames: usize, hop: usize) -> i64 {
     -lag_frames * hop as i64
 }
 
+/// Score a single candidate lag against a pair of 1-D feature sequences
+/// (typically onset envelopes). Returns the Pearson-like normalized
+/// correlation in [0, 1] over the overlapping region, OR 0 if the
+/// overlap is too small.
+///
+/// Used to break ties between chroma candidates that look similar from
+/// the harmonic side — onset envelopes are far more discriminative in
+/// time, so they pick out the right peak when chroma alone can't tell
+/// two bar boundaries apart.
+pub fn score_lag_1d(
+    a: &[f32],
+    b: &[f32],
+    offset_samples: i64,
+    sample_rate: u32,
+    feat_hop: usize,
+    min_overlap_s: f32,
+) -> f32 {
+    // Onset envelope sample rate equals SR / hop. Convert audio offset
+    // to envelope-frame lag.
+    let lag_frames = -((offset_samples as f64) / feat_hop as f64).round() as i64;
+    let n_a = a.len() as i64;
+    let n_b = b.len() as i64;
+    let start_a = (-lag_frames).max(0);
+    let end_a = n_a.min(n_b - lag_frames);
+    if end_a <= start_a {
+        return 0.0;
+    }
+    let overlap_frames = (end_a - start_a) as usize;
+    let min_frames = (min_overlap_s * sample_rate as f32 / feat_hop as f32) as usize;
+    if overlap_frames < min_frames.max(8) {
+        return 0.0;
+    }
+    let mut dot = 0.0_f64;
+    let mut sa = 0.0_f64;
+    let mut sb = 0.0_f64;
+    for i in start_a..end_a {
+        let qi = i + lag_frames;
+        let av = a[i as usize] as f64;
+        let bv = b[qi as usize] as f64;
+        dot += av * bv;
+        sa += av * av;
+        sb += bv * bv;
+    }
+    let denom = (sa * sb).sqrt();
+    if denom < 1e-9 {
+        return 0.0;
+    }
+    (dot / denom).clamp(0.0, 1.0) as f32
+}
+
 /// NCC alignment: returns a primary candidate plus alternate lags whose
 /// NCC is at least `REL_THRESHOLD` of the primary's. Limits the
-/// alternates list to `max_alternates`.
+/// alternates list to `max_alternates`. When `onset_*` are provided
+/// they're folded into the NCC pre-peak-picking — onset envelopes carry
+/// orthogonal info (transient timing) that disambiguates self-similar
+/// chroma regions.
 pub fn align_with_candidates(
     cr: &ChromaMatrix,
     cq: &ChromaMatrix,
+    sample_rate: u32,
+    max_alternates: usize,
+) -> Option<AlignmentReport> {
+    align_with_onset(cr, cq, &[], &[], sample_rate, max_alternates)
+}
+
+/// Same as `align_with_candidates`, plus an onset-envelope NCC pass that
+/// is summed into the chroma NCC before peak picking. Pass empty slices
+/// for the onset args to skip onset fusion.
+pub fn align_with_onset(
+    cr: &ChromaMatrix,
+    cq: &ChromaMatrix,
+    onset_r: &[f32],
+    onset_q: &[f32],
     sample_rate: u32,
     max_alternates: usize,
 ) -> Option<AlignmentReport> {
@@ -129,23 +196,44 @@ pub fn align_with_candidates(
     }
     let min_overlap = (min_active as f32 * MIN_OVERLAP_FRACTION).max(8.0);
 
-    // Build the NCC sequence: raw / sqrt(overlap_count). Where overlap is
+    // Build chroma NCC: raw / sqrt(overlap_count). Where overlap is
     // below threshold, NCC = 0.
-    let mut ncc = vec![0.0f32; raw.len()];
+    let mut ncc_chroma = vec![0.0f32; raw.len()];
     for i in 0..raw.len() {
         let o = overlaps[i].max(0.0);
         if o < min_overlap {
             continue;
         }
-        // Each L2-normalized chroma frame contributes at most 1 to the
-        // 12-channel dot product when both frames point in the same
-        // direction. Sum over `o` overlapping frames maxes at `o`. So
-        // NCC = raw / o gives a value in [0, 1]; we use sqrt(o) instead
-        // to dampen the min-overlap edge cases (a fully-aligned pair of
-        // single frames shouldn't beat a 100-frame mostly-aligned region).
-        // This is the same denominator used by classic phase-correlation.
-        ncc[i] = raw[i] / o.sqrt();
+        ncc_chroma[i] = raw[i] / o.sqrt();
     }
+
+    // Optional onset-envelope NCC pass. Same correlate_full + sqrt-overlap
+    // normalization, then summed with chroma NCC element-wise. We weight
+    // onset lower than chroma — chroma is the primary signal, onset
+    // breaks ties between similar-looking chroma regions.
+    let mut ncc_combined = ncc_chroma.clone();
+    if !onset_r.is_empty()
+        && !onset_q.is_empty()
+        && onset_r.len() + onset_q.len() - 1 == ncc_chroma.len()
+    {
+        const ONSET_WEIGHT: f32 = 0.4;
+        // Normalize the envelopes so their NCC peak ≈ 1 (matches chroma's range).
+        let r_norm_sq: f64 = onset_r.iter().map(|&x| x as f64 * x as f64).sum();
+        let q_norm_sq: f64 = onset_q.iter().map(|&x| x as f64 * x as f64).sum();
+        let denom = (r_norm_sq * q_norm_sq).sqrt() as f32;
+        if denom > 1e-6 {
+            let onset_corr = correlate_full(onset_q, onset_r);
+            // Find peak chroma value to scale onset to comparable units.
+            let chroma_peak = ncc_chroma.iter().cloned().fold(0.0_f32, f32::max).max(1e-6);
+            for i in 0..ncc_combined.len() {
+                let onset_normalized = onset_corr[i] / denom; // ~Pearson over full overlap
+                if onset_normalized > 0.0 {
+                    ncc_combined[i] += ONSET_WEIGHT * onset_normalized * chroma_peak;
+                }
+            }
+        }
+    }
+    let ncc = ncc_combined;
 
     // Find primary peak.
     let mut primary_idx = 0usize;
