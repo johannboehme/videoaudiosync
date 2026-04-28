@@ -194,6 +194,118 @@ async function markFailed(jobId: string, error: unknown): Promise<void> {
   }
 }
 
+/**
+ * Per-cam preparation: decode + match (unless skipped) + probe + frames.
+ *
+ * Decoupled from any specific orchestration so it can be reused by the
+ * upfront `runSync` (batches all cams) and by `addVideoToJob` (one cam
+ * added later from the editor).
+ *
+ * `mapPct` lets the caller control how the per-cam fractional progress
+ * (0..1) is mapped onto the job's global pct bar — runSync uses a per-cam
+ * band of the 5..95% range; addVideoToJob uses the cam's nominal band so
+ * the SyncProgressPanel keeps showing it correctly.
+ *
+ * `studioPcm` is required when matching; pass `null` when `skipSync` is
+ * true to indicate the master audio doesn't need decoding.
+ *
+ * Frame extraction always runs — the timeline lane needs thumbnails even
+ * for B-roll cams the user opted out of matching.
+ */
+async function runCamPrep(
+  jobId: string,
+  cam: VideoAsset,
+  studioPcm: Float32Array | null,
+  opts: {
+    skipSync?: boolean;
+    mapPct: (frac: number) => number;
+  },
+): Promise<VideoAsset> {
+  const videoFile = await opfs.readFile(cam.opfsPath);
+
+  // SYNC stage — only if matching is requested.
+  let sync: SyncResult | undefined;
+  if (!opts.skipSync) {
+    if (!studioPcm) {
+      throw new Error(`runCamPrep: studioPcm is required when skipSync is false`);
+    }
+    await reportProgress(jobId, {
+      pct: opts.mapPct(0),
+      stage: `syncing-${cam.id}`,
+      detail: `${cam.id} · ${cam.filename}`,
+    });
+
+    const videoMonoPcm = await decodeAudioToMonoPcm(videoFile, 22050);
+    await reportProgress(jobId, {
+      pct: opts.mapPct(0.4),
+      stage: `syncing-${cam.id}`,
+      detail: `${cam.id} · ${cam.filename}`,
+    });
+
+    const result = await syncAudio({
+      refSource: videoMonoPcm.pcm,
+      querySource: studioPcm,
+    });
+    sync = {
+      offsetMs: result.offsetMs,
+      driftRatio: result.driftRatio,
+      confidence: result.confidence,
+      warning: result.warning ?? undefined,
+      candidates: result.candidates,
+    };
+  }
+
+  // Probe video for duration / dimensions. Best-effort; missing fields
+  // surface as undefined and the editor falls back to defaults.
+  let durationS: number | undefined;
+  let width: number | undefined;
+  let height: number | undefined;
+  try {
+    const { demuxVideoTrack } = await import("./codec/webcodecs/demux");
+    const v = await demuxVideoTrack(videoFile);
+    if (v) {
+      durationS = v.info.durationS;
+      width = v.info.width;
+      height = v.info.height;
+    }
+  } catch {
+    // ignore — nice-to-have
+  }
+
+  // Per-cam thumbnail strip. Always runs (B-roll lanes need thumbnails too).
+  // Failure is non-blocking.
+  let framesPath: string | undefined;
+  await reportProgress(jobId, {
+    pct: opts.mapPct(0.6),
+    stage: `frames-${cam.id}`,
+    detail: `${cam.id} · ${cam.filename}`,
+  });
+  try {
+    const r = await extractTimelineFrames(videoFile, {
+      onProgress: (frac) => {
+        void reportProgress(jobId, {
+          pct: opts.mapPct(0.6 + frac * 0.4),
+          stage: `frames-${cam.id}`,
+          detail: `${cam.id} · ${cam.filename}`,
+        });
+      },
+    });
+    framesPath = camFramesPath(jobId, cam.id);
+    await opfs.writeFile(framesPath, r.blob);
+  } catch (err) {
+    console.warn(`Frame strip extraction failed for ${jobId}/${cam.id}:`, err);
+  }
+
+  return {
+    ...cam,
+    sync,
+    durationS,
+    width,
+    height,
+    framesPath,
+  };
+}
+
 async function runSync(jobId: string, audioExt: string): Promise<void> {
   await reportProgress(jobId, { pct: 2, stage: "loading" }, "syncing");
 
@@ -215,82 +327,11 @@ async function runSync(jobId: string, audioExt: string): Promise<void> {
   for (let i = 0; i < videos.length; i++) {
     const cam = videos[i];
     const camStartPct = 5 + i * bandPerCam;
-    const camPct = (frac: number) =>
-      Math.min(95, Math.floor(camStartPct + frac * bandPerCam));
-
-    await reportProgress(jobId, {
-      pct: camPct(0),
-      stage: `syncing-${cam.id}`,
-      detail: `${cam.id} · ${cam.filename}`,
+    const updated = await runCamPrep(jobId, cam, studioMonoPcm.pcm, {
+      mapPct: (frac) =>
+        Math.min(95, Math.floor(camStartPct + frac * bandPerCam)),
     });
-
-    const videoFile = await opfs.readFile(cam.opfsPath);
-    const videoMonoPcm = await decodeAudioToMonoPcm(videoFile, 22050);
-
-    await reportProgress(jobId, {
-      pct: camPct(0.4),
-      stage: `syncing-${cam.id}`,
-      detail: `${cam.id} · ${cam.filename}`,
-    });
-    const result = await syncAudio({
-      refSource: videoMonoPcm.pcm,
-      querySource: studioMonoPcm.pcm,
-    });
-    const sync: SyncResult = {
-      offsetMs: result.offsetMs,
-      driftRatio: result.driftRatio,
-      confidence: result.confidence,
-      warning: result.warning ?? undefined,
-      candidates: result.candidates,
-    };
-
-    // Probe video for duration / dimensions.
-    let durationS: number | undefined;
-    let width: number | undefined;
-    let height: number | undefined;
-    try {
-      const { demuxVideoTrack } = await import("./codec/webcodecs/demux");
-      const v = await demuxVideoTrack(videoFile);
-      if (v) {
-        durationS = v.info.durationS;
-        width = v.info.width;
-        height = v.info.height;
-      }
-    } catch {
-      // ignore — nice-to-have
-    }
-
-    // Per-cam thumbnail strip. Failure is non-blocking.
-    let framesPath: string | undefined;
-    await reportProgress(jobId, {
-      pct: camPct(0.6),
-      stage: `frames-${cam.id}`,
-      detail: `${cam.id} · ${cam.filename}`,
-    });
-    try {
-      const r = await extractTimelineFrames(videoFile, {
-        onProgress: (frac) => {
-          void reportProgress(jobId, {
-            pct: camPct(0.6 + frac * 0.4),
-            stage: `frames-${cam.id}`,
-            detail: `${cam.id} · ${cam.filename}`,
-          });
-        },
-      });
-      framesPath = camFramesPath(jobId, cam.id);
-      await opfs.writeFile(framesPath, r.blob);
-    } catch (err) {
-      console.warn(`Frame strip extraction failed for ${jobId}/${cam.id}:`, err);
-    }
-
-    updatedVideos.push({
-      ...cam,
-      sync,
-      durationS,
-      width,
-      height,
-      framesPath,
-    });
+    updatedVideos.push(updated);
   }
 
   // Mirror cam-1's stats to the legacy top-level fields so consumers that
@@ -323,6 +364,105 @@ async function runSync(jobId: string, audioExt: string): Promise<void> {
     finishedAt: Date.now(),
   });
   emitJobUpdate(updated);
+}
+
+// -----------------------------------------------------------------------------
+// addVideoToJob — append a cam to an existing project (editor "+ Media")
+// -----------------------------------------------------------------------------
+
+export interface AddVideoOptions {
+  /** Skip the audio-match stage. The cam still gets dimensions probed and
+   *  thumbnails extracted, but `sync` and `candidates` stay undefined.
+   *  Used for B-roll the user wants to place by hand. */
+  skipSync?: boolean;
+}
+
+/**
+ * Append a video to an existing job and run the per-cam preparation in the
+ * background. Returns the new cam id immediately so callers can update UI
+ * (e.g. spin up an empty lane). The cam is persisted with `sync` and
+ * `framesPath` undefined; both fill in via `jobsDb.updateJob` events as
+ * the prep progresses.
+ *
+ * Errors during prep are logged but don't fail the job — the new cam stays
+ * in videos[] without sync/frames so the user can retry or remove it.
+ */
+export async function addVideoToJob(
+  jobId: string,
+  file: File,
+  opts: AddVideoOptions = {},
+): Promise<string> {
+  const job = await jobsDb.getJob(jobId);
+  if (!job) throw new Error(`Job ${jobId} not found`);
+
+  const existing = job.videos ?? [];
+  const camId = `cam-${existing.length + 1}`;
+  const ext = fileExtension(file, "mp4");
+  const opfsPath = camVideoPath(jobId, camId, ext);
+
+  await opfs.writeFile(opfsPath, file);
+
+  const newCam: VideoAsset = {
+    id: camId,
+    filename: file.name,
+    opfsPath,
+    color: camColorAt(existing.length),
+  };
+
+  // Append immediately (sync still undefined) so editor lane appears now.
+  const next = [...existing, newCam];
+  const saved = await jobsDb.updateJob(jobId, { videos: next });
+  emitJobUpdate(saved);
+
+  // Run cam-prep in the background. Don't block the caller — the editor
+  // subscribes to jobEvents to know when the cam is ready.
+  void (async () => {
+    try {
+      // Studio PCM only needed when actually matching.
+      let studioPcm: Float32Array | null = null;
+      if (!opts.skipSync) {
+        const audioExt = fileExtension(
+          { name: job.audioFilename } as File,
+          "wav",
+        );
+        const audioFile = await opfs.readFile(audioPath(jobId, audioExt));
+        const decoded = await decodeAudioToMonoPcm(audioFile, 22050);
+        studioPcm = decoded.pcm;
+      }
+
+      // Project this cam onto the multi-cam progress panel: it sits at the
+      // very end of videos[] now, so its band mirrors what runSync would
+      // have used for an N-cam batch.
+      const totalCams = next.length;
+      const bandPerCam = 90 / totalCams;
+      const camStartPct = 5 + (totalCams - 1) * bandPerCam;
+
+      const prepared = await runCamPrep(jobId, newCam, studioPcm, {
+        skipSync: opts.skipSync,
+        mapPct: (frac) =>
+          Math.min(95, Math.floor(camStartPct + frac * bandPerCam)),
+      });
+
+      // Re-read videos[] before writing — user may have added more cams in
+      // the meantime, or the editor may have edited per-cam state.
+      const cur = await jobsDb.getJob(jobId);
+      if (!cur) return;
+      const updated = (cur.videos ?? []).map((v) =>
+        v.id === camId ? { ...v, ...prepared } : v,
+      );
+      const final = await jobsDb.updateJob(jobId, { videos: updated });
+      emitJobUpdate(final);
+    } catch (err) {
+      console.error(
+        `addVideoToJob: cam-prep failed for ${jobId}/${camId}:`,
+        err,
+      );
+      // The cam stays in videos[] without sync/frames; UI surface it as
+      // "not synced" — user can remove or retry.
+    }
+  })();
+
+  return camId;
 }
 
 interface QuickRenderInput {

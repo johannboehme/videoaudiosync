@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createJob, jobEvents, runQuickRender, deleteJob, resolveJobAssetUrl } from "./jobs";
+import {
+  addVideoToJob,
+  createJob,
+  jobEvents,
+  runQuickRender,
+  deleteJob,
+  resolveJobAssetUrl,
+} from "./jobs";
 import { jobsDb } from "../storage/jobs-db";
 import { opfs } from "../storage/opfs";
 
@@ -205,4 +212,115 @@ describe("local jobs lifecycle", () => {
     expect(await opfs.exists(`jobs/${jobId}/cam-1.mp4`)).toBe(false);
     expect(await opfs.exists(`jobs/${jobId}/audio.wav`)).toBe(false);
   }, 120_000);
+});
+
+// -----------------------------------------------------------------------------
+// addVideoToJob — appending a cam to an existing project
+// -----------------------------------------------------------------------------
+
+function waitForCamReady(
+  jobId: string,
+  camId: string,
+  field: "sync" | "framesPath",
+  timeoutMs = 60_000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const onUpdate = (e: Event) => {
+      const detail = (e as CustomEvent<{
+        jobId: string;
+        job: { videos?: Array<{ id: string; sync?: unknown; framesPath?: string }> };
+      }>).detail;
+      if (detail.jobId !== jobId) return;
+      const cam = detail.job.videos?.find((v) => v.id === camId);
+      if (!cam) return;
+      const ready = field === "sync" ? cam.sync !== undefined : cam.framesPath !== undefined;
+      if (ready) {
+        jobEvents.removeEventListener("update", onUpdate);
+        resolve();
+      }
+    };
+    jobEvents.addEventListener("update", onUpdate);
+    const tick = () => {
+      if (Date.now() - start > timeoutMs) {
+        jobEvents.removeEventListener("update", onUpdate);
+        reject(new Error(`Timed out waiting for cam ${camId}.${field}`));
+        return;
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+describe("addVideoToJob", () => {
+  beforeEach(async () => {
+    await jobsDb.wipeAll();
+    await opfs.wipeAll();
+  });
+
+  it("appends a cam to videos[] immediately and runs sync in the background", async () => {
+    const v1 = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+    const jobId = await createJob([v1], audio, { title: "B-roll test" });
+    await waitForJobStatus(jobId, "synced");
+
+    const v2 = await fetchVideoFile();
+    const camId = await addVideoToJob(jobId, v2);
+    expect(camId).toBe("cam-2");
+
+    // Lane shows up immediately, sync still pending.
+    const immediate = await jobsDb.getJob(jobId);
+    expect(immediate!.videos).toHaveLength(2);
+    expect(immediate!.videos![1].id).toBe("cam-2");
+    expect(immediate!.videos![1].sync).toBeUndefined();
+
+    // Eventually the sync result fills in.
+    await waitForCamReady(jobId, "cam-2", "sync");
+    const after = await jobsDb.getJob(jobId);
+    expect(after!.videos![1].sync).toBeDefined();
+    expect(after!.videos![1].framesPath).toBeDefined();
+    expect(await opfs.exists(`jobs/${jobId}/cam-2.mp4`)).toBe(true);
+    expect(await opfs.exists(`jobs/${jobId}/frames-cam-2.webp`)).toBe(true);
+    // Cam-1 untouched.
+    expect(after!.videos![0].id).toBe("cam-1");
+    expect(after!.videos![0].sync).toBeDefined();
+  }, 180_000);
+
+  it("with skipSync, leaves sync undefined but still extracts thumbnails", async () => {
+    const v1 = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+    const jobId = await createJob([v1], audio);
+    await waitForJobStatus(jobId, "synced");
+
+    const v2 = await fetchVideoFile();
+    const camId = await addVideoToJob(jobId, v2, { skipSync: true });
+
+    // Wait for frames since that's the marker that prep finished.
+    await waitForCamReady(jobId, camId, "framesPath");
+    const after = await jobsDb.getJob(jobId);
+    const cam = after!.videos!.find((v) => v.id === camId)!;
+    expect(cam.sync).toBeUndefined();
+    expect(cam.framesPath).toBeDefined();
+    // Dimensions still probed.
+    expect(cam.durationS).toBeDefined();
+  }, 120_000);
+
+  it("multiple sequential adds produce cam-N, cam-N+1", async () => {
+    const v1 = await fetchVideoFile();
+    const audio = new File([makeWavBlob()], "studio.wav", { type: "audio/wav" });
+    const jobId = await createJob([v1], audio);
+    await waitForJobStatus(jobId, "synced");
+
+    const a = await addVideoToJob(jobId, await fetchVideoFile(), { skipSync: true });
+    expect(a).toBe("cam-2");
+    await waitForCamReady(jobId, a, "framesPath");
+
+    const b = await addVideoToJob(jobId, await fetchVideoFile(), { skipSync: true });
+    expect(b).toBe("cam-3");
+    await waitForCamReady(jobId, b, "framesPath");
+
+    const after = await jobsDb.getJob(jobId);
+    expect(after!.videos!.map((v) => v.id)).toEqual(["cam-1", "cam-2", "cam-3"]);
+  }, 180_000);
 });
