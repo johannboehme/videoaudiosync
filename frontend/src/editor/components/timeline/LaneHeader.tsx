@@ -9,7 +9,7 @@
  *
  * Sized to fit a 44 × 44 button + name/filename column without clipping.
  */
-import { CSSProperties, MouseEvent } from "react";
+import { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 export type CamStatus = "off" | "available" | "on-air";
 
@@ -22,7 +22,12 @@ interface Props {
   hotkeyLabel?: string;
   selected?: boolean;
   onSelectClip?: () => void;
+  /** Tap → quick cut. Hold gestures fire onTakeStart/Finish in addition. */
   onTake?: () => void;
+  /** Pointer pressed down on TAKE — record the press start time externally. */
+  onTakeStart?: () => void;
+  /** Pointer released on TAKE — overwrite from press-start to release. */
+  onTakeFinish?: () => void;
   height?: number;
 }
 
@@ -37,11 +42,25 @@ export function LaneHeader({
   selected = false,
   onSelectClip,
   onTake,
+  onTakeStart,
+  onTakeFinish,
   height = 80,
 }: Props) {
-  const handleTake = (e: MouseEvent<HTMLButtonElement>) => {
+  const handlePointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
     e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    // Tap = onTake (insert the cut at press time). Hold release later
+    // calls onTakeFinish to apply the overwrite-range.
     onTake?.();
+    onTakeStart?.();
+  };
+  const handlePointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    onTakeFinish?.();
+  };
+  const handlePointerCancel = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    onTakeFinish?.();
   };
 
   return (
@@ -93,8 +112,10 @@ export function LaneHeader({
          * in the button face — keeps multi-cam panels from screaming. */}
         <button
           type="button"
-          onClick={handleTake}
-          aria-label={`Take ${name}`}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          aria-label={`Take ${name} (hold to overwrite range)`}
           className="relative shrink-0 transition-transform active:translate-y-px"
           style={{
             width: 48,

@@ -84,7 +84,10 @@ export function Timeline({
   const setSelectedClipId = useEditorStore((s) => s.setSelectedClipId);
   const setClipStartOffset = useEditorStore((s) => s.setClipStartOffset);
   const addCut = useEditorStore((s) => s.addCut);
+  const overwriteCutsRange = useEditorStore((s) => s.overwriteCutsRange);
+  const removeCutAt = useEditorStore((s) => s.removeCutAt);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
+  const takeHoldStartRef = useRef<Map<string, number>>(new Map());
 
   const duration = jobMeta?.duration || audioDuration || 0;
   const visibleDur = duration / zoom;
@@ -561,6 +564,7 @@ export function Timeline({
               viewStartS={viewStart}
               viewEndS={viewEnd}
               width={canvasWidth}
+              onRemoveCut={removeCutAt}
             />
           </div>
         </div>
@@ -578,7 +582,22 @@ export function Timeline({
                 hotkeyLabel={i < 9 ? String(i + 1) : undefined}
                 selected={clip.id === selectedClipId}
                 onSelectClip={() => setSelectedClipId(clip.id)}
-                onTake={() => addCut({ atTimeS: currentTime, camId: clip.id })}
+                onTake={() => addCut({ atTimeS: useEditorStore.getState().playback.currentTime, camId: clip.id })}
+                onTakeStart={() => {
+                  takeHoldStartRef.current.set(
+                    clip.id,
+                    useEditorStore.getState().playback.currentTime,
+                  );
+                }}
+                onTakeFinish={() => {
+                  const startS = takeHoldStartRef.current.get(clip.id);
+                  takeHoldStartRef.current.delete(clip.id);
+                  if (startS === undefined) return;
+                  const endS = useEditorStore.getState().playback.currentTime;
+                  if (Math.abs(endS - startS) > 0.05) {
+                    overwriteCutsRange(clip.id, startS, endS);
+                  }
+                }}
                 height={videoLaneHeight}
               />
             ))}

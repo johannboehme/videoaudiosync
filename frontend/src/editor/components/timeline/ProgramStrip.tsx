@@ -10,7 +10,7 @@
  * lays down the visual frame; the marks themselves come later). The
  * sprocket-hole row at the top is the natural place for those ticks.
  */
-import { CSSProperties, useMemo } from "react";
+import { CSSProperties, MouseEvent, useMemo, useState } from "react";
 import type { Cut } from "../../../storage/jobs-db";
 import { activeCamAt } from "../../cuts";
 
@@ -29,6 +29,8 @@ interface Props {
   viewEndS: number;
   width: number;
   height?: number;
+  /** Called when the user clicks the × on a hovered splice to delete it. */
+  onRemoveCut?: (atTimeS: number, camId: string) => void;
 }
 
 const TAPE_HEIGHT = 32;
@@ -42,7 +44,9 @@ export function ProgramStrip({
   viewEndS,
   width,
   height = TAPE_HEIGHT,
+  onRemoveCut,
 }: Props) {
+  const [hoveredCut, setHoveredCut] = useState<{ atTimeS: number; camId: string } | null>(null);
   // Compute the program — a flat list of {startS, endS, color} segments
   // covering [0, duration]. Each segment ends where the active cam changes
   // (either via a cut or because the chosen cam runs out of material and
@@ -117,40 +121,109 @@ export function ProgramStrip({
         })}
       </div>
 
-      {/* Brass splice tabs at every cut */}
+      {/* Brass splice tabs at every cut. Hover lifts the tab + reveals an
+        * × button for delete. The tab itself stays clickable as part of
+        * the same hit area so the user can grab it from anywhere on it. */}
       {cuts.map((cut, i) => {
         const x = tToX(cut.atTimeS);
-        if (x < -3 || x > width + 3) return null;
-        return <SpliceTab key={`${cut.atTimeS}-${cut.camId}-${i}`} x={x} height={height} />;
+        if (x < -8 || x > width + 8) return null;
+        const isHovered =
+          hoveredCut !== null &&
+          hoveredCut.atTimeS === cut.atTimeS &&
+          hoveredCut.camId === cut.camId;
+        return (
+          <SpliceTab
+            key={`${cut.atTimeS}-${cut.camId}-${i}`}
+            x={x}
+            height={height}
+            hovered={isHovered}
+            onEnter={() => setHoveredCut({ atTimeS: cut.atTimeS, camId: cut.camId })}
+            onLeave={() => setHoveredCut(null)}
+            onDelete={(e) => {
+              e.stopPropagation();
+              onRemoveCut?.(cut.atTimeS, cut.camId);
+              setHoveredCut(null);
+            }}
+          />
+        );
       })}
     </div>
   );
 }
 
-function SpliceTab({ x, height }: { x: number; height: number }) {
+function SpliceTab({
+  x,
+  height,
+  hovered,
+  onEnter,
+  onLeave,
+  onDelete,
+}: {
+  x: number;
+  height: number;
+  hovered: boolean;
+  onEnter: () => void;
+  onLeave: () => void;
+  onDelete: (e: MouseEvent<HTMLButtonElement>) => void;
+}) {
   return (
     <div
-      className="absolute top-[7px] pointer-events-none"
+      // Hit area is wider than the visible tab so it's tappable even on touch.
+      className="absolute top-[-2px]"
       style={{
-        left: x - 2,
-        width: 4,
-        height: height - 9,
-        background:
-          "linear-gradient(180deg, #F0D079 0%, #C99A3B 50%, #F0D079 100%)",
-        boxShadow:
-          "0 0 2px rgba(0,0,0,0.45), inset 0 0 1px rgba(255,255,255,0.55)",
-        borderRadius: 1,
+        left: x - 8,
+        width: 16,
+        height: height + 4,
+        cursor: "pointer",
       }}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
     >
-      {/* Two tiny knurl ridges to suggest a metal grip */}
-      <span
-        className="absolute left-[1px] right-[1px] top-[2px] h-[1px] block"
-        style={{ background: "rgba(0,0,0,0.45)" }}
-      />
-      <span
-        className="absolute left-[1px] right-[1px] bottom-[2px] h-[1px] block"
-        style={{ background: "rgba(0,0,0,0.45)" }}
-      />
+      {/* Visible brass tab. When hovered, lift it ~6 px above the strip so
+        * the × button has somewhere to live without being clipped. */}
+      <div
+        className="absolute pointer-events-none transition-transform duration-100"
+        style={{
+          left: 6,
+          width: 4,
+          top: 7,
+          height: height - 9,
+          background:
+            "linear-gradient(180deg, #F0D079 0%, #C99A3B 50%, #F0D079 100%)",
+          boxShadow:
+            "0 0 2px rgba(0,0,0,0.45), inset 0 0 1px rgba(255,255,255,0.55)",
+          borderRadius: 1,
+          transform: hovered ? "translateY(-6px)" : "translateY(0)",
+        }}
+      >
+        <span
+          className="absolute left-[1px] right-[1px] top-[2px] h-[1px] block"
+          style={{ background: "rgba(0,0,0,0.45)" }}
+        />
+        <span
+          className="absolute left-[1px] right-[1px] bottom-[2px] h-[1px] block"
+          style={{ background: "rgba(0,0,0,0.45)" }}
+        />
+      </div>
+
+      {/* Delete button — appears above the lifted tab when hovered. */}
+      {hovered && (
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label="Remove cut"
+          className="absolute z-10 flex items-center justify-center rounded-full bg-paper-hi border border-rule shadow text-ink-2 hover:text-danger hover:border-danger font-mono leading-none"
+          style={{
+            left: 0,
+            top: -2,
+            width: 16,
+            height: 16,
+            fontSize: 11,
+          }}
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }

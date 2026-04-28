@@ -59,14 +59,27 @@ export default function Editor() {
   const [err, setErr] = useState<string | null>(null);
 
   // Global hotkeys 1..9 = live-cut to that cam's lane (vintage vision-mixer
-  // pushbuttons). Ignored when the user is typing in an input/textarea.
+  // pushbuttons). Press = insert cut at playhead. Press-and-HOLD = also
+  // overwrite any cuts to other cams during the held span — paint the cam
+  // over the held window. Ignored when the user is typing in an input.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
+    // camId currently held + the master-timeline time the press started at.
+    const holds = new Map<string, { camId: string; startS: number }>();
+
+    function isTypingTarget(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (target) {
-        const tag = target.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+      if (isTypingTarget(e.target)) return;
+      // Ignore browser auto-repeat — we only want the very first keydown.
+      if (e.repeat) {
+        e.preventDefault();
+        return;
       }
       const n = parseInt(e.key, 10);
       if (!Number.isInteger(n) || n < 1 || n > 9) return;
@@ -74,11 +87,58 @@ export default function Editor() {
       const clip = s.clips[n - 1];
       if (!clip) return;
       e.preventDefault();
-      s.addCut({ atTimeS: s.playback.currentTime, camId: clip.id });
+      const startS = s.playback.currentTime;
+      s.addCut({ atTimeS: startS, camId: clip.id });
+      holds.set(e.key, { camId: clip.id, startS });
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+
+    function onKeyUp(e: KeyboardEvent) {
+      const hold = holds.get(e.key);
+      if (!hold) return;
+      holds.delete(e.key);
+      const s = useEditorStore.getState();
+      const endS = s.playback.currentTime;
+      // Only overwrite if the playhead actually moved — a quick tap should
+      // just leave the addCut alone (the no-op rule already handles dupes).
+      if (Math.abs(endS - hold.startS) > 0.05) {
+        s.overwriteCutsRange(hold.camId, hold.startS, endS);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
+
+  // Persist cuts into the job record whenever they change. Lightweight
+  // throttle (250 ms) so a hold-overwrite or rapid clicks don't hammer
+  // IndexedDB. Cleared on unmount via the unsubscribe + clearTimeout below.
+  useEffect(() => {
+    if (!id) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastSerialized = "";
+    const unsub = useEditorStore.subscribe(
+      (s) => s.cuts,
+      (cuts) => {
+        const ser = JSON.stringify(cuts);
+        if (ser === lastSerialized) return;
+        lastSerialized = ser;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          jobsDb.updateJob(id, { cuts }).catch(() => {
+            // Job may have been deleted — non-fatal.
+          });
+        }, 250);
+      },
+    );
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsub();
+    };
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;

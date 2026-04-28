@@ -137,7 +137,18 @@ interface EditorState {
   setClipSyncOverride(camId: string, ms: number): void;
   nudgeClipSyncOverride(camId: string, deltaMs: number): void;
   setClipStartOffset(camId: string, startOffsetS: number): void;
-  addCut(cut: Cut): void;
+  /** Add a cut, but skip if the target cam is already active at that time
+   * (no point recording a switch to the cam that was already on PROGRAM).
+   * Returns true if a cut was actually inserted. */
+  addCut(cut: Cut): boolean;
+  /**
+   * Hold-to-overwrite: ensures `camId` is on PROGRAM from `fromS` through
+   * `toS`. Inserts a cut at `fromS` (skipped if camId is already active
+   * there) AND removes any cuts to OTHER cams in (fromS, toS]. Used by
+   * the TAKE-hold and hotkey-hold gestures so a press-and-hold visually
+   * "paints" the cam over the held span.
+   */
+  overwriteCutsRange(camId: string, fromS: number, toS: number): void;
   removeCutAt(atTimeS: number, camId?: string): void;
   clearCuts(): void;
 
@@ -370,11 +381,52 @@ export const useEditorStore = create<EditorState>()(
       set({ clips });
     },
     addCut(cut) {
-      // Dedupe at the same time on the same cam; replace with the latest.
+      // No-op guard: if the cam is already active at this time (either via
+      // a prior cut or the default-fallback), inserting another cut to the
+      // same cam is meaningless — skip it. Also stops accidental hold-key
+      // floods from littering the timeline with redundant markers.
+      const currentActive = get().activeCamId(cut.atTimeS);
+      if (currentActive === cut.camId) return false;
+
+      // Replace any cut at exactly the same instant on the same cam (idempotent).
       const existing = get().cuts.filter(
         (c) => !(c.atTimeS === cut.atTimeS && c.camId === cut.camId),
       );
       const next = [...existing, cut].sort((a, b) => a.atTimeS - b.atTimeS);
+      set({ cuts: next });
+      return true;
+    },
+    overwriteCutsRange(camId, fromS, toS) {
+      // Normalize so callers can hand in either order.
+      const lo = Math.min(fromS, toS);
+      const hi = Math.max(fromS, toS);
+      const cuts = get().cuts;
+
+      // 1. Drop every cut to a different cam in the (lo, hi] window — those
+      //    were the marks the press just "painted over".
+      let next = cuts.filter(
+        (c) => !(c.atTimeS > lo && c.atTimeS <= hi && c.camId !== camId),
+      );
+
+      // 2. Insert the leading cut at `lo` if `camId` isn't already active
+      //    there. Same no-op rule as addCut.
+      // We have to compute activeCamAt against the FILTERED list — if the
+      // cut at `lo` was the only thing keeping the previous cam alive
+      // before our overwrite, the fallback may now point to a different
+      // cam.
+      const cutsForActive = next.filter((c) => c.atTimeS <= lo);
+      // Reuse the resolver via a local cam-range build.
+      const ranges = get().clips.map((c) => {
+        const r = clipRangeS(c);
+        return { id: c.id, startS: r.startS, endS: r.endS };
+      });
+      const activeAtLo = activeCamAt(cutsForActive, lo, ranges);
+      if (activeAtLo !== camId) {
+        // Replace any existing cut at exactly `lo` on the same cam.
+        next = next.filter((c) => !(c.atTimeS === lo && c.camId === camId));
+        next.push({ atTimeS: lo, camId });
+        next.sort((a, b) => a.atTimeS - b.atTimeS);
+      }
       set({ cuts: next });
     },
     removeCutAt(atTimeS, camId) {
