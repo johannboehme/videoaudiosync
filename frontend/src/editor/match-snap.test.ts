@@ -21,6 +21,7 @@ const clip: VideoClip = {
   syncOffsetMs: 250,
   syncOverrideMs: 0,
   startOffsetS: 0,
+  driftRatio: 1,
   candidates: cands,
   selectedCandidateIdx: 0,
 };

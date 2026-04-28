@@ -16,12 +16,47 @@ import { createFile, DataStream, type Movie, type Sample, type ISOFile } from "m
 export interface VideoTrackInfo {
   trackId: number;
   codec: string;            // e.g. "avc1.42E01F"
+  /** Stored pixel dimensions (codec-level). For rotated phone recordings
+   *  this is the recorded landscape size, NOT what the user sees in a
+   *  player — see `rotationDeg` for the matrix that transforms stored to
+   *  displayed pixels. */
   width: number;
   height: number;
   durationS: number;
   fps: number;
+  /** Display rotation in degrees clockwise to apply to stored pixels for
+   *  correct display, snapped to {0, 90, 180, 270}. Decoded from the
+   *  track's `tkhd` matrix; phone recordings held in portrait carry 90 or
+   *  270 here. The render compositor must apply this transform — without
+   *  it, portrait recordings come out sideways even though preview (which
+   *  renders through the browser's native `<video>`) honours it. */
+  rotationDeg: 0 | 90 | 180 | 270;
   /** Avc decoder configuration record (the contents of the `avcC` box). */
   description: Uint8Array;
+}
+
+/**
+ * Decode a 9-element ISO Base Media transform matrix (16.16 / 2.30 fixed
+ * point) into the integer rotation it encodes. Returns 0 when the matrix
+ * is missing, identity, or doesn't decode to a clean 90° multiple — in
+ * those cases the renderer treats the frames as already-upright.
+ */
+export function rotationDegFromMatrix(
+  matrix: ArrayLike<number> | undefined,
+): 0 | 90 | 180 | 270 {
+  if (!matrix || matrix.length < 5) return 0;
+  // Elements [0,1,3,4] = [a, b, c, d] of the 2D rotation/scale block. For
+  // a pure rotation tan(angle) = b/a; atan2 handles every quadrant
+  // including the a=0 ones (90°, 270°).
+  const a = matrix[0] / 65536;
+  const b = matrix[1] / 65536;
+  const rad = Math.atan2(b, a);
+  // Snap to the nearest 90°. ISO matrices come from a fixed set of
+  // rotations (0/90/180/270) so anything else is numerical noise.
+  const snapped = Math.round((rad * 180) / Math.PI / 90) * 90;
+  const norm = ((snapped % 360) + 360) % 360;
+  if (norm === 90 || norm === 180 || norm === 270) return norm;
+  return 0;
 }
 
 export interface VideoChunk {
@@ -83,6 +118,9 @@ export async function demuxVideoTrack(
         fps:
           videoTrack.nb_samples /
           (videoTrack.duration / videoTrack.timescale || 1),
+        rotationDeg: rotationDegFromMatrix(
+          (videoTrack as { matrix?: ArrayLike<number> }).matrix,
+        ),
         description: desc,
       };
 

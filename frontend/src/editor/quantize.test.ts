@@ -14,6 +14,7 @@ const clip: VideoClip = {
   syncOffsetMs: 0,
   syncOverrideMs: 0,
   startOffsetS: 0.21, // off-grid (beat = 0.5)
+  driftRatio: 1,
   candidates: [],
   selectedCandidateIdx: 0,
 };

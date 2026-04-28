@@ -49,6 +49,7 @@ import { activeCamAt } from "../../editor/cuts";
 import type { Cut } from "../../storage/jobs-db";
 import type { TextOverlay, EnergyCurves } from "./ass-builder";
 import type { Visualizer } from "./visualizer/types";
+import { camSourceTimeUs } from "../timing/cam-time";
 
 export interface Segment {
   in: number; // seconds
@@ -88,6 +89,10 @@ export interface EditRenderInput {
    *  and the spare canvas is filled with black. */
   outputWidth?: number;
   outputHeight?: number;
+  /** Output framerate. Defaults to 30 — independent from any source cam's
+   *  fps so a 120 fps source cam and a 30 fps source cam can coexist on
+   *  the same master timeline without driving the output rate up. */
+  outputFps?: number;
   /** Stream the muxed MP4 directly into this writable. When present the
    *  caller owns the stream's lifecycle (close on success, abort on error). */
   output?: FileSystemWritableFileStream;
@@ -207,8 +212,15 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
 
   // Step 4: streaming video composite + encode.
   const fps = Math.max(1, Math.round(video.info.fps));
-  const outputWidth = input.outputWidth ?? video.info.width;
-  const outputHeight = input.outputHeight ?? video.info.height;
+  // Output dimensions follow the source's *displayed* (post-rotation)
+  // size. A portrait phone recording stored as 1920×1080 with a 90°
+  // matrix outputs as 1080×1920 — same as preview.
+  const srcRot = video.info.rotationDeg;
+  const srcRotSwap = srcRot === 90 || srcRot === 270;
+  const dispW = srcRotSwap ? video.info.height : video.info.width;
+  const dispH = srcRotSwap ? video.info.width : video.info.height;
+  const outputWidth = input.outputWidth ?? dispW;
+  const outputHeight = input.outputHeight ?? dispH;
   const videoCodec: VideoEncodeCodec = input.videoCodec ?? "h264";
 
   // Validate codec capability up front. Failing here surfaces a clear UI
@@ -291,7 +303,14 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
           return;
         }
         const outTs = Math.round((tS + intervalStartS) * 1_000_000);
-        const composed = compositor.composite(frame, outTs);
+        const composed = compositor.compositeImage(
+          frame as unknown as CanvasImageSource,
+          frame.codedWidth,
+          frame.codedHeight,
+          outTs,
+          frame.duration ?? 0,
+          srcRot,
+        );
         encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
         composed.close();
         frame.close();
@@ -445,6 +464,11 @@ export interface CamSourceInput {
   masterStartS: number;
   /** Source duration of this cam's video (seconds). */
   sourceDurationS: number;
+  /** Per-cam drift relative to the master audio. Default 1 (no drift).
+   *  See `cam-time.ts` for the sign convention — `driftRatio > 1` means
+   *  the cam clock ran faster than master, so source-time advances
+   *  faster per master-second. */
+  driftRatio?: number;
 }
 
 export interface MultiCamRenderInput
@@ -491,10 +515,23 @@ export async function editRenderMulti(
     }),
   );
 
-  // Output dimensions + fps from cam-1 unless overridden.
-  const fps = Math.max(1, Math.round(demuxResults[0].info.fps));
-  const outputWidth = input.outputWidth ?? demuxResults[0].info.width;
-  const outputHeight = input.outputHeight ?? demuxResults[0].info.height;
+  // Output fps is independent from any cam's source fps. Defaults to 30
+  // (matches what the timeline grid + the preview RAF loop assume); a
+  // user-chosen value comes through `input.outputFps`. Cam-1's source
+  // fps is no longer relevant — the per-frame `frameAtOrBefore` lookup
+  // handles arbitrary source rates including the 30-vs-120 case the
+  // demo files exhibit.
+  const fps = Math.max(1, Math.round(input.outputFps ?? 30));
+  // Output dimensions follow cam-1's *displayed* (post-rotation) size, so
+  // a portrait phone recording with rotation=90 stored as 1920×1080
+  // outputs as 1080×1920 — matching what the browser shows in preview.
+  const cam1Info = demuxResults[0].info;
+  const cam1Rot = cam1Info.rotationDeg;
+  const cam1Swap = cam1Rot === 90 || cam1Rot === 270;
+  const cam1DispW = cam1Swap ? cam1Info.height : cam1Info.width;
+  const cam1DispH = cam1Swap ? cam1Info.width : cam1Info.height;
+  const outputWidth = input.outputWidth ?? cam1DispW;
+  const outputHeight = input.outputHeight ?? cam1DispH;
   const videoCodec: VideoEncodeCodec = input.videoCodec ?? "h264";
 
   if (videoCodec === "h265") {
@@ -508,7 +545,12 @@ export async function editRenderMulti(
     }
   }
 
-  // Audio (same chain as single-cam editRender).
+  // Audio: master audio is the canonical timeline. We don't time-stretch
+  // it — each cam compensates for its own driftRatio in the frame lookup
+  // below (via `camSourceTimeUs`). The single global driftRatio that the
+  // legacy single-cam render used is irrelevant here: with two or more
+  // cams there's no single ratio that satisfies all of them, and bending
+  // the audio to match cam-1 made cam-2 drift the other direction.
   input.onProgress?.({ stage: "audio-decode", framesDone: 0, framesTotal: 0 });
   let audio: { pcm: Float32Array; sampleRate: number; channels: number };
   if (input.audioPcm) {
@@ -519,9 +561,6 @@ export async function editRenderMulti(
     throw new Error("editRenderMulti: either audioFile or audioPcm is required");
   }
   let pcm: Float32Array | null = audio.pcm;
-  if (input.driftRatio !== 1.0) {
-    pcm = applyDriftStretchInterleaved(pcm, audio.channels, input.driftRatio);
-  }
   if (input.offsetMs !== 0) {
     pcm = applyAudioOffsetInterleaved(
       pcm,
@@ -596,14 +635,19 @@ export async function editRenderMulti(
         let source: CanvasImageSource;
         let srcW: number;
         let srcH: number;
+        let srcRot: 0 | 90 | 180 | 270 = 0;
         if (camId) {
           const cam = demuxResults.find((d) => d.cam.id === camId)!;
-          const sourceTimeUs = (tMaster - cam.cam.masterStartS) * 1_000_000;
+          const sourceTimeUs = camSourceTimeUs(tMaster, {
+            masterStartS: cam.cam.masterStartS,
+            driftRatio: cam.cam.driftRatio ?? 1,
+          });
           const frame = await cam.stream.frameAtOrBefore(sourceTimeUs);
           if (frame) {
             source = frame as unknown as CanvasImageSource;
             srcW = cam.info.width;
             srcH = cam.info.height;
+            srcRot = cam.info.rotationDeg;
           } else {
             source = testPattern;
             srcW = outputWidth;
@@ -621,6 +665,7 @@ export async function editRenderMulti(
           srcH,
           outTimestampUs,
           frameDurationUs,
+          srcRot,
         );
         encoder.pushFrame(composed, {
           keyFrame: framesEmitted === segStartFrame,

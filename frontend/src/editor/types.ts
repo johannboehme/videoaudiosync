@@ -91,6 +91,11 @@ export interface VideoClip {
   syncOverrideMs: number;
   /** Additional drag-on-timeline offset (seconds). 0 = positioned purely by sync. */
   startOffsetS: number;
+  /** Per-cam drift relative to the master audio. > 1 means the cam clock
+   *  ran faster than master, so each master-second corresponds to slightly
+   *  more cam-source-time. Default 1 = no drift. Used by the preview and
+   *  render to compute cam-source-time via `camSourceTimeS()`. */
+  driftRatio: number;
   /** Top-K alternative offsets ranked by sample-level confidence. May be
    *  empty for legacy jobs; the editor falls back to syncOffsetMs alone. */
   candidates: MatchCandidate[];

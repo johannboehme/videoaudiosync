@@ -15,8 +15,8 @@ import { createServer } from "vite";
 const TARGET_SR = 22050;
 const FRAMES_PATH = "/tmp/cuts_frames.rgb";
 const AUDIO_PATH = "/tmp/cuts_audio.wav";
-const FRAME_W = 64;
-const FRAME_H = 96;
+const FRAME_W = 96;
+const FRAME_H = 54;
 const FRAME_BYTES = FRAME_W * FRAME_H * 3;
 const FPS = 30;
 
@@ -70,32 +70,35 @@ function resample(pcm, fromSr, toSr) {
   return out;
 }
 
-// Sample the top + bottom edge of the frame in the centre 50 % of x.
-// "Black border" cams have both edges close to 0; portrait cam has the
-// top edge full of video brightness.
+// Sample the left + right edge in the centre 50 % of y. Portrait cam
+// inside a 16:9 frame has black L/R bars; landscape cam fills the whole
+// frame. (The two cams of this export differ on L/R, not top/bottom —
+// the previous export was 3:4 portrait so it used top/bottom; this one
+// is 16:9 landscape so it uses L/R.)
 function classifyFrame(buf, frameIdx) {
   const off = frameIdx * FRAME_BYTES;
-  const topY = 4;
-  const botY = FRAME_H - 5;
-  const xLo = Math.floor(FRAME_W * 0.25);
-  const xHi = Math.floor(FRAME_W * 0.75);
+  const leftX = 3;
+  const rightX = FRAME_W - 4;
+  const yLo = Math.floor(FRAME_H * 0.25);
+  const yHi = Math.floor(FRAME_H * 0.75);
 
-  const sampleRow = (y) => {
+  const sampleColumn = (x) => {
     let acc = 0;
     let n = 0;
-    for (let x = xLo; x < xHi; x++) {
+    for (let y = yLo; y < yHi; y++) {
       const p = off + (y * FRAME_W + x) * 3;
       acc += (buf[p] + buf[p + 1] + buf[p + 2]) / 3;
       n++;
     }
     return acc / n;
   };
-  const top = sampleRow(topY);
-  const bot = sampleRow(botY);
-  // Both edges dark → bordered cam (cam-2). Either edge bright → portrait cam (cam-1).
-  const BLACK_THR = 25; // ~10 % brightness on 0-255 scale
-  const isBordered = top < BLACK_THR && bot < BLACK_THR;
-  return { mode: isBordered ? "border" : "portrait", top, bot };
+  const left = sampleColumn(leftX);
+  const right = sampleColumn(rightX);
+  // Both edges dark → portrait cam letterboxed inside landscape frame.
+  // Either edge bright → landscape cam (fills the frame).
+  const BLACK_THR = 25;
+  const isLetterboxed = left < BLACK_THR && right < BLACK_THR;
+  return { mode: isLetterboxed ? "portrait" : "landscape", left, right };
 }
 
 async function main() {

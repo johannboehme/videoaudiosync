@@ -43,6 +43,8 @@ export interface CamWorkerInput {
   /** Cam start position on the master timeline (seconds). */
   masterStartS: number;
   sourceDurationS: number;
+  /** Per-cam drift vs. master audio. Default 1 = no drift. */
+  driftRatio?: number;
 }
 
 export interface EditWorkerInput {
@@ -72,6 +74,8 @@ export interface EditWorkerInput {
   audioCodec?: "aac" | "opus";
   videoBitrateBps?: number;
   audioBitrateBps?: number;
+  /** Output framerate (defaults to 30). Independent from any cam's source fps. */
+  outputFps?: number;
 }
 
 export type EditWorkerMessage =
@@ -126,6 +130,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
           file: c.file,
           masterStartS: c.masterStartS,
           sourceDurationS: c.sourceDurationS,
+          driftRatio: c.driftRatio ?? 1,
         })),
         cuts: input.cuts ?? [],
         masterDurationS: input.masterDurationS,
@@ -136,6 +141,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
         visualizers,
         offsetMs: input.offsetMs,
         driftRatio: input.driftRatio,
+        outputFps: input.outputFps,
         outputWidth: input.outputWidth,
         outputHeight: input.outputHeight,
         videoCodec: input.videoCodec,

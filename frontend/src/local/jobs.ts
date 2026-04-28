@@ -507,6 +507,7 @@ export async function runEditRender(
         opfsPath: v.opfsPath,
         masterStartS,
         sourceDurationS: v.durationS ?? 0,
+        driftRatio: v.sync?.driftRatio ?? 1,
       };
     });
 

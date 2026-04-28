@@ -22,6 +22,7 @@ import {
 } from "./OffsetScheduler";
 import { useEditorStore } from "./store";
 import { clipRangeS } from "./types";
+import { camSourceTimeS, type CamTimeRef } from "../local/timing/cam-time";
 
 void computeAudioStartOffset; // kept exported via tests; not used here directly
 
@@ -29,6 +30,16 @@ void computeAudioStartOffset; // kept exported via tests; not used here directly
 function cam1StartS(state = useEditorStore.getState()): number {
   const cam1 = state.clips[0];
   return cam1 ? clipRangeS(cam1).startS : 0;
+}
+
+/** Build a time-mapping ref for cam-1 — startS + per-cam driftRatio. */
+function cam1TimeRef(state = useEditorStore.getState()): CamTimeRef {
+  const cam1 = state.clips[0];
+  if (!cam1) return { masterStartS: 0, driftRatio: 1 };
+  return {
+    masterStartS: clipRangeS(cam1).startS,
+    driftRatio: cam1.driftRatio,
+  };
 }
 
 export interface OffsetSchedulerHandle {
@@ -234,11 +245,14 @@ export function useOffsetScheduler(
       // Drive cam-1's <video>. It plays only while masterT is inside
       // cam-1's range; outside that window it's paused so it doesn't
       // burn the wrong frame onto the preview surface.
+      // `targetT` goes through the shared `camSourceTimeS` so the cam's
+      // own driftRatio is applied — same formula the render pipeline
+      // uses, so what the user sees here is what gets baked.
       if (v) {
         const camDur = v.duration || 0;
         const inRange = masterT >= startS && masterT < startS + camDur;
         if (inRange) {
-          const targetT = masterT - startS;
+          const targetT = camSourceTimeS(masterT, cam1TimeRef(store));
           if (Math.abs(v.currentTime - targetT) > 0.15) {
             try {
               v.currentTime = Math.max(0, targetT);

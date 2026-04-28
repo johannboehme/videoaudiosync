@@ -307,6 +307,7 @@ export default function Editor() {
           syncOffsetMs: v.sync?.offsetMs ?? 0,
           syncOverrideMs: v.syncOverrideMs,
           startOffsetS: v.startOffsetS,
+          driftRatio: v.sync?.driftRatio ?? 1,
           candidates: persistedCandidates ?? fallbackCandidates,
           selectedCandidateIdx: v.selectedCandidateIdx,
         };

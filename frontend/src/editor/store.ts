@@ -111,6 +111,8 @@ export interface ClipInit {
   syncOffsetMs: number;
   syncOverrideMs?: number;
   startOffsetS?: number;
+  /** Per-cam drift vs. master audio. Default 1 = no drift. */
+  driftRatio?: number;
   /** Top-K alternative offsets from the WASM matcher. Optional — falls back
    *  to a single-element array containing just the primary offset. */
   candidates?: MatchCandidate[];
@@ -308,6 +310,7 @@ function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): 
       syncOverrideMs:
         init.syncOverrideMs ?? (i === 0 ? fallbackOverrideMs : 0),
       startOffsetS: init.startOffsetS ?? 0,
+      driftRatio: init.driftRatio ?? 1,
       candidates,
       selectedCandidateIdx: selectedIdx,
     };

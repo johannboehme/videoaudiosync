@@ -108,6 +108,12 @@ export class Compositor {
    * (VideoFrame, ImageBitmap, OffscreenCanvas …) plus its native dimensions.
    * Letterbox / pillarbox is recomputed per call so cams of different
    * aspects can share a single compositor + output stream.
+   *
+   * `rotationDeg` is the source's display rotation as decoded from its
+   * MP4 transform matrix (0/90/180/270). Phone recordings held in
+   * portrait carry 90 or 270 here — the browser's `<video>` element
+   * applies it implicitly in preview, so the render must too or the
+   * output comes out sideways relative to what the user finetuned.
    */
   compositeImage(
     source: CanvasImageSource,
@@ -115,14 +121,40 @@ export class Compositor {
     srcH: number,
     timestampUs: number,
     durationUs: number,
+    rotationDeg: 0 | 90 | 180 | 270 = 0,
   ): VideoFrame {
-    const fit = computeFitRect(srcW, srcH, this.opts.width, this.opts.height);
-    if (fit.fillsCanvas) {
-      this.ctx.drawImage(source, 0, 0, this.opts.width, this.opts.height);
+    // After rotation the *displayed* dimensions are swapped for 90/270.
+    // Fit / aspect-pillarbox is computed against those displayed dims.
+    const rot = rotationDeg % 360;
+    const swap = rot === 90 || rot === 270;
+    const dispW = swap ? srcH : srcW;
+    const dispH = swap ? srcW : srcH;
+    const fit = computeFitRect(dispW, dispH, this.opts.width, this.opts.height);
+
+    if (rot === 0) {
+      if (fit.fillsCanvas) {
+        this.ctx.drawImage(source, 0, 0, this.opts.width, this.opts.height);
+      } else {
+        this.ctx.fillStyle = "#000";
+        this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
+        this.ctx.drawImage(source, fit.x, fit.y, fit.w, fit.h);
+      }
     } else {
+      // Rotated path: draw into a transformed coordinate system whose
+      // origin sits at the centre of the fit-rect, then place the source
+      // (in its stored, un-rotated dimensions) symmetrically around it.
       this.ctx.fillStyle = "#000";
       this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
-      this.ctx.drawImage(source, fit.x, fit.y, fit.w, fit.h);
+      const cx = fit.x + fit.w / 2;
+      const cy = fit.y + fit.h / 2;
+      // Stored (un-rotated) draw size = swap of (fit.w, fit.h) for 90/270.
+      const drawW = swap ? fit.h : fit.w;
+      const drawH = swap ? fit.w : fit.h;
+      this.ctx.save();
+      this.ctx.translate(cx, cy);
+      this.ctx.rotate((rot * Math.PI) / 180);
+      this.ctx.drawImage(source, -drawW / 2, -drawH / 2, drawW, drawH);
+      this.ctx.restore();
     }
 
     const t = timestampUs / 1_000_000;

@@ -14,6 +14,7 @@
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../store";
 import { clipRangeS, type VideoClip } from "../types";
+import { camSourceTimeS } from "../../local/timing/cam-time";
 import { TestPattern } from "./TestPattern";
 import { VideoCanvas } from "./VideoCanvas";
 
@@ -104,9 +105,15 @@ function SatelliteCam({ videoUrl, visible, clip }: SatelliteCamProps) {
 
   // store.currentTime is master-time (master-audio reference frame).
   // sourceT = where this satellite cam should be playing internally.
+  // The shared `camSourceTimeS` helper applies the per-cam driftRatio so
+  // a cam recorded with a slightly different clock than the master audio
+  // doesn't drift away over time — same formula the render pipeline uses.
   const masterT = currentTime;
   const range = clipRangeS(clip);
-  const sourceT = masterT - range.startS;
+  const sourceT = camSourceTimeS(masterT, {
+    masterStartS: range.startS,
+    driftRatio: clip.driftRatio,
+  });
   const hasMaterial = sourceT >= 0 && sourceT < clip.sourceDurationS;
 
   useEffect(() => {
