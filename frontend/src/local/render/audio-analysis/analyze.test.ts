@@ -97,4 +97,77 @@ describe("analyzeAudio — pure pipeline", () => {
     expect(a.beats.length).toBe(0);
     expect(a.bands.bass.length).toBe(0);
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Phase + BPM precision (regression refit through detected beats).
+  //
+  // The autocorrelation-derived `tempo.bpm` is quantized to one frame per
+  // beat-period (~8 BPM resolution at 120 BPM, partly mitigated by parabolic
+  // refinement) and `tempo.phase` only searches the first beat-period for
+  // the strongest onset — so an audio file that starts with silence (e.g.
+  // a recording that began before the music) gets phase=0, which leaves
+  // every snap target floating somewhere off the actual beats.
+  //
+  // The DP beat-tracker correctly finds individual beats throughout the
+  // track, so a least-squares fit through them recovers both the true
+  // BPM (averaged over many beats) and the true phase (= position of the
+  // first real beat).
+  // ──────────────────────────────────────────────────────────────────────
+
+  it("finds the right phase even when the track starts with silence", () => {
+    // 0.85 s of silence, then 6 s of 120 BPM clicks (period 0.5 s). The
+    // intro is deliberately *not* a multiple of the beat period — so a
+    // broken phase=0 result lands clearly off the click grid (0.85 mod
+    // 0.5 = 0.35 s) and would fail the assertion below.
+    const intro = 0.85;
+    const clicks = buildClickTrack(120, 6);
+    const pcm = new Float32Array(Math.round(SR * intro) + clicks.length);
+    pcm.set(clicks, Math.round(SR * intro));
+    const a = analyzeAudio(pcm, SR);
+    expect(a.tempo).not.toBeNull();
+    const period = 60 / a.tempo!.bpm;
+    const phase = a.tempo!.phase;
+    // Phase should be on the click grid: clicks are at intro + k*period.
+    // Distance to the nearest grid line must stay within one analysis hop
+    // (~33 ms) — definitely NOT 1.0 s like the bug produces.
+    const offset = phase - intro;
+    const mod = ((offset % period) + period) % period;
+    const distToGrid = Math.min(mod, period - mod);
+    expect(distToGrid).toBeLessThan(1 / a.framesPerSec);
+    // Sanity: phase must be inside the first few beats of the actual music,
+    // not anchored to t=0 (a 1 s mistake is wildly outside tolerance).
+    expect(phase).toBeGreaterThan(intro - 2 * period);
+    expect(phase).toBeLessThan(intro + 2 * period);
+  });
+
+  it("BPM is precise enough to avoid accumulating beat-grid drift", () => {
+    // Long click track at exactly 120 BPM. After regression-refit, the
+    // detected BPM must be within 0.1 BPM of truth so the grid does not
+    // visibly drift apart from the actual beats over time.
+    const targetBpm = 120;
+    const seconds = 30;
+    const pcm = buildClickTrack(targetBpm, seconds);
+    const a = analyzeAudio(pcm, SR);
+    expect(a.tempo).not.toBeNull();
+    expect(Math.abs(a.tempo!.bpm - targetBpm)).toBeLessThan(0.1);
+  });
+
+  it("grid (phase + k·period) tracks detected beats with no accumulating drift", () => {
+    // For a steady click track the residual between every detected beat and
+    // its corresponding grid line must stay within roughly one analysis hop
+    // — the grid does not shear away from the music as time progresses.
+    const pcm = buildClickTrack(120, 20);
+    const a = analyzeAudio(pcm, SR);
+    expect(a.tempo).not.toBeNull();
+    const period = 60 / a.tempo!.bpm;
+    const phase = a.tempo!.phase;
+    const tol = 1 / a.framesPerSec; // one hop ≈ 33 ms
+    let maxResid = 0;
+    for (let i = 0; i < a.beats.length; i++) {
+      const grid = phase + i * period;
+      const r = Math.abs(a.beats[i] - grid);
+      if (r > maxResid) maxResid = r;
+    }
+    expect(maxResid).toBeLessThan(tol);
+  });
 });

@@ -9,9 +9,19 @@
  *       → spectral-flux onset envelope + peak-pick
  *       → per-band peak-picks
  *       → RMS (time-domain, hop-aligned)
- *       → autocorrelation tempo (with octave voting)
+ *       → autocorrelation tempo (with octave voting) — coarse seed only
  *       → DP beat-tracking (Ellis 2007 — cost = -onset + α·log²(period/Δ))
+ *       → least-squares refit of (period, phase) through detected beats:
+ *         the autocorrelation peak is quantized (~8 BPM at 120 BPM, partly
+ *         mitigated by parabolic refinement) and the autocorrelation phase
+ *         only sees the first beat-period — so for any track that doesn't
+ *         start on the downbeat, the refit is what makes the snap-grid
+ *         actually line up with the music
  *       → downbeats every 4th beat (4/4 fixed in V1)
+ *
+ * Frame-to-time convention: every event time uses the window-CENTER of its
+ * STFT frame, i.e. `(i*hop + N_FFT/2) / sr`. Reporting the window-start
+ * (`i*hop / sr`) would put every onset/beat ~46 ms early at sr=22050.
  */
 import FFT from "fft.js";
 import type { AudioAnalysis, BandSet, Tempo } from "./types";
@@ -55,6 +65,14 @@ export function analyzeAudio(
     return emptyAnalysis(sampleRate, duration, hopSize, framesPerSec);
   }
 
+  // Frame i represents the STFT window starting at sample i*hop. We report
+  // its time as the window CENTER so an onset that lights up frame i is
+  // dated where the energy actually is, not at the leading edge of the
+  // analysis window. Using window-start would bias every event ~N_FFT/(2·sr)
+  // earlier than truth (~46 ms at sr=22050, N_FFT=2048).
+  const halfWinS = N_FFT / (2 * sampleRate);
+  const frameToSec = (i: number): number => i / framesPerSec + halfWinS;
+
   // STFT magnitude spectrogram (totalFrames × (N_FFT/2 + 1))
   const mag = stftMagnitude(pcm, N_FFT, hopSize, totalFrames);
 
@@ -69,21 +87,34 @@ export function analyzeAudio(
   const onsetStrength = spectralFlux(mag);
 
   // Peak-pick onsets on the global flux + per band.
-  const onsets = pickOnsetsAt(onsetStrength, framesPerSec);
+  const onsets = pickOnsetFrames(onsetStrength, framesPerSec).map(frameToSec);
   const onsetsByBand: BandSet = {
-    bass: pickOnsetsAt(diffPositive(bands.bass), framesPerSec),
-    lowMids: pickOnsetsAt(diffPositive(bands.lowMids), framesPerSec),
-    mids: pickOnsetsAt(diffPositive(bands.mids), framesPerSec),
-    highs: pickOnsetsAt(diffPositive(bands.highs), framesPerSec),
+    bass: pickOnsetFrames(diffPositive(bands.bass), framesPerSec).map(frameToSec),
+    lowMids: pickOnsetFrames(diffPositive(bands.lowMids), framesPerSec).map(frameToSec),
+    mids: pickOnsetFrames(diffPositive(bands.mids), framesPerSec).map(frameToSec),
+    highs: pickOnsetFrames(diffPositive(bands.highs), framesPerSec).map(frameToSec),
   };
 
-  // Tempo via onset-strength autocorrelation, with octave voting.
-  const tempo = detectTempo(onsetStrength, framesPerSec);
+  // Coarse tempo seed via onset-strength autocorrelation. The phase it
+  // returns is unreliable for tracks that don't start on the downbeat —
+  // we replace it via the regression refit below, but the autocorrelation
+  // peak is what gets the DP beat-tracker into the right octave.
+  const seedTempo = detectTempo(onsetStrength, framesPerSec);
 
   // Beat-tracking via DP over the onset envelope, given the tempo.
-  const beats = tempo
-    ? trackBeats(onsetStrength, framesPerSec, tempo)
+  const beatFrames = seedTempo
+    ? trackBeatFrames(onsetStrength, framesPerSec, seedTempo)
     : [];
+  const beats = beatFrames.map(frameToSec);
+
+  // Regression refit: solve (period, phase) such that beats[k] ≈ phase + k·period
+  // by least squares. Averaging across many beats gives sub-frame precision
+  // and — crucially — recovers the true phase from the actual beat positions
+  // instead of the autocorrelation's first-period-only search.
+  const tempo = seedTempo && beats.length >= 2
+    ? refineTempoFromBeats(beats, seedTempo)
+    : seedTempo;
+
   const downbeats = beats.filter((_, i) => i % 4 === 0);
 
   return {
@@ -263,7 +294,7 @@ function diffPositive(arr: number[]): number[] {
 // Peak-picking
 // ────────────────────────────────────────────────────────────────────────────
 
-function pickOnsetsAt(strength: number[], framesPerSec: number): number[] {
+function pickOnsetFrames(strength: number[], framesPerSec: number): number[] {
   if (strength.length < 4) return [];
   // Min-distance ≈ 50 ms; threshold = max(absThr, mean+std).
   const minDist = Math.max(1, Math.round(0.05 * framesPerSec));
@@ -289,7 +320,7 @@ function pickOnsetsAt(strength: number[], framesPerSec: number): number[] {
     }
     peaks.push(i);
   }
-  return peaks.map((p) => p / framesPerSec);
+  return peaks;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -385,7 +416,7 @@ function parabolicRefine(arr: number[], i: number): number {
 // Beat-tracking (Ellis 2007 simplified)
 // ────────────────────────────────────────────────────────────────────────────
 
-function trackBeats(
+function trackBeatFrames(
   strength: number[],
   framesPerSec: number,
   tempo: Tempo,
@@ -446,7 +477,77 @@ function trackBeats(
     cur = back[cur];
   }
   beatsRev.reverse();
-  return beatsRev.map((b) => b / framesPerSec);
+  return beatsRev;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tempo refinement via least-squares regression on detected beats.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fit `beats[k] ≈ phase + k·period` by least squares so the BPM (and the
+ * grid anchor that snap targets are drawn from) reflects the *actual* beat
+ * positions rather than an autocorrelation peak quantized to one frame.
+ *
+ * For tracks with intro silence the autocorrelation phase is wrong by up
+ * to a beat-period; the regression intercept lands on the first real
+ * beat. For BPM the autocorrelation peak has ~0.1-frame precision after
+ * parabolic refinement, which compounds to hundreds of ms of grid drift
+ * across a few minutes — averaging across N beats gives O(1/√N) precision
+ * and effectively eliminates the drift.
+ *
+ * Studio recordings overwhelmingly land on integer (or occasionally
+ * half-integer) BPM values. When the regression already agrees with one
+ * to within INTEGER_BPM_SNAP_BPM, snap to that exact value: it removes
+ * the residual numerical noise without misrepresenting tracks that were
+ * genuinely recorded at non-integer BPM.
+ */
+const INTEGER_BPM_SNAP_BPM = 0.3;
+
+function refineTempoFromBeats(beats: number[], seed: Tempo): Tempo {
+  if (beats.length < 2) return seed;
+  const n = beats.length;
+  let sumK = 0;
+  let sumK2 = 0;
+  let sumT = 0;
+  let sumKT = 0;
+  for (let k = 0; k < n; k++) {
+    const t = beats[k];
+    sumK += k;
+    sumK2 += k * k;
+    sumT += t;
+    sumKT += k * t;
+  }
+  const denom = n * sumK2 - sumK * sumK;
+  if (denom === 0) return seed;
+  const period = (n * sumKT - sumK * sumT) / denom;
+  if (!isFinite(period) || period <= 0) return seed;
+  let phase = (sumT - period * sumK) / n;
+  let bpm = 60 / period;
+
+  // Sanity check: the refit must stay inside the search window of the
+  // autocorrelation (60..200 BPM). If it bolts somewhere weird, keep the
+  // seed BPM but still adopt the regression intercept as phase.
+  if (bpm < 30 || bpm > 240) {
+    return { ...seed, phase };
+  }
+
+  // Snap to nearest 0.5 BPM when within INTEGER_BPM_SNAP_BPM. This corrects
+  // sub-BPM regression noise on studio tracks; on free-tempo recordings it's
+  // a no-op because the regression won't be that close to a half-integer.
+  const halfBpm = Math.round(bpm * 2) / 2;
+  if (Math.abs(bpm - halfBpm) < INTEGER_BPM_SNAP_BPM) {
+    bpm = halfBpm;
+    const newPeriod = 60 / bpm;
+    // Re-fit phase with the snapped period: phase = mean(t_k - k·period)
+    phase = (sumT - newPeriod * sumK) / n;
+  }
+
+  return {
+    bpm,
+    confidence: seed.confidence,
+    phase,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
