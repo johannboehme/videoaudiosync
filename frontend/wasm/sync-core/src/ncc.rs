@@ -37,6 +37,18 @@ const MIN_OVERLAP_FRACTION: f32 = 0.20;
 /// peaks cluster around the true peak.
 const MIN_PEAK_SPACING_S: f32 = 0.25;
 
+/// Onset-envelope contribution weight in `align_with_onset`. The
+/// per-lag onset-cross-correlation (Pearson, ~[0,1]) is scaled by this
+/// and by the chroma peak before being added into `ncc_combined`. Onset
+/// carries more weight than chroma because chroma rewards every beat-
+/// grid-aligned position equally on repetitive material — onset is the
+/// only feature that knows where the unique transients sit.
+///
+/// Both `align_with_onset` (the boost loop) and the conf_norm
+/// normalization downstream reference this constant — they MUST agree
+/// or peaks saturate at 1.0 / under-report.
+const ONSET_WEIGHT: f32 = 0.85;
+
 /// Alternate candidates with NCC below `top_ncc * REL_THRESHOLD` are
 /// dropped. 0.3 is loose enough to surface beat-shifted near-misses, which
 /// is what the snap-to-alternate-match UI wants to suggest when chroma's
@@ -216,31 +228,36 @@ pub fn align_with_onset(
     // normalization, then summed with chroma NCC element-wise. We weight
     // onset lower than chroma — chroma is the primary signal, onset
     // breaks ties between similar-looking chroma regions.
-    let mut ncc_combined = ncc_chroma.clone();
-    if !onset_r.is_empty()
+    // Decide up-front whether the onset boost will fire — the same
+    // predicate gates both the boost loop AND the downstream conf_norm
+    // scaling, so they can never disagree (a mismatch saturated alts at
+    // 1.0 in the snap-match UI).
+    let onset_denom = if !onset_r.is_empty()
         && !onset_q.is_empty()
         && onset_r.len() + onset_q.len() - 1 == ncc_chroma.len()
     {
-        // Onset carries more weight than chroma here — chroma rewards
-        // any beat-grid-aligned position equally for repetitive material,
-        // and onset is the only feature that knows WHERE in time the
-        // unique transients of the recording sit. Real-music bench on
-        // 30 s pop chunks @ 64–128 BPM needs onset ≥ chroma to consistently
-        // pick the true alignment over a beat-shifted impostor.
-        const ONSET_WEIGHT: f32 = 0.85;
-        // Normalize the envelopes so their NCC peak ≈ 1 (matches chroma's range).
         let r_norm_sq: f64 = onset_r.iter().map(|&x| x as f64 * x as f64).sum();
         let q_norm_sq: f64 = onset_q.iter().map(|&x| x as f64 * x as f64).sum();
-        let denom = (r_norm_sq * q_norm_sq).sqrt() as f32;
-        if denom > 1e-6 {
-            let onset_corr = correlate_full(onset_q, onset_r);
-            // Find peak chroma value to scale onset to comparable units.
-            let chroma_peak = ncc_chroma.iter().cloned().fold(0.0_f32, f32::max).max(1e-6);
-            for i in 0..ncc_combined.len() {
-                let onset_normalized = onset_corr[i] / denom; // ~Pearson over full overlap
-                if onset_normalized > 0.0 {
-                    ncc_combined[i] += ONSET_WEIGHT * onset_normalized * chroma_peak;
-                }
+        let d = (r_norm_sq * q_norm_sq).sqrt() as f32;
+        if d > 1e-6 { Some(d) } else { None }
+    } else {
+        None
+    };
+    let onset_active = onset_denom.is_some();
+
+    let mut ncc_combined = ncc_chroma.clone();
+    if let Some(denom) = onset_denom {
+        // Real-music bench on 30 s pop chunks @ 64–128 BPM needs onset ≥
+        // chroma to consistently pick the true alignment over a beat-
+        // shifted impostor — chroma alone rewards every beat-grid-aligned
+        // position on repetitive material.
+        let onset_corr = correlate_full(onset_q, onset_r);
+        // Find peak chroma value to scale onset to comparable units.
+        let chroma_peak = ncc_chroma.iter().cloned().fold(0.0_f32, f32::max).max(1e-6);
+        for i in 0..ncc_combined.len() {
+            let onset_normalized = onset_corr[i] / denom; // ~Pearson over full overlap
+            if onset_normalized > 0.0 {
+                ncc_combined[i] += ONSET_WEIGHT * onset_normalized * chroma_peak;
             }
         }
     }
@@ -260,8 +277,13 @@ pub fn align_with_onset(
     }
 
     // Normalize NCC into [0, 1] for stable confidence reporting. With our
-    // sqrt(o) denominator the theoretical max is sqrt(min_active); divide.
-    let conf_norm = (min_active as f32).sqrt().max(1.0);
+    // sqrt(o) denominator the chroma-only theoretical max is
+    // sqrt(min_active); when the onset boost fired upstream, the per-lag
+    // value can reach `(1 + ONSET_WEIGHT) × chroma_peak` — so conf_norm
+    // must scale by the same factor or every onset-augmented peak clamps
+    // to 1.0 and alternates lose their relative ranking.
+    let conf_norm = (min_active as f32).sqrt().max(1.0)
+        * if onset_active { 1.0 + ONSET_WEIGHT } else { 1.0 };
     let primary_ncc_norm = (primary_val / conf_norm).clamp(0.0, 1.0);
 
     let primary = MatchCandidate {
@@ -385,5 +407,92 @@ mod tests {
             (ms - 7000.0).abs() < 500.0
         });
         assert!(has_secondary, "no secondary near 7000 ms; primary={primary_ms}, alts={:?}", report.alternates);
+    }
+
+    /// Regression: previously the conf_norm normalization in
+    /// `align_with_onset` ignored the onset boost (`ONSET_WEIGHT *
+    /// onset_normalized * chroma_peak` added per-lag at ncc.rs:239-243),
+    /// so alternates whose onset-augmented value `val` exceeded
+    /// `sqrt(min_active)` clamped to 1.0 — they lost their relative
+    /// ranking and the snap-to-match UI showed every candidate as 100%.
+    /// The fix scales `conf_norm` by `(1 + ONSET_WEIGHT)` when onset is
+    /// active. Setup: full song followed by silence then 80% of the song
+    /// — alternate at lag ≈ song_len + silence has chroma slightly weaker
+    /// than primary; with the bug both clamp to 1.0, post-fix they
+    /// differentiate.
+    #[test]
+    fn align_with_onset_alternates_dont_saturate_at_one() {
+        let sr = 22050u32;
+        let song = make_song(5.0, sr, 42);
+        let partial_len = (song.len() as f32 * 0.8) as usize;
+        let mut reference = song.clone();
+        reference.extend(vec![0.0f32; (sr as f32 * 2.0) as usize]);
+        reference.extend_from_slice(&song[..partial_len]);
+        let cr = chroma_features(&reference, sr);
+        let cq = chroma_features(&song, sr);
+        let onset_r = crate::onset::onset_envelope(&reference, sr);
+        let onset_q = crate::onset::onset_envelope(&song, sr);
+        let report = align_with_onset(&cr, &cq, &onset_r, &onset_q, sr, 4)
+            .expect("report");
+        assert!(
+            !report.alternates.is_empty(),
+            "expected at least one alternate; got {:?}",
+            report.alternates,
+        );
+        // The alternate at the partial-song repeat (lag ≈ +7000 ms, since
+        // primary is at lag 0 and song+silence = 5+2 s) is the one the
+        // bug saturated. After the fix it must report sub-1.0 confidence.
+        let partial_alt = report.alternates.iter().find(|c| {
+            let ms = c.offset_samples as f64 / sr as f64 * 1000.0;
+            (ms - 7000.0).abs() < 500.0
+        });
+        let alt = partial_alt.unwrap_or_else(|| {
+            panic!(
+                "no alternate near lag +7000 ms found; alts={:?}",
+                report.alternates,
+            )
+        });
+        assert!(
+            alt.ncc < 0.95,
+            "partial-repeat alternate must be sub-1.0 to differentiate \
+             from primary (bug = both clamped to 1.0); primary.ncc={} \
+             alt.ncc={}",
+            report.primary.ncc,
+            alt.ncc,
+        );
+        assert!(
+            report.primary.ncc > alt.ncc,
+            "primary should outrank the partial-repeat alternate; \
+             primary.ncc={} alt.ncc={}",
+            report.primary.ncc,
+            alt.ncc,
+        );
+    }
+
+    /// Non-regression guard: when called with empty onset slices,
+    /// `align_with_onset` MUST produce bit-exact identical output to
+    /// `align_with_candidates`. This guards against accidentally coupling
+    /// the chroma-only path to the new onset-aware conf_norm scaling.
+    #[test]
+    fn align_with_onset_empty_onsets_matches_legacy_path() {
+        let sr = 22050u32;
+        let song = make_song(8.0, sr, 99);
+        let mut reference = vec![0.0f32; (sr as f32 * 1.5) as usize];
+        reference.extend_from_slice(&song);
+        let cr = chroma_features(&reference, sr);
+        let cq = chroma_features(&song, sr);
+        let legacy = align_with_candidates(&cr, &cq, sr, 4).expect("legacy");
+        let onset_path =
+            align_with_onset(&cr, &cq, &[], &[], sr, 4).expect("onset path");
+        assert_eq!(
+            legacy.primary.offset_samples,
+            onset_path.primary.offset_samples,
+        );
+        assert_eq!(legacy.primary.ncc, onset_path.primary.ncc);
+        assert_eq!(legacy.alternates.len(), onset_path.alternates.len());
+        for (a, b) in legacy.alternates.iter().zip(onset_path.alternates.iter()) {
+            assert_eq!(a.offset_samples, b.offset_samples);
+            assert_eq!(a.ncc, b.ncc);
+        }
     }
 }
