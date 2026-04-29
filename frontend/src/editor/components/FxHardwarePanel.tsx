@@ -36,24 +36,24 @@ interface PadDef {
 const PADS: readonly PadDef[] = [{ slotKey: "pad:0", kind: "vignette" }];
 
 const TAB_H = 12;
-const COMPARTMENT_GAP = 12; // breathing room between tab and compartment-top
 const PAD_BODY_H = 76;
-const EXPANDED_H = TAB_H + COMPARTMENT_GAP + PAD_BODY_H; // 100
+const EXPANDED_H = TAB_H + PAD_BODY_H; // 88 — tab and pad body touch directly
 const TAB_WIDTH = 110;
 
 /**
- * Layout strategy:
- *   - The tab is always at the TOP of the container (y stays put across
- *     states). mt:-12 always, so tab-top is flush with transport-bottom.
+ * Layout strategy — "drawer pulled out of the timeline":
+ *   - Tab is at the TOP of the container (y stays put across states).
+ *     mt:-12 always, so tab-top is flush with transport-bottom.
  *   - **Collapsed** (h = TAB_H, mb:-12): the tab fills the existing 12 px
  *     gap-3 between transport and timeline. Zero net layout impact.
- *   - **Expanded** (h = TAB_H + COMPARTMENT_GAP + PAD_BODY_H, mb:-12):
- *     the tab stays at top, then a 12 px breathing-room gap, then the
- *     compartment (rectangular pad body with inner-shadow depth, flush
- *     against timeline-top thanks to mb:-12). The compartment looks like
- *     a drawer pulled out from below the player buttons — separated by
- *     the gap above, sitting in a recessed cavity directly above the
- *     timeline.
+ *   - **Expanded** (h = TAB_H + PAD_BODY_H, mb:-12): the tab stays at
+ *     top with the compartment (pad body) directly under it (no gap
+ *     between them — the tab IS the visual separator from transport).
+ *     The compartment is rendered as a recessed cavity (rounded top,
+ *     flat bottom merged with timeline-top); the timeline's top
+ *     corners go flat in the EditorShell when the FX panel is open
+ *     so the silhouette reads as one continuous "drawer pulled out
+ *     of the timeline" shape.
  */
 export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
@@ -72,15 +72,15 @@ export function FxHardwarePanel() {
         transition: "height 200ms ease-out",
       }}
     >
-      {/* Pad body sits BELOW the tab with a breathing-room gap. Bottom
-       *  flush with timeline-top. Rectangular with depth (inner shadows
-       *  + drop shadow) — looks like a drawer pulled out, not a tab
-       *  attached to a panel. */}
+      {/* Pad body sits directly under the tab (no gap), bottom flush
+       *  with timeline-top. Rounded TOP corners (rim of the cavity),
+       *  flat bottom (merges with timeline). Inner shadows make it
+       *  read as a recessed cavity that the timeline-surface drops into. */}
       {open && (
         <div
           className="absolute"
           style={{
-            top: TAB_H + COMPARTMENT_GAP,
+            top: TAB_H,
             left: 0,
             right: 0,
             bottom: 0,
@@ -370,21 +370,24 @@ const KNURLED_GRIP: CSSProperties = {
 };
 
 const MECHANISM_BODY: CSSProperties = {
-  // Drawer-pulled-out look: rectangular, no rounded corners, with inner
-  // shadows on all four sides for cavity-depth and a soft drop shadow
-  // at the bottom for grounding. The flat bottom corners sit cleanly
-  // against the timeline because the timeline is full-width too — its
-  // own top-rounded corners are at the editor edges, not where they'd
-  // collide with the compartment's bottom edge.
-  background: "linear-gradient(180deg, #1F1D1A 0%, #15130F 100%)",
-  border: "1px solid rgba(0,0,0,0.75)",
-  borderRadius: 0,
+  // The compartment is a recessed cavity carved into the editor surface
+  // ABOVE the timeline — like the inside of a drawer pulled out. The
+  // timeline is the elevated "surface" below; the cavity sits below
+  // surface level. Inner shadows on all four sides + a STRONG bottom
+  // inner shadow make timeline read as raised above the cavity (its
+  // edge casts a shadow up into the cavity). NO outer drop shadow —
+  // recessed elements don't cast shadows on what's around them.
+  background: "linear-gradient(180deg, #181513 0%, #0E0C0A 100%)",
+  borderTop: "1px solid rgba(0,0,0,0.7)",
+  borderLeft: "1px solid rgba(0,0,0,0.65)",
+  borderRight: "1px solid rgba(0,0,0,0.65)",
+  borderBottom: "none",
+  borderRadius: "6px 6px 0 0", // rounded top (cavity rim), flat bottom
   boxShadow: [
-    "inset 0 6px 10px -2px rgba(0,0,0,0.7)", // strong top inner — recessed
-    "inset 0 -3px 6px -2px rgba(0,0,0,0.4)", // subtle bottom inner
-    "inset 4px 0 8px -3px rgba(0,0,0,0.45)", // left inner
-    "inset -4px 0 8px -3px rgba(0,0,0,0.45)", // right inner
-    "0 2px 3px rgba(0,0,0,0.3)", // outer drop shadow
+    "inset 0 5px 8px -2px rgba(0,0,0,0.55)", // top inner — surface drops in
+    "inset 0 -8px 12px -2px rgba(0,0,0,0.75)", // bottom inner — timeline elevation casts shadow up into cavity
+    "inset 4px 0 8px -3px rgba(0,0,0,0.5)", // left wall
+    "inset -4px 0 8px -3px rgba(0,0,0,0.5)", // right wall
   ].join(", "),
 };
 

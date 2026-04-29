@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ChunkyButton } from "./ChunkyButton";
 import { ChevronLeftIcon, DownloadIcon } from "./icons";
 import { BottomSheet } from "./BottomSheet";
+import { useEditorStore } from "../store";
 
 const SIDE_PANEL_COLLAPSE_KEY = "editor.sidepanel.collapsed";
 const EXPANDED_W = 380;
@@ -41,6 +42,13 @@ export function EditorShell({
 }: Props) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(readCollapsed);
+  const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
+  // When the FX compartment is pulled out, the timeline's top corners
+  // go flat — the compartment merges with the timeline as a single
+  // "drawer pulled out of the timeline" silhouette.
+  const timelineWrapperClass = fxPanelOpen
+    ? "shrink-0 bg-paper-hi rounded-b-lg border border-rule shadow-panel p-3"
+    : "shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3";
 
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
@@ -81,7 +89,7 @@ export function EditorShell({
            *  timeline (collapsed it consumes nothing extra; expanded the
            *  pad row pushes the timeline down). */}
           {fxPanel}
-          <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
+          <div className={timelineWrapperClass}>
             {timeline}
           </div>
         </div>
