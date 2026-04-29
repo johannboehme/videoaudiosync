@@ -108,7 +108,7 @@ type DragKind =
       /** syncOverrideMs at drag-start. Drag mutates this (not
        *  startOffsetS) so the cam's audio/video alignment actually
        *  shifts against the master audio — startOffsetS is purely
-       *  visual and would silently desync cam-1's audio. */
+       *  visual and would silently desync the cam's audio. */
       origSyncOverrideMs: number;
       /** Visible master-timeline startS at drag-start. Used to compute
        *  the pointer's intended new startS independently of any
@@ -840,10 +840,10 @@ export function Timeline({
       }
 
       // Non-MATCH (off / grid): mutate syncOverrideMs so the drag is a
-      // *true* sync change. cam1.startS becomes its new value; the
-      // VideoCanvas effect compensates by seeking cam-1.video.currentTime
-      // so the master-time playhead doesn't visually jump. Cam-2+ re-anchor
-      // automatically through their SatelliteCam sourceT computation.
+      // *true* sync change. The cam's master-timeline range slides; each
+      // CamCanvas re-anchors its video.currentTime automatically via the
+      // shared `camSourceTimeS` computation, so the master-audio playhead
+      // doesn't visually jump.
       const targetSnapped = snapped(targetStartS, e);
       // startS = -(syncOffsetMs + syncOverrideMs)/1000 + startOffsetS
       // → syncOverrideMs = -1000*(startS - startOffsetS) - syncOffsetMs

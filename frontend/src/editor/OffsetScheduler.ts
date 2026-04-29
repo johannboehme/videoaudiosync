@@ -4,7 +4,7 @@
  * Why this lives behind a pure interface:
  *   AudioContext can't be exercised in jsdom, so the testable "what should
  *   happen" lives here as pure functions. The thin DOM-touching part lives in
- *   useOffsetScheduler.ts and is validated manually with real footage.
+ *   useAudioMaster.ts and is validated manually with real footage.
  *
  * Sign convention for `totalOffsetMs`:
  *   POSITIVE  = studio audio should LAG video by this many ms

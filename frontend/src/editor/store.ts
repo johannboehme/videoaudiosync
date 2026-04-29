@@ -64,9 +64,10 @@ export interface PlaybackSlice {
   currentTime: number;
   isPlaying: boolean;
   loop: LoopRegion | null;
-  // Set by seek(t); VideoCanvas watches this and writes video.currentTime,
-  // then calls clearSeekRequest. Distinguishes user-initiated seeks from the
-  // 60Hz tick that mirrors the video's clock back into the store.
+  // Set by seek(t); useAudioMaster watches this and writes
+  // audioElement.currentTime, then calls clearSeekRequest. Distinguishes
+  // user-initiated seeks from the 60Hz tick that mirrors the audio
+  // element's clock back into the store.
   seekRequest: number | null;
 }
 
