@@ -1412,28 +1412,45 @@ export const useEditorStore = create<EditorState>()(
       );
       const matchKind = (k: FxKind): boolean =>
         kinds === "all" ? true : kinds.includes(k);
-      // Erase head is a range (~150ms wide) centered on t. Any matching
-      // fx that touches the head gets deleted outright — no trimming,
-      // no splitting. This matches the OP-Z "erase = wipe whatever
-      // passes under the head" feel and avoids the edge case where
-      // trimming makes the new fx.inS land exactly on the next head's
-      // cutHigh, locking the user out of further deletion.
+      // Tape-erase: the head is a ~150 ms window centered on t. Only the
+      // strip of an fx that lives *under the head* is wiped — anything
+      // outside the head survives. A head straddling the front edge of
+      // an fx trims its inS forward; the back edge trims its outS back;
+      // a head inside an fx splits it into two pieces.
       const cutLow = t - FX_ERASE_DELTA_S / 2;
       const cutHigh = t + FX_ERASE_DELTA_S / 2;
-      // 1 ms slop so a head whose edge lands exactly on f.inS / f.outS
-      // (typical when fx in/out were already snapped) still counts as
-      // touching — otherwise float-perfect alignment locks the user out.
-      const TOUCH_EPS = 1e-3;
       const next: PunchFx[] = [];
       for (const f of get().fx) {
         if (!matchKind(f.kind) || liveIds.has(f.id)) {
           next.push(f);
           continue;
         }
-        const overlaps =
-          cutHigh > f.inS - TOUCH_EPS && cutLow < f.outS + TOUCH_EPS;
-        if (!overlaps) next.push(f);
-        // else: drop entirely
+        // No overlap → keep as-is.
+        if (cutHigh <= f.inS || cutLow >= f.outS) {
+          next.push(f);
+          continue;
+        }
+        // Head fully covers the fx → drop entirely.
+        if (cutLow <= f.inS && cutHigh >= f.outS) {
+          continue;
+        }
+        // Head straddles front edge (cuts off the head of the fx).
+        if (cutLow <= f.inS && cutHigh < f.outS) {
+          const trimmed: PunchFx = { ...f, inS: cutHigh };
+          if (trimmed.outS - trimmed.inS >= FX_MIN_WINDOW_S) next.push(trimmed);
+          continue;
+        }
+        // Head straddles back edge (cuts off the tail of the fx).
+        if (cutLow > f.inS && cutHigh >= f.outS) {
+          const trimmed: PunchFx = { ...f, outS: cutLow };
+          if (trimmed.outS - trimmed.inS >= FX_MIN_WINDOW_S) next.push(trimmed);
+          continue;
+        }
+        // Head strictly inside fx → split into [inS, cutLow] + [cutHigh, outS].
+        const left: PunchFx = { ...f, outS: cutLow };
+        const right: PunchFx = { ...f, id: makeFxId(), inS: cutHigh };
+        if (left.outS - left.inS >= FX_MIN_WINDOW_S) next.push(left);
+        if (right.outS - right.inS >= FX_MIN_WINDOW_S) next.push(right);
       }
       set({ fx: next });
     },

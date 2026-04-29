@@ -832,51 +832,70 @@ describe("useEditorStore", () => {
     });
 
     describe("eraseFxAt", () => {
-      test("erase 'all' inside a fx removes it entirely", () => {
+      // Tape-erase semantics: the head is a ~150 ms window centered on
+      // `t`; only the part of an fx that lives *under the head* gets
+      // cleared. Anything to the left or right of the head survives —
+      // exactly what a real tape-erase head does: one strip wiped, the
+      // rest of the band intact.
+      test("erase 'all' in the middle of a long fx splits it into two", () => {
         useEditorStore.getState().addFx("vignette", 0, 5);
         useEditorStore.getState().eraseFxAt(2, "all");
-        const fx = useEditorStore.getState().fx;
-        // Drop-on-touch: head overlaps fx → fx is gone.
-        expect(fx).toHaveLength(0);
+        const fx = useEditorStore.getState().fx.slice().sort((a, b) => a.inS - b.inS);
+        // Head [1.925, 2.075] eats a slot out of [0, 5] →
+        // [0, 1.925] + [2.075, 5].
+        expect(fx).toHaveLength(2);
+        expect(fx[0].inS).toBeCloseTo(0, 6);
+        expect(fx[0].outS).toBeCloseTo(1.925, 6);
+        expect(fx[1].inS).toBeCloseTo(2.075, 6);
+        expect(fx[1].outS).toBeCloseTo(5, 6);
       });
 
-      test("erase 'all' on a fx whose start touches t removes it", () => {
+      test("erase 'all' on a fx's front edge trims the front, keeps the back", () => {
         useEditorStore.getState().addFx("vignette", 2, 4);
         useEditorStore.getState().eraseFxAt(2, "all");
         const fx = useEditorStore.getState().fx;
-        // Head reaches past inS → drop.
-        expect(fx).toHaveLength(0);
+        // Head [1.925, 2.075] overlaps only the front 0.075 s →
+        // residue [2.075, 4] survives.
+        expect(fx).toHaveLength(1);
+        expect(fx[0].inS).toBeCloseTo(2.075, 6);
+        expect(fx[0].outS).toBeCloseTo(4, 6);
       });
 
-      test("erase 'all' near a fx's end edge removes it", () => {
+      test("erase 'all' near a fx's back edge trims the back, keeps the front", () => {
         useEditorStore.getState().addFx("vignette", 0, 2);
         useEditorStore.getState().eraseFxAt(2, "all");
         const fx = useEditorStore.getState().fx;
-        // Front half of head reaches into back of fx → drop.
-        expect(fx).toHaveLength(0);
+        // Head [1.925, 2.075] overlaps only the back 0.075 s →
+        // residue [0, 1.925] survives.
+        expect(fx).toHaveLength(1);
+        expect(fx[0].inS).toBeCloseTo(0, 6);
+        expect(fx[0].outS).toBeCloseTo(1.925, 6);
       });
 
-      test("erase 'all' removes a tiny fx that touches the head", () => {
+      test("erase 'all' fully wipes a tiny fx that fits inside the head", () => {
         useEditorStore.getState().addFx("vignette", 1.0, 1.005);
         useEditorStore.getState().eraseFxAt(1.001, "all");
         const fx = useEditorStore.getState().fx;
+        // Tiny fx is entirely inside [0.926, 1.076] → both residues
+        // are degenerate (< FX_MIN_WINDOW_S) so nothing remains.
         expect(fx).toHaveLength(0);
       });
 
-      test("erase 'all' affects every kind", () => {
+      test("erase head over two same-spot fx eats a slot from both", () => {
         useEditorStore.getState().addFx("vignette", 0, 5);
         useEditorStore.getState().addFx("vignette", 0, 5);
         useEditorStore.getState().eraseFxAt(2, "all");
         const fx = useEditorStore.getState().fx;
-        // Both gone.
-        expect(fx).toHaveLength(0);
+        // Each [0,5] becomes two pieces, so 2 input fx → 4 output fx.
+        expect(fx).toHaveLength(4);
       });
 
-      test("erase per-kind only affects matching kinds", () => {
+      test("erase per-kind only splits matching kinds", () => {
         useEditorStore.getState().addFx("vignette", 0, 5);
         useEditorStore.getState().eraseFxAt(2, ["vignette"]);
         const fx = useEditorStore.getState().fx;
-        expect(fx).toHaveLength(0);
+        // vignette at [0,5] split into two by the head.
+        expect(fx).toHaveLength(2);
       });
 
       test("erase per-kind with a non-matching kind list leaves fx untouched", () => {
@@ -902,6 +921,20 @@ describe("useEditorStore", () => {
         const fx = useEditorStore.getState().fx;
         expect(fx).toHaveLength(1);
         expect(fx[0].inS).toBe(10);
+      });
+
+      test("erase head held in place at the same spot is idempotent after first wipe", () => {
+        // Hold X over a stationary spot: first tick clears the strip
+        // under the head, subsequent ticks find no fx under the head
+        // and leave the residues alone (otherwise repeated ticks
+        // would keep eating the residues' edges via float drift).
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const after1 = useEditorStore.getState().fx.slice();
+        useEditorStore.getState().eraseFxAt(2, "all");
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const after3 = useEditorStore.getState().fx.slice();
+        expect(after3).toEqual(after1);
       });
     });
   });
