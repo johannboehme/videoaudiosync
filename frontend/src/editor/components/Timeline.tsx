@@ -559,6 +559,12 @@ export function Timeline({
     videoBands,
     snapMode,
     quantizePreview,
+    // Re-draw when overflow toggles so the audio-lane clip-rect picks up
+    // the new audioRightX. Without these, initial mount captures the
+    // pre-measure {height:0, viewport:0} state and the audio lane gets
+    // painted under the fader thumb forever.
+    laneScroll.height,
+    laneScroll.viewport,
   ]);
 
   // ---- Hit-testing & drag ----
