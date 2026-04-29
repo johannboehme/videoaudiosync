@@ -28,6 +28,13 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: true,
   },
+  // sync.worker.ts dynamically imports the wasm-pack output, which forces
+  // code-splitting inside the worker bundle. Vite's default worker format
+  // is "iife", which Rollup rejects for code-split outputs. ESM workers
+  // are fine here — both workers are instantiated with { type: "module" }.
+  worker: {
+    format: "es",
+  },
   server: {
     headers: crossOriginIsolationHeaders,
     proxy: {
