@@ -128,6 +128,14 @@ export interface VideoClip {
    *  always covers every cam regardless of which is currently active. */
   displayW?: number;
   displayH?: number;
+  /** User-applied rotation on top of the stored MP4 rotation matrix.
+   *  V1 supports 90° steps only (0/90/180/270); the wider type keeps the
+   *  door open for free rotation later without a breaking change. */
+  rotation?: number;
+  /** Mirror the cam horizontally / vertically. Applied in the same step
+   *  as `rotation` (rotate-then-flip in the compositor). */
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 /**
@@ -151,6 +159,10 @@ export interface ImageClip {
    *  displayW/H — feeds the output-frame bounding-box resolver. */
   displayW?: number;
   displayH?: number;
+  /** User-applied rotation. V1: 0/90/180/270. */
+  rotation?: number;
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export type Clip = VideoClip | ImageClip;
@@ -162,6 +174,37 @@ export function isImageClip(c: Clip): c is ImageClip {
 }
 export function isVideoClip(c: Clip): c is VideoClip {
   return c.kind !== "image";
+}
+
+/** Normalise a user-rotation value into the canonical 0/90/180/270 range.
+ *  Values that aren't already a multiple of 90 are snapped to the nearest
+ *  multiple — V1 doesn't render free angles cleanly. */
+export function normaliseRotation(rot: number | undefined): 0 | 90 | 180 | 270 {
+  const n = Math.round(((rot ?? 0) % 360 + 360) % 360 / 90) * 90;
+  switch (n) {
+    case 90:
+      return 90;
+    case 180:
+      return 180;
+    case 270:
+      return 270;
+    default:
+      return 0;
+  }
+}
+
+/** Effective on-screen dims of a clip after user rotation has been applied.
+ *  90° / 270° swap W ↔ H; 0° / 180° leave them unchanged. Returns undefined
+ *  when the clip hasn't reported its native dims yet. */
+export function clipEffectiveDisplayDims(
+  c: Clip,
+): { w: number; h: number } | undefined {
+  const w = c.displayW;
+  const h = c.displayH;
+  if (!w || !h) return undefined;
+  const rot = normaliseRotation(c.rotation);
+  if (rot === 90 || rot === 270) return { w: h, h: w };
+  return { w, h };
 }
 
 /**

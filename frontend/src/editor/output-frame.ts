@@ -13,7 +13,7 @@
  * Overlay sitzt darüber on top.
  */
 import type { Clip } from "./types";
-import { isVideoClip, isImageClip } from "./types";
+import { clipEffectiveDisplayDims } from "./types";
 import type { ExportSpec } from "./types";
 
 export interface OutputFrameBox {
@@ -53,11 +53,10 @@ export function resolveOutputDims(
   let maxW = 0;
   let maxH = 0;
   for (const c of clips) {
-    const w = clipDisplayW(c);
-    const h = clipDisplayH(c);
-    if (w && h) {
-      if (w > maxW) maxW = w;
-      if (h > maxH) maxH = h;
+    const dims = clipEffectiveDisplayDims(c);
+    if (dims) {
+      if (dims.w > maxW) maxW = dims.w;
+      if (dims.h > maxH) maxH = dims.h;
     }
   }
   if (maxW <= 0 || maxH <= 0) return null;
@@ -72,17 +71,6 @@ export function resolveOutputAspectRatio(args: {
   const dims = resolveOutputDims(args.clips, args.resolution);
   if (!dims) return null;
   return dims.w / dims.h;
-}
-
-function clipDisplayW(c: Clip): number | undefined {
-  if (isVideoClip(c)) return c.displayW;
-  if (isImageClip(c)) return c.displayW;
-  return undefined;
-}
-function clipDisplayH(c: Clip): number | undefined {
-  if (isVideoClip(c)) return c.displayH;
-  if (isImageClip(c)) return c.displayH;
-  return undefined;
 }
 
 /**

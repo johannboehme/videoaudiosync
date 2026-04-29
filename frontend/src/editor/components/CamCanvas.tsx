@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../store";
-import { clipRangeS, type VideoClip } from "../types";
+import { clipRangeS, normaliseRotation, type VideoClip } from "../types";
 import { camSourceTimeS } from "../../local/timing/cam-time";
 
 interface Props {
@@ -88,6 +88,16 @@ export function CamCanvas({ videoUrl, visible, clip }: Props) {
     }
   }, [hasMaterial, isPlaying, sourceT, clip.sourceDurationS]);
 
+  // CSS transform mirrors what the compositor applies during export:
+  // rotate first, then flip — so a horizontal mirror stays horizontal
+  // from the user's point of view regardless of rotation.
+  const rot = normaliseRotation(clip.rotation);
+  const sx = clip.flipX ? -1 : 1;
+  const sy = clip.flipY ? -1 : 1;
+  const transform =
+    rot === 0 && sx === 1 && sy === 1
+      ? undefined
+      : `rotate(${rot}deg) scale(${sx}, ${sy})`;
   return (
     <video
       ref={ref}
@@ -101,6 +111,8 @@ export function CamCanvas({ videoUrl, visible, clip }: Props) {
         display: visible ? "block" : "none",
         objectFit: "contain",
         background: "#1A1816",
+        transform,
+        transformOrigin: "center center",
       }}
     />
   );

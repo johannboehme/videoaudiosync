@@ -8,7 +8,7 @@ import { SidePanel } from "../editor/components/SidePanel";
 import { SyncTuner } from "../editor/components/SyncTuner";
 import { Timeline } from "../editor/components/Timeline";
 import { TransportBar } from "../editor/components/TransportBar";
-import { TrimPanel } from "../editor/components/TrimPanel";
+import { OptionsPanel } from "../editor/components/OptionsPanel";
 import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { FxHardwarePanel } from "../editor/components/FxHardwarePanel";
 import { useEditorStore } from "../editor/store";
@@ -58,6 +58,9 @@ function assetToClipInit(v: MediaAsset): ClipInit {
       color: v.color,
       durationS: v.durationS,
       startOffsetS: v.startOffsetS,
+      rotation: v.rotation,
+      flipX: v.flipX,
+      flipY: v.flipY,
     };
   }
   const persistedCandidates = v.sync?.candidates?.map((c) => ({
@@ -88,6 +91,9 @@ function assetToClipInit(v: MediaAsset): ClipInit {
     selectedCandidateIdx: v.selectedCandidateIdx,
     trimInS: v.trimInS,
     trimOutS: v.trimOutS,
+    rotation: v.rotation,
+    flipX: v.flipX,
+    flipY: v.flipY,
   };
 }
 
@@ -564,6 +570,7 @@ export default function Editor() {
           clips: clipInits,
           cuts: j.cuts ?? [],
           fx: j.fx ?? [],
+          audioVolume: j.audioVolume,
         },
       );
 
@@ -734,6 +741,9 @@ export default function Editor() {
       // Image clips don't have a syncOverrideMs — only video clips do.
       syncOverrideMs: c.kind === "image" ? 0 : c.syncOverrideMs,
       startOffsetS: c.startOffsetS,
+      rotation: c.rotation,
+      flipX: c.flipX,
+      flipY: c.flipY,
     }));
     const cuts = liveState.cuts;
     await jobsDb.updateJob(id, { cuts });
@@ -759,6 +769,7 @@ export default function Editor() {
       outputFilename: spec.export?.filename,
       clipOverrides,
       cuts,
+      audioVolume: liveState.audioVolume,
     };
     // Fire-and-forget: the render screen owns the lifecycle from here.
     // Errors are surfaced via jobEvents, so we don't await — and we
@@ -837,7 +848,7 @@ export default function Editor() {
         sidePanel={
           <SidePanel
             sync={<SyncTuner lastSyncOverrideMs={null} />}
-            trim={<TrimPanel />}
+            options={<OptionsPanel />}
             overlays={<OverlaysPanel />}
             exportTab={<ExportPanel onSubmit={onSubmit} submitting={submitting} />}
           />

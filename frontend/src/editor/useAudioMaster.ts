@@ -38,6 +38,7 @@ export function useAudioMaster(
 
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const seekRequest = useEditorStore((s) => s.playback.seekRequest);
+  const audioVolume = useEditorStore((s) => s.audioVolume);
 
   const rafRef = useRef<number | null>(null);
   /** Pending seek that arrived before the audio reported metadata.
@@ -85,6 +86,16 @@ export function useAudioMaster(
       audio.removeEventListener("error", onError);
     };
   }, [audioRef, audioUrl]);
+
+  // Mirror the master-audio volume from the store onto the <audio> element.
+  // HTMLMediaElement.volume is clamped to [0,1] by the spec — gain >1 (boost)
+  // can't be expressed here; the *render* path bakes it into the PCM, so the
+  // preview just caps at unity. Mute (volume=0) is preserved exactly.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = Math.max(0, Math.min(1, audioVolume));
+  }, [audioVolume, audioRef, isReady]);
 
   // Apply seek requests. Queue them when the audio isn't ready yet so
   // the editor can issue trim-restore / nav-jump seeks during boot.

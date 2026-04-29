@@ -4,19 +4,19 @@ import { PanelTab, useEditorStore } from "../store";
 
 interface Props {
   sync: ReactNode;
-  trim: ReactNode;
+  options: ReactNode;
   overlays: ReactNode;
   exportTab: ReactNode;
 }
 
 const TABS: { value: PanelTab; label: string }[] = [
   { value: "sync", label: "SYNC" },
-  { value: "trim", label: "TRIM" },
+  { value: "options", label: "OPTIONS" },
   { value: "overlays", label: "OVERLAYS" },
   { value: "export", label: "EXPORT" },
 ];
 
-export function SidePanel({ sync, trim, overlays, exportTab }: Props) {
+export function SidePanel({ sync, options, overlays, exportTab }: Props) {
   const activeTab = useEditorStore((s) => s.ui.activePanel);
   const setActive = useEditorStore((s) => s.setActivePanel);
 
@@ -25,8 +25,8 @@ export function SidePanel({ sync, trim, overlays, exportTab }: Props) {
     case "sync":
       body = sync;
       break;
-    case "trim":
-      body = trim;
+    case "options":
+      body = options;
       break;
     case "overlays":
       body = overlays;

@@ -65,6 +65,11 @@ export interface VideoAsset {
   /** Per-clip trim end (seconds, in source-time). Defaults to durationS
    *  when absent — full source to the end. */
   trimOutS?: number;
+  /** User-applied rotation (degrees, V1: 0/90/180/270). Default 0. */
+  rotation?: number;
+  /** Mirror the cam horizontally / vertically. Defaults false. */
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 /**
@@ -85,6 +90,11 @@ export interface ImageAsset {
   durationS: number;
   // ---- Editor-state, persisted via auto-save ----
   startOffsetS?: number;
+  /** User-applied rotation (degrees, V1: 0/90/180/270). Default 0. */
+  rotation?: number;
+  /** Mirror the image horizontally / vertically. Defaults false. */
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export type MediaAsset = VideoAsset | ImageAsset;
@@ -211,6 +221,11 @@ export interface LocalJob {
    *  overlapping. Optional; absent on legacy jobs that pre-date the
    *  feature. The renderer reads this verbatim. */
   fx?: PunchFxRecord[];
+
+  /** Master-audio playback gain (linear). 1.0 = source level (default),
+   *  0 = muted, 2.0 = +6 dB. Applied at preview time and baked into the
+   *  rendered output. Optional / undefined → default 1.0. */
+  audioVolume?: number;
 }
 
 /** Storage shape for a single Punch-in FX. Mirrors `PunchFx` from the

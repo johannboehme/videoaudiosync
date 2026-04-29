@@ -122,6 +122,13 @@ export class Compositor {
    * portrait carry 90 or 270 here — the browser's `<video>` element
    * applies it implicitly in preview, so the render must too or the
    * output comes out sideways relative to what the user finetuned.
+   *
+   * `userTransform` is the per-clip rotation+flip the user applied via
+   * the Options panel. Stacked on top of `rotationDeg` (intrinsic) so the
+   * effective rotation is `(intrinsic + user) mod 360`. Flip is applied
+   * AFTER rotation in the source's stored frame (so a horizontal flip is
+   * always horizontal from the user's point of view, regardless of how
+   * the cam was rotated).
    */
   compositeImage(
     source: CanvasImageSource,
@@ -130,16 +137,22 @@ export class Compositor {
     timestampUs: number,
     durationUs: number,
     rotationDeg: 0 | 90 | 180 | 270 = 0,
+    userTransform: { rotation?: number; flipX?: boolean; flipY?: boolean } = {},
   ): VideoFrame {
-    // After rotation the *displayed* dimensions are swapped for 90/270.
-    // Fit / aspect-pillarbox is computed against those displayed dims.
-    const rot = rotationDeg % 360;
+    // Intrinsic + user rotation, snapped to 90° steps. Free angles aren't
+    // supported in V1 (the bbox / fit math would need a rotated AABB).
+    const intrinsic = rotationDeg % 360;
+    const userRot = ((Math.round((userTransform.rotation ?? 0) / 90) * 90) % 360 + 360) % 360;
+    const rot = ((intrinsic + userRot) % 360) as 0 | 90 | 180 | 270;
+    const flipX = !!userTransform.flipX;
+    const flipY = !!userTransform.flipY;
     const swap = rot === 90 || rot === 270;
     const dispW = swap ? srcH : srcW;
     const dispH = swap ? srcW : srcH;
     const fit = computeFitRect(dispW, dispH, this.opts.width, this.opts.height);
 
-    if (rot === 0) {
+    const needsTransform = rot !== 0 || flipX || flipY;
+    if (!needsTransform) {
       if (fit.fillsCanvas) {
         this.ctx.drawImage(source, 0, 0, this.opts.width, this.opts.height);
       } else {
@@ -148,19 +161,22 @@ export class Compositor {
         this.ctx.drawImage(source, fit.x, fit.y, fit.w, fit.h);
       }
     } else {
-      // Rotated path: draw into a transformed coordinate system whose
-      // origin sits at the centre of the fit-rect, then place the source
-      // (in its stored, un-rotated dimensions) symmetrically around it.
+      // Rotated / flipped path: draw into a transformed coordinate system
+      // whose origin sits at the centre of the fit-rect, then place the
+      // source (in its stored, un-rotated dimensions) symmetrically
+      // around it. Order: translate → rotate → scale (flip) → drawImage.
+      // That way `flipX` mirrors along the *post-rotation* horizontal
+      // axis, which matches what the user sees in the preview.
       this.ctx.fillStyle = "#000";
       this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
       const cx = fit.x + fit.w / 2;
       const cy = fit.y + fit.h / 2;
-      // Stored (un-rotated) draw size = swap of (fit.w, fit.h) for 90/270.
       const drawW = swap ? fit.h : fit.w;
       const drawH = swap ? fit.w : fit.h;
       this.ctx.save();
       this.ctx.translate(cx, cy);
-      this.ctx.rotate((rot * Math.PI) / 180);
+      if (rot !== 0) this.ctx.rotate((rot * Math.PI) / 180);
+      if (flipX || flipY) this.ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
       this.ctx.drawImage(source, -drawW / 2, -drawH / 2, drawW, drawH);
       this.ctx.restore();
     }

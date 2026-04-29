@@ -84,7 +84,7 @@ export interface JobMeta {
   barOffsetBeats?: number;
 }
 
-export type PanelTab = "sync" | "trim" | "overlays" | "export";
+export type PanelTab = "sync" | "options" | "overlays" | "export";
 
 export interface PlaybackSlice {
   currentTime: number;
@@ -172,6 +172,11 @@ export interface VideoClipInit {
   /** Per-clip trim — defaults to 0 / sourceDurationS. */
   trimInS?: number;
   trimOutS?: number;
+  /** User-applied rotation / flip. V1 supports 90° steps + boolean flip;
+   *  defaults: 0° / false. */
+  rotation?: number;
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 /** Initial data for an image clip. */
@@ -182,6 +187,9 @@ export interface ImageClipInit {
   color: string;
   durationS: number;
   startOffsetS?: number;
+  rotation?: number;
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export type ClipInit = VideoClipInit | ImageClipInit;
@@ -236,6 +244,11 @@ interface EditorState {
    *  selectors work cleanly (a Map would mutate-in-place under naive use). */
   fxHolds: Record<string, FxHoldEntry>;
 
+  /** Master-audio playback gain. 1.0 = source level (default), 0 = muted,
+   *  2.0 = +6 dB. Applied by `useAudioMaster` to the master `<audio>`
+   *  element AND baked into the rendered output by `edit.ts`. */
+  audioVolume: number;
+
   // actions
   reset(): void;
   loadJob(
@@ -245,6 +258,7 @@ interface EditorState {
       clips?: ClipInit[];
       cuts?: Cut[];
       fx?: PunchFx[];
+      audioVolume?: number;
     },
   ): void;
 
@@ -318,6 +332,15 @@ interface EditorState {
   setClipSyncOverride(camId: string, ms: number): void;
   nudgeClipSyncOverride(camId: string, deltaMs: number): void;
   setClipStartOffset(camId: string, startOffsetS: number): void;
+  /** Set a clip's user-applied rotation in degrees. V1 expects 0/90/180/270;
+   *  values are stored as-is (the renderer normalises). */
+  setClipRotation(camId: string, deg: number): void;
+  /** Toggle / set a clip's horizontal or vertical mirror. */
+  setClipFlip(camId: string, axis: "x" | "y", on: boolean): void;
+  /** Reset a clip's rotation/flip back to defaults (0° / no flip). */
+  resetClipTransform(camId: string): void;
+  /** Master-audio playback gain. Clamped to [0, 4]. */
+  setMasterAudioVolume(v: number): void;
   /** Resize an image clip's duration on the master timeline. Clamped to
    *  a sane minimum so the lane doesn't collapse to invisibility.
    *  No-op for video clips (their length is the source-file length). */
@@ -546,6 +569,9 @@ function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): 
         color: init.color,
         durationS: init.durationS,
         startOffsetS: init.startOffsetS ?? 0,
+        rotation: init.rotation ?? 0,
+        flipX: init.flipX ?? false,
+        flipY: init.flipY ?? false,
       };
     }
     const candidates = init.candidates ?? [];
@@ -576,6 +602,9 @@ function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): 
         (init.trimInS ?? 0) + 0.05,
         init.trimOutS ?? init.sourceDurationS,
       ),
+      rotation: init.rotation ?? 0,
+      flipX: init.flipX ?? false,
+      flipY: init.flipY ?? false,
     };
   });
 }
@@ -599,6 +628,7 @@ export const useEditorStore = create<EditorState>()(
     preparingCamIds: new Set<string>(),
     fx: [],
     fxHolds: {},
+    audioVolume: 1.0,
 
     reset() {
       set({
@@ -619,6 +649,7 @@ export const useEditorStore = create<EditorState>()(
         preparingCamIds: new Set<string>(),
         fx: [],
         fxHolds: {},
+        audioVolume: 1.0,
       });
     },
 
@@ -671,6 +702,10 @@ export const useEditorStore = create<EditorState>()(
         selectedClipId,
         fx: opts?.fx ?? [],
         fxHolds: {},
+        audioVolume:
+          typeof opts?.audioVolume === "number" && opts.audioVolume >= 0
+            ? Math.min(4, opts.audioVolume)
+            : 1.0,
       });
     },
 
@@ -692,7 +727,9 @@ export const useEditorStore = create<EditorState>()(
       const [rebuilt] = buildClips([init], 0);
       if (!rebuilt) return;
       // Preserve the user's drag-on-timeline offset and (for video) any
-      // syncOverrideMs / selectedCandidateIdx they've already applied.
+      // syncOverrideMs / selectedCandidateIdx / rotation / flip they've
+      // already applied. A re-derive from sync results must not nuke
+      // those user edits.
       const cur = existing[idx];
       let merged: typeof rebuilt = rebuilt;
       if (rebuilt.kind !== "image" && cur.kind !== "image") {
@@ -701,11 +738,17 @@ export const useEditorStore = create<EditorState>()(
           syncOverrideMs: cur.syncOverrideMs,
           startOffsetS: cur.startOffsetS,
           selectedCandidateIdx: cur.selectedCandidateIdx,
+          rotation: cur.rotation,
+          flipX: cur.flipX,
+          flipY: cur.flipY,
         };
       } else if (rebuilt.kind === "image" && cur.kind === "image") {
         merged = {
           ...rebuilt,
           startOffsetS: cur.startOffsetS,
+          rotation: cur.rotation,
+          flipX: cur.flipX,
+          flipY: cur.flipY,
         };
       }
       const next = existing.slice();
@@ -1021,6 +1064,29 @@ export const useEditorStore = create<EditorState>()(
         c.id === camId ? { ...c, startOffsetS } : c,
       );
       set({ clips });
+    },
+    setClipRotation(camId, deg) {
+      const clips = get().clips.map((c): Clip =>
+        c.id === camId ? { ...c, rotation: deg } : c,
+      );
+      set({ clips });
+    },
+    setClipFlip(camId, axis, on) {
+      const key = axis === "x" ? "flipX" : "flipY";
+      const clips = get().clips.map((c): Clip =>
+        c.id === camId ? { ...c, [key]: on } : c,
+      );
+      set({ clips });
+    },
+    resetClipTransform(camId) {
+      const clips = get().clips.map((c): Clip =>
+        c.id === camId ? { ...c, rotation: 0, flipX: false, flipY: false } : c,
+      );
+      set({ clips });
+    },
+    setMasterAudioVolume(v) {
+      const clamped = Math.max(0, Math.min(4, v));
+      set({ audioVolume: clamped });
     },
     addCut(cut) {
       // No-op guard #1: if the cam is already active at this time (via a

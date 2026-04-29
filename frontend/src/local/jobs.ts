@@ -663,7 +663,13 @@ export interface EditSpecLocal {
     id: string;
     syncOverrideMs: number;
     startOffsetS: number;
+    rotation?: number;
+    flipX?: boolean;
+    flipY?: boolean;
   }>;
+  /** Master-audio playback gain. 1.0 = source level. Picked up at render
+   *  start from the store's `audioVolume`. Optional / undefined → 1.0. */
+  audioVolume?: number;
   /** Multi-cam cuts — drives the multi-source frame loop. */
   cuts?: Array<{ atTimeS: number; camId: string }>;
 }
@@ -723,6 +729,19 @@ export async function runEditRender(
     // are transferred zero-copy into the worker.
     await reportProgress(jobId, { pct: 10, stage: "audio-decode" });
     const audio = await decodeStudioAudioInterleaved(audioFile);
+    // Bake the master-audio volume into the PCM in-place. Skipped when
+    // unity (1.0 / undefined) so the common path stays a pure decode.
+    const audioVolumeRaw = spec.audioVolume;
+    const audioVolume =
+      typeof audioVolumeRaw === "number" && audioVolumeRaw >= 0
+        ? Math.min(4, audioVolumeRaw)
+        : 1;
+    if (audioVolume !== 1) {
+      const pcm = audio.pcm;
+      for (let i = 0; i < pcm.length; i++) {
+        pcm[i] *= audioVolume;
+      }
+    }
 
     let monoPcm: Float32Array | null = null;
     let energy: ReturnType<typeof computeEnergyCurves> | null = null;
@@ -761,6 +780,12 @@ export async function runEditRender(
     );
     const camInputs: CamWorkerInput[] = videos.map((v): CamWorkerInput => {
       const ov = overridesById.get(v.id);
+      // User transform: prefer the latest from the editor's overrides
+      // (covers in-flight tweaks before auto-persist debounces) and fall
+      // back to whatever sits on the persisted asset row.
+      const rotation = ov?.rotation ?? v.rotation ?? 0;
+      const flipX = ov?.flipX ?? v.flipX ?? false;
+      const flipY = ov?.flipY ?? v.flipY ?? false;
       if (isImageAsset(v)) {
         // Image cams have no sync offset and no drift — masterStartS is
         // the user-set placement, sourceDurationS is the user-set length.
@@ -772,6 +797,9 @@ export async function runEditRender(
           sourceDurationS: v.durationS,
           driftRatio: 1,
           kind: "image",
+          rotation,
+          flipX,
+          flipY,
         };
       }
       const algoMs = v.sync?.offsetMs ?? 0;
@@ -797,6 +825,9 @@ export async function runEditRender(
         driftRatio: v.sync?.driftRatio ?? 1,
         trimInS,
         trimOutS,
+        rotation,
+        flipX,
+        flipY,
       };
     });
 

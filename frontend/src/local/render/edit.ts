@@ -487,6 +487,12 @@ export interface CamSourceInput {
    *  [0, sourceDurationS]. Image cams ignore this. */
   trimInS?: number;
   trimOutS?: number;
+  /** User-applied rotation (degrees, V1: 0/90/180/270). Default 0. Stacked
+   *  on top of the source's intrinsic MP4 rotation matrix. */
+  rotation?: number;
+  /** Mirror horizontally / vertically (post-rotation). Defaults false. */
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export interface MultiCamRenderInput
@@ -578,7 +584,11 @@ export async function editRenderMulti(
   let bboxW = 0;
   let bboxH = 0;
   for (const d of demuxResults) {
-    const swap = d.info.rotationDeg === 90 || d.info.rotationDeg === 270;
+    const intrinsicRot = d.info.rotationDeg;
+    const userRotRaw = d.cam.rotation ?? 0;
+    const userRot = ((Math.round(userRotRaw / 90) * 90) % 360 + 360) % 360;
+    const effectiveRot = (intrinsicRot + userRot) % 360;
+    const swap = effectiveRot === 90 || effectiveRot === 270;
     const w = swap ? d.info.height : d.info.width;
     const h = swap ? d.info.width : d.info.height;
     if (w > bboxW) bboxW = w;
@@ -707,6 +717,7 @@ export async function editRenderMulti(
         let srcW: number;
         let srcH: number;
         let srcRot: 0 | 90 | 180 | 270 = 0;
+        let userTransform: { rotation?: number; flipX?: boolean; flipY?: boolean } = {};
         if (camId) {
           const cam = demuxResults.find((d) => d.cam.id === camId)!;
           if (cam.kind === "image") {
@@ -715,6 +726,11 @@ export async function editRenderMulti(
             source = cam.bitmap;
             srcW = cam.info.width;
             srcH = cam.info.height;
+            userTransform = {
+              rotation: cam.cam.rotation,
+              flipX: cam.cam.flipX,
+              flipY: cam.cam.flipY,
+            };
           } else {
             const sourceTimeUs = camSourceTimeUs(tMaster, {
               masterStartS: cam.cam.masterStartS,
@@ -726,6 +742,11 @@ export async function editRenderMulti(
               srcW = cam.info.width;
               srcH = cam.info.height;
               srcRot = cam.info.rotationDeg;
+              userTransform = {
+                rotation: cam.cam.rotation,
+                flipX: cam.cam.flipX,
+                flipY: cam.cam.flipY,
+              };
             } else {
               source = testPattern;
               srcW = outputWidth;
@@ -745,6 +766,7 @@ export async function editRenderMulti(
           outTimestampUs,
           frameDurationUs,
           srcRot,
+          userTransform,
         );
         encoder.pushFrame(composed, {
           keyFrame: framesEmitted === segStartFrame,

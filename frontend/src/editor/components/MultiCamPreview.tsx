@@ -14,7 +14,7 @@
  */
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../store";
-import { isVideoClip } from "../types";
+import { isVideoClip, normaliseRotation, type ImageClip } from "../types";
 import { TestPattern } from "./TestPattern";
 import { CamCanvas } from "./CamCanvas";
 import { MasterAudio } from "./MasterAudio";
@@ -76,8 +76,7 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
               key={clip.id}
               imageUrl={url}
               visible={activeCamId === clip.id}
-              filename={clip.filename}
-              clipId={clip.id}
+              clip={clip}
             />
           );
         })}
@@ -91,13 +90,12 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
 interface ImageOverlayProps {
   imageUrl: string;
   visible: boolean;
-  filename: string;
-  clipId: string;
+  clip: ImageClip;
 }
 
 /** Static image clip — shown as the programme source while it's the active
  *  cam. Object-contained so portrait/landscape images don't get squished. */
-function ImageOverlay({ imageUrl, visible, filename, clipId }: ImageOverlayProps) {
+function ImageOverlay({ imageUrl, visible, clip }: ImageOverlayProps) {
   const ref = useRef<HTMLImageElement>(null);
   const setClipDisplayDims = useEditorStore((s) => s.setClipDisplayDims);
   useEffect(() => {
@@ -105,23 +103,32 @@ function ImageOverlay({ imageUrl, visible, filename, clipId }: ImageOverlayProps
     if (!img) return;
     const report = () => {
       if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-        setClipDisplayDims(clipId, img.naturalWidth, img.naturalHeight);
+        setClipDisplayDims(clip.id, img.naturalWidth, img.naturalHeight);
       }
     };
     if (img.complete) report();
     img.addEventListener("load", report);
     return () => img.removeEventListener("load", report);
-  }, [clipId, setClipDisplayDims, imageUrl]);
+  }, [clip.id, setClipDisplayDims, imageUrl]);
+  const rot = normaliseRotation(clip.rotation);
+  const sx = clip.flipX ? -1 : 1;
+  const sy = clip.flipY ? -1 : 1;
+  const transform =
+    rot === 0 && sx === 1 && sy === 1
+      ? undefined
+      : `rotate(${rot}deg) scale(${sx}, ${sy})`;
   return (
     <img
       ref={ref}
       src={imageUrl}
-      alt={filename}
+      alt={clip.filename}
       className="absolute inset-0 w-full h-full"
       style={{
         display: visible ? "block" : "none",
         objectFit: "contain",
         background: "#1A1816",
+        transform,
+        transformOrigin: "center center",
       }}
     />
   );

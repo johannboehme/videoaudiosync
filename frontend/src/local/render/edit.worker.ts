@@ -56,6 +56,11 @@ export interface CamWorkerInput {
    *  range. Defaults to [0, sourceDurationS] (no trim). */
   trimInS?: number;
   trimOutS?: number;
+  /** User-applied rotation (degrees, V1: 0/90/180/270). Default 0. */
+  rotation?: number;
+  /** Mirror horizontally / vertically. Defaults false. */
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export interface EditWorkerInput {
@@ -148,6 +153,9 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
           kind: c.kind ?? "video",
           trimInS: c.trimInS,
           trimOutS: c.trimOutS,
+          rotation: c.rotation,
+          flipX: c.flipX,
+          flipY: c.flipY,
         })),
         cuts: input.cuts ?? [],
         masterDurationS: input.masterDurationS,

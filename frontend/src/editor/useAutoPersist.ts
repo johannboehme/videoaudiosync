@@ -43,6 +43,9 @@ export function buildPersistPatch(
       return {
         ...v,
         startOffsetS: clip.startOffsetS,
+        rotation: clip.rotation,
+        flipX: clip.flipX,
+        flipY: clip.flipY,
       };
     }
     if (!isVideoClip(clip)) return v; // shouldn't happen, defensive
@@ -53,6 +56,9 @@ export function buildPersistPatch(
       selectedCandidateIdx: clip.selectedCandidateIdx,
       trimInS: clip.trimInS,
       trimOutS: clip.trimOutS,
+      rotation: clip.rotation,
+      flipX: clip.flipX,
+      flipY: clip.flipY,
     };
   });
 
@@ -75,6 +81,7 @@ export function buildPersistPatch(
     ui: { snapMode: s.ui.snapMode, lanesLocked: s.ui.lanesLocked },
     trim: { in: s.trim.in, out: s.trim.out },
     fx: s.fx,
+    audioVolume: s.audioVolume,
   };
 }
 
@@ -128,7 +135,8 @@ export function useAutoPersist(jobId: string | null): void {
         state.jobMeta.audioStartNudgeS !== prev.jobMeta?.audioStartNudgeS ||
         state.jobMeta.beatsPerBar !== prev.jobMeta?.beatsPerBar ||
         state.jobMeta.barOffsetBeats !== prev.jobMeta?.barOffsetBeats ||
-        state.fx !== prev.fx
+        state.fx !== prev.fx ||
+        state.audioVolume !== prev.audioVolume
       ) {
         schedule();
       }

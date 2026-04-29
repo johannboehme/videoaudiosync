@@ -127,3 +127,54 @@ export const SyncIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
   </svg>
 );
+/** Curved arrow forming a clockwise loop — for the rotation hardware
+ *  cluster header. */
+export const RotateCwIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <polyline points="23 4 23 10 17 10" />
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+);
+/** Vertical axis with two arrows pointing horizontally outward — flip H. */
+export const FlipHIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <line x1="12" y1="3" x2="12" y2="21" strokeDasharray="2 2" />
+    <polyline points="9 8 5 12 9 16" />
+    <polyline points="15 8 19 12 15 16" />
+  </svg>
+);
+/** Horizontal axis with two arrows pointing vertically outward — flip V. */
+export const FlipVIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <line x1="3" y1="12" x2="21" y2="12" strokeDasharray="2 2" />
+    <polyline points="8 9 12 5 16 9" />
+    <polyline points="8 15 12 19 16 15" />
+  </svg>
+);
+/** Speaker cone + soundwaves — master-audio volume header. */
+export const VolumeIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none" />
+    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+  </svg>
+);
+/** Picture-frame icon — image-clip header. */
+export const ImageIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
+  </svg>
+);
+/** Film-slate icon — video-clip header. */
+export const VideoClipIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <rect x="2" y="6" width="20" height="14" rx="2" />
+    <polygon points="10 10 16 13 10 16 10 10" fill="currentColor" stroke="none" />
+    <line x1="2" y1="6" x2="22" y2="6" />
+    <line x1="6" y1="2" x2="9" y2="6" />
+    <line x1="11" y1="2" x2="14" y2="6" />
+    <line x1="16" y1="2" x2="19" y2="6" />
+  </svg>
+);
