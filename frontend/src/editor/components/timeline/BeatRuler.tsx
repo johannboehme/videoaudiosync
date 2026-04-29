@@ -9,6 +9,7 @@
  */
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../store";
+import { effectiveBeatPhaseS } from "../../selectors/timing";
 import { buildRulerTicks } from "./beat-ruler-ticks";
 
 interface BeatRulerProps {
@@ -37,7 +38,7 @@ export function BeatRuler({
 }: BeatRulerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
-  const beatPhase = useEditorStore((s) => s.jobMeta?.bpm?.phase ?? 0);
+  const beatPhase = useEditorStore((s) => effectiveBeatPhaseS(s.jobMeta));
   const seek = useEditorStore((s) => s.seek);
 
   // Repaint whenever any of the dependencies change.

@@ -1,6 +1,7 @@
 // Transport row with chunky play/pause + frame steppers + time readouts. Keyboard-aware.
 import { useEffect } from "react";
 import { useEditorStore } from "../store";
+import { effectiveAudioStartS } from "../selectors/timing";
 import { ChunkyButton } from "./ChunkyButton";
 import { MonoReadout, formatTime } from "./MonoReadout";
 import {
@@ -29,7 +30,11 @@ export function TransportBar() {
 
   const fps = meta?.fps && meta.fps > 0 ? meta.fps : 30;
   const duration = meta?.duration ?? 0;
+  // Visibility gates on the raw value: if the file is non-silent throughout
+  // we have nothing meaningful to jump to. The seek target itself uses the
+  // user-corrected (effective) start.
   const audioStartS = meta?.audioStartS ?? 0;
+  const effectiveStart = effectiveAudioStartS(meta);
 
   function step(deltaSec: number) {
     seek(currentTime + deltaSec);
@@ -105,7 +110,7 @@ export function TransportBar() {
           <ChunkyButton
             variant="secondary"
             size="md"
-            onClick={() => seek(audioStartS)}
+            onClick={() => seek(effectiveStart)}
             aria-label="Jump to audio start"
           >
             <AudioStartIcon />

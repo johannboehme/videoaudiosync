@@ -67,6 +67,7 @@ export function buildPersistPatch(
     videos: updatedVideos,
     cuts: s.cuts,
     bpm,
+    audioStartNudgeS: s.jobMeta?.audioStartNudgeS ?? 0,
     ui: { snapMode: s.ui.snapMode, lanesLocked: s.ui.lanesLocked },
     trim: { in: s.trim.in, out: s.trim.out },
     fx: s.fx,
@@ -120,6 +121,7 @@ export function useAutoPersist(jobId: string | null): void {
         state.ui.snapMode !== prev.ui.snapMode ||
         state.ui.lanesLocked !== prev.ui.lanesLocked ||
         state.jobMeta.bpm !== prev.jobMeta?.bpm ||
+        state.jobMeta.audioStartNudgeS !== prev.jobMeta?.audioStartNudgeS ||
         state.fx !== prev.fx
       ) {
         schedule();

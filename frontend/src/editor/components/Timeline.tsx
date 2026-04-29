@@ -31,6 +31,8 @@ import { BpmReadout } from "./BpmReadout";
 import { SnapModeButtons } from "./SnapModeButtons";
 import { snapTime, type SnapCtx, type SnapMode } from "../snap";
 import { DEFAULT_MATCH_CONFIDENCE_THRESHOLD } from "../match-snap";
+import { effectiveBeatPhaseS } from "../selectors/timing";
+import { MASTER_AUDIO_ID } from "../types";
 
 interface CamAssetInfo {
   /** OPFS object URL for this cam's thumbnail strip (may be null). */
@@ -196,7 +198,7 @@ export function Timeline({
   const snapMode = useEditorStore((s) => s.ui.snapMode);
   const lanesLocked = useEditorStore((s) => s.ui.lanesLocked);
   const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
-  const beatPhase = useEditorStore((s) => s.jobMeta?.bpm?.phase ?? 0);
+  const beatPhase = useEditorStore((s) => effectiveBeatPhaseS(s.jobMeta));
   const quantizePreview = useEditorStore((s) => s.quantizePreview);
   const fx = useEditorStore((s) => s.fx);
   const fxHolds = useEditorStore((s) => s.fxHolds);
@@ -499,7 +501,39 @@ export function Timeline({
       audioLaneHeight,
     );
 
+    // Audio-start marker (corrected position). Shown when the analyzer
+    // detected a silent intro OR the user nudged the start manually.
+    const rawAudioStartS = jobMeta?.audioStartS ?? 0;
+    const audioNudgeS = jobMeta?.audioStartNudgeS ?? 0;
+    if (rawAudioStartS > 0 || audioNudgeS !== 0) {
+      const xMark = tToX(rawAudioStartS + audioNudgeS);
+      if (xMark >= 0 && xMark <= audioRightX) {
+        ctx.fillStyle = "rgba(255,107,0,0.85)";
+        ctx.fillRect(Math.floor(xMark), audioBand.top, 1, audioLaneHeight);
+        // Small triangle flag at the top so the marker reads even when
+        // the playhead overlaps it.
+        ctx.beginPath();
+        ctx.moveTo(xMark, audioBand.top);
+        ctx.lineTo(xMark + 5, audioBand.top);
+        ctx.lineTo(xMark, audioBand.top + 5);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
+
+    // Selection outline when Master Audio is the SyncTuner target.
+    if (selectedClipId === MASTER_AUDIO_ID) {
+      ctx.strokeStyle = "#FF6B00";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(
+        1,
+        audioBand.top + 1,
+        audioRightX - 2,
+        audioLaneHeight - 2,
+      );
+    }
 
     // Playhead — spans all lanes.
     const xp = tToX(currentTime);
@@ -572,6 +606,10 @@ export function Timeline({
     videoBands,
     snapMode,
     quantizePreview,
+    // Re-draw when the audio-start marker shifts (raw or user-nudged) so
+    // the orange flag tracks the SyncTuner knob in real time.
+    jobMeta?.audioStartS,
+    jobMeta?.audioStartNudgeS,
     // Re-draw when overflow toggles so the audio-lane clip-rect picks up
     // the new audioRightX. Without these, initial mount captures the
     // pre-measure {height:0, viewport:0} state and the audio lane gets
@@ -662,6 +700,10 @@ export function Timeline({
     if (y >= audioBand.top) {
       const k = classifyAudioHit(x);
       if (k === null) {
+        // Click on empty audio = scrub + target master-audio for the
+        // SyncTuner. Selection is decoupled from the seek/drag so the
+        // user can still scrub freely while the panel switches mode.
+        setSelectedClipId(MASTER_AUDIO_ID);
         seek(snapped(tRaw, e));
         dragRef.current = { kind: "playhead" };
       } else if (k === "trim-in") {

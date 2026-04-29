@@ -555,6 +555,7 @@ export default function Editor() {
           beats: analysis?.beats ?? [],
           downbeats: analysis?.downbeats ?? [],
           audioStartS: analysis?.audioStartS ?? 0,
+          audioStartNudgeS: j.audioStartNudgeS ?? 0,
         },
         {
           lastSyncOverrideMs: null,

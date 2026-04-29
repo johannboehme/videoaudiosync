@@ -22,6 +22,7 @@ import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
 import { activeCamAt, type CamRange } from "./cuts";
 import { snapTime, type SnapMode } from "./snap";
 import { buildQuantizePreview, type QuantizePreview } from "./quantize";
+import { effectiveBeatPhaseS } from "./selectors/timing";
 import type { Cut } from "../storage/jobs-db";
 import type { FxKind, PunchFx } from "./fx/types";
 import { defaultTapLengthS } from "./fx/catalog";
@@ -60,6 +61,13 @@ export interface JobMeta {
    *  0 when the file is non-silent throughout. Used by the "go to audio
    *  start" transport button. */
   audioStartS?: number;
+  /** User correction to the auto-detected audio start, in seconds (signed).
+   *  When non-zero it shifts both the beat-grid anchor and the audio-start
+   *  marker by the same delta — see `effectiveBeatPhaseS` /
+   *  `effectiveAudioStartS`. Lives separately from `bpm.phase` so a
+   *  re-analysis (which overwrites `bpm`) doesn't clobber the user's
+   *  correction. Default 0. */
+  audioStartNudgeS?: number;
 }
 
 export type PanelTab = "sync" | "trim" | "overlays" | "export";
@@ -277,6 +285,12 @@ interface EditorState {
   /** Restore bpm to whatever was originally detected by the analysis
    *  (clears manualOverride). No-op if nothing was detected. */
   resetBpmToDetected(): void;
+  /** Set the master-audio start nudge in seconds. Affects beat-grid anchor
+   *  and audio-start marker; does NOT move audio playback, cams, or any
+   *  existing cuts/FX (those stay at their absolute master times). */
+  setAudioStartNudgeS(s: number): void;
+  /** Increment the master-audio nudge by `deltaMs` (ms; signed). */
+  nudgeAudioStartMs(deltaMs: number): void;
   setSelectedCandidateIdx(camId: string, idx: number): void;
 
   // ---- Multi-cam actions ----
@@ -859,6 +873,19 @@ export const useEditorStore = create<EditorState>()(
         },
       });
     },
+    setAudioStartNudgeS(s) {
+      const meta = get().jobMeta;
+      if (!meta) return;
+      // Round to ms-precision so persisted state matches the UI's ms display.
+      const rounded = Math.round(s * 1000) / 1000;
+      set({ jobMeta: { ...meta, audioStartNudgeS: rounded } });
+    },
+    nudgeAudioStartMs(deltaMs) {
+      const meta = get().jobMeta;
+      if (!meta) return;
+      const cur = meta.audioStartNudgeS ?? 0;
+      get().setAudioStartNudgeS(cur + deltaMs / 1000);
+    },
     setSelectedCandidateIdx(camId, idx) {
       const clips = get().clips.map((c): Clip => {
         if (c.id !== camId) return c;
@@ -1095,7 +1122,7 @@ export const useEditorStore = create<EditorState>()(
         s.ui.snapMode,
         {
           bpm: s.jobMeta?.bpm?.value ?? null,
-          beatPhase: s.jobMeta?.bpm?.phase ?? 0,
+          beatPhase: effectiveBeatPhaseS(s.jobMeta),
         },
       );
       set({ quantizePreview: preview });
@@ -1230,7 +1257,7 @@ export const useEditorStore = create<EditorState>()(
       if (mode === "off" || mode === "match") return t;
       return snapTime(t, mode, {
         bpm: s.jobMeta?.bpm?.value ?? null,
-        beatPhase: s.jobMeta?.bpm?.phase ?? 0,
+        beatPhase: effectiveBeatPhaseS(s.jobMeta),
       });
     },
 

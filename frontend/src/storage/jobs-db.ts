@@ -188,6 +188,11 @@ export interface LocalJob {
     phase: number;
     manualOverride?: boolean;
   };
+  /** User correction to the auto-detected audio start (signed seconds).
+   *  Lives at the LocalJob level — not in the analysis cache — so
+   *  re-running analysis (which rewrites bpm + audioStartS) doesn't
+   *  clobber the user's correction. Default 0 / undefined. */
+  audioStartNudgeS?: number;
   /** Persistent UI bits the user expects to find on next open. */
   ui?: {
     snapMode?: "off" | "match" | "1" | "1/2" | "1/4" | "1/8" | "1/16";

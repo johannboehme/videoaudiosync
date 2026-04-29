@@ -4,6 +4,13 @@
  * editor remains backend-agnostic.
  */
 
+/** Sentinel id for selecting the master-audio "lane" in the SyncTuner.
+ *  Cam clips own real ids; this synthetic id flips the SyncTuner into
+ *  audio-nudge mode. `clips.find(c => c.id === MASTER_AUDIO_ID)` is
+ *  always undefined — every existing read-site already handles that
+ *  gracefully (returns null/falsy). */
+export const MASTER_AUDIO_ID = "master-audio";
+
 export interface Segment {
   in: number;
   out: number;
