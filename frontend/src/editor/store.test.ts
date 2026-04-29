@@ -602,7 +602,7 @@ describe("useEditorStore", () => {
       const s = useEditorStore.getState();
       expect(s.fx).toEqual([]);
       expect(s.fxHolds).toEqual({});
-      expect(s.ui.programStripMode).toBe("cuts");
+      expect(s.ui.programStripMode).toBe("both");
       expect(s.ui.fxPanelOpen).toBe(false);
     });
 

@@ -1008,9 +1008,9 @@ export function Timeline({
           value={programStripMode}
           onChange={(v) => setProgramStripMode(v)}
           options={[
+            { value: "both", label: "BOTH" },
             { value: "cuts", label: "CUTS" },
             { value: "fx", label: "FX" },
-            { value: "both", label: "BOTH" },
           ]}
         />
         <ActiveMatchReadout

@@ -410,7 +410,7 @@ const initialUi: UiSlice = {
   // dense lanes by default. Pressing the (unlock) button = lanes locked
   // becomes false.
   lanesLocked: true,
-  programStripMode: "cuts",
+  programStripMode: "both",
   fxPanelOpen: false,
 };
 
