@@ -556,6 +556,8 @@ export default function Editor() {
           downbeats: analysis?.downbeats ?? [],
           audioStartS: analysis?.audioStartS ?? 0,
           audioStartNudgeS: j.audioStartNudgeS ?? 0,
+          beatsPerBar: j.beatsPerBar ?? 4,
+          barOffsetBeats: j.barOffsetBeats ?? 0,
         },
         {
           lastSyncOverrideMs: null,

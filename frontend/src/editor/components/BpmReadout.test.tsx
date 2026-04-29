@@ -79,6 +79,36 @@ describe("BpmReadout", () => {
     expect(useEditorStore.getState().jobMeta?.bpm?.manualOverride).toBe(false);
   });
 
+  test("time-signature LCD reads the persisted beatsPerBar from the store", () => {
+    useEditorStore.getState().loadJob({
+      ...baseMeta,
+      bpm: { value: 124, confidence: 0.85, phase: 0, manualOverride: false },
+      beatsPerBar: 3,
+    });
+    render(<BpmReadout />);
+    expect(screen.getByTestId("time-sig-value").textContent).toBe("3/4");
+  });
+
+  test("time-signature LCD defaults to 4/4 when nothing is persisted", () => {
+    useEditorStore.getState().loadJob({
+      ...baseMeta,
+      bpm: { value: 124, confidence: 0.85, phase: 0, manualOverride: false },
+    });
+    render(<BpmReadout />);
+    expect(screen.getByTestId("time-sig-value").textContent).toBe("4/4");
+  });
+
+  test("clicking a time-sig chip updates beatsPerBar in the store", () => {
+    useEditorStore.getState().loadJob({
+      ...baseMeta,
+      bpm: { value: 124, confidence: 0.85, phase: 0, manualOverride: false },
+    });
+    render(<BpmReadout />);
+    fireEvent.click(screen.getByTestId("time-sig-readout"));
+    fireEvent.click(screen.getByTestId("time-sig-chip-6-8"));
+    expect(useEditorStore.getState().jobMeta?.beatsPerBar).toBe(6);
+  });
+
   test("'reset' button restores the detected BPM and clears the manual flag", () => {
     useEditorStore
       .getState()

@@ -193,6 +193,11 @@ export interface LocalJob {
    *  re-running analysis (which rewrites bpm + audioStartS) doesn't
    *  clobber the user's correction. Default 0 / undefined. */
   audioStartNudgeS?: number;
+  /** Time-signature numerator (= beats per bar). The denominator is not
+   *  persisted — only the count matters for grid + snap math. Default 4. */
+  beatsPerBar?: number;
+  /** Anacrusis / pickup, in beats. Stored modulo `beatsPerBar`. Default 0. */
+  barOffsetBeats?: number;
   /** Persistent UI bits the user expects to find on next open. */
   ui?: {
     snapMode?: "off" | "match" | "1" | "1/2" | "1/4" | "1/8" | "1/16";

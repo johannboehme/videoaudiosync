@@ -169,6 +169,11 @@ export function analyzeAudio(
     tempo = { ...tempo, phase: p };
   }
 
+  // Time signature isn't part of the analysis output — the user picks it
+  // (BpmReadout time-sig chip). This `downbeats` field is a 4/4 best-effort
+  // for downstream consumers that don't read JobMeta.beatsPerBar; the
+  // visible bar grid in the editor is rebuilt live from beats + the user's
+  // time signature, so this fallback is only there for backwards-compat.
   const downbeats = beats.filter((_, i) => i % 4 === 0);
 
   return {

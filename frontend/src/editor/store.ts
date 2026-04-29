@@ -22,7 +22,11 @@ import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
 import { activeCamAt, type CamRange } from "./cuts";
 import { snapTime, type SnapMode } from "./snap";
 import { buildQuantizePreview, type QuantizePreview } from "./quantize";
-import { effectiveBeatPhaseS } from "./selectors/timing";
+import {
+  effectiveBeatPhaseS,
+  effectiveBeatsPerBar,
+  effectiveBarOffsetBeats,
+} from "./selectors/timing";
 import type { Cut } from "../storage/jobs-db";
 import type { FxKind, PunchFx } from "./fx/types";
 import { defaultTapLengthS } from "./fx/catalog";
@@ -68,6 +72,16 @@ export interface JobMeta {
    *  re-analysis (which overwrites `bpm`) doesn't clobber the user's
    *  correction. Default 0. */
   audioStartNudgeS?: number;
+  /** Beats per bar — the integer numerator the user picked (4/4 → 4,
+   *  3/4 → 3, 6/8 → 6, …). Drives the bar-line grid and the "1" / "1/2"
+   *  snap modes. Default 4 when missing. The detector doesn't infer this;
+   *  it's a manual choice on top of detected BPM. */
+  beatsPerBar?: number;
+  /** Anacrusis / pickup — number of beats between beat 0 and bar 1.
+   *  0 = no pickup (default; bar 1 starts on beat 0). 2 in 4/4 means the
+   *  song begins with a 2-beat pickup and bar 1 sits at beat 2. Stored
+   *  modulo `beatsPerBar` so any value normalises into [0, beatsPerBar). */
+  barOffsetBeats?: number;
 }
 
 export type PanelTab = "sync" | "trim" | "overlays" | "export";
@@ -291,6 +305,12 @@ interface EditorState {
   setAudioStartNudgeS(s: number): void;
   /** Increment the master-audio nudge by `deltaMs` (ms; signed). */
   nudgeAudioStartMs(deltaMs: number): void;
+  /** Set the time-signature numerator (= beats per bar). Re-runs the
+   *  whole-bar grid + bar-line ruler the next render. */
+  setBeatsPerBar(n: number): void;
+  /** Set the anacrusis / pickup, in beats. Stored modulo `beatsPerBar`
+   *  so any value canonicalises into [0, beatsPerBar). */
+  setBarOffsetBeats(n: number): void;
   setSelectedCandidateIdx(camId: string, idx: number): void;
 
   // ---- Multi-cam actions ----
@@ -886,6 +906,30 @@ export const useEditorStore = create<EditorState>()(
       const cur = meta.audioStartNudgeS ?? 0;
       get().setAudioStartNudgeS(cur + deltaMs / 1000);
     },
+    setBeatsPerBar(n) {
+      const meta = get().jobMeta;
+      if (!meta) return;
+      // Clamp to a sensible band — the picker only offers integers in
+      // [2, 12], but a defensive guard here keeps a stale persisted value
+      // from breaking the grid math.
+      const safe = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 4;
+      // Re-canonicalise the existing pickup against the new bar length
+      // so the UI doesn't suddenly point at a phantom pickup beat.
+      const offRaw = meta.barOffsetBeats ?? 0;
+      const off = ((Math.floor(offRaw) % safe) + safe) % safe;
+      set({
+        jobMeta: { ...meta, beatsPerBar: safe, barOffsetBeats: off },
+      });
+    },
+    setBarOffsetBeats(n) {
+      const meta = get().jobMeta;
+      if (!meta) return;
+      const bpb =
+        meta.beatsPerBar && meta.beatsPerBar >= 1 ? meta.beatsPerBar : 4;
+      const safe = Number.isFinite(n) ? Math.floor(n) : 0;
+      const off = ((safe % bpb) + bpb) % bpb;
+      set({ jobMeta: { ...meta, barOffsetBeats: off } });
+    },
     setSelectedCandidateIdx(camId, idx) {
       const clips = get().clips.map((c): Clip => {
         if (c.id !== camId) return c;
@@ -1123,6 +1167,8 @@ export const useEditorStore = create<EditorState>()(
         {
           bpm: s.jobMeta?.bpm?.value ?? null,
           beatPhase: effectiveBeatPhaseS(s.jobMeta),
+          beatsPerBar: effectiveBeatsPerBar(s.jobMeta),
+          barOffsetBeats: effectiveBarOffsetBeats(s.jobMeta),
         },
       );
       set({ quantizePreview: preview });
@@ -1258,6 +1304,8 @@ export const useEditorStore = create<EditorState>()(
       return snapTime(t, mode, {
         bpm: s.jobMeta?.bpm?.value ?? null,
         beatPhase: effectiveBeatPhaseS(s.jobMeta),
+        beatsPerBar: effectiveBeatsPerBar(s.jobMeta),
+        barOffsetBeats: effectiveBarOffsetBeats(s.jobMeta),
       });
     },
 

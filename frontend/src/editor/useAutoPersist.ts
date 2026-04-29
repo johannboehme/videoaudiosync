@@ -7,6 +7,8 @@
  *  - `trim` { in, out }
  *  - `bpm` (value + manualOverride flag — survives reload so the user
  *    doesn't lose their override after a refresh)
+ *  - `audioStartNudgeS` — user's beat-grid anchor correction
+ *  - `beatsPerBar`, `barOffsetBeats` — time signature + pickup
  *  - `ui` { snapMode, lanesLocked }
  *
  * Skipped during the initial load — we only fire when the user actually
@@ -68,6 +70,8 @@ export function buildPersistPatch(
     cuts: s.cuts,
     bpm,
     audioStartNudgeS: s.jobMeta?.audioStartNudgeS ?? 0,
+    beatsPerBar: s.jobMeta?.beatsPerBar ?? 4,
+    barOffsetBeats: s.jobMeta?.barOffsetBeats ?? 0,
     ui: { snapMode: s.ui.snapMode, lanesLocked: s.ui.lanesLocked },
     trim: { in: s.trim.in, out: s.trim.out },
     fx: s.fx,
@@ -122,6 +126,8 @@ export function useAutoPersist(jobId: string | null): void {
         state.ui.lanesLocked !== prev.ui.lanesLocked ||
         state.jobMeta.bpm !== prev.jobMeta?.bpm ||
         state.jobMeta.audioStartNudgeS !== prev.jobMeta?.audioStartNudgeS ||
+        state.jobMeta.beatsPerBar !== prev.jobMeta?.beatsPerBar ||
+        state.jobMeta.barOffsetBeats !== prev.jobMeta?.barOffsetBeats ||
         state.fx !== prev.fx
       ) {
         schedule();

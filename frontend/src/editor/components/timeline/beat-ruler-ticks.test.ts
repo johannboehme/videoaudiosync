@@ -133,3 +133,128 @@ describe("buildRulerTicks — visibility tied to zoom", () => {
     }
   });
 });
+
+describe("buildRulerTicks — non-4/4 time signatures", () => {
+  it("places bar lines every `beatsPerBar` beats in 3/4", () => {
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 6,
+      pxPerSec: 30,
+      beatsPerBar: 3,
+    });
+    const bars = ticks.filter((t) => t.kind === "bar");
+    // 3/4 at 120 BPM: bar = 1.5 s. Bars at 0, 1.5, 3.0, 4.5, 6.0.
+    expect(bars.map((t) => t.t)).toEqual([0, 1.5, 3, 4.5, 6]);
+    expect(bars.map((t) => t.barNumber)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("renders the in-between beats in 3/4 as `beat` ticks (not bar)", () => {
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 1.5,
+      pxPerSec: 30,
+      beatsPerBar: 3,
+    });
+    const kinds = ticks.map((t) => `${t.t}:${t.kind}`);
+    // bar @ 0; beat @ 0.5; beat @ 1.0; bar @ 1.5
+    expect(kinds).toContain("0:bar");
+    expect(kinds).toContain("0.5:beat");
+    expect(kinds).toContain("1:beat");
+    expect(kinds).toContain("1.5:bar");
+  });
+
+  it("places bar lines every 7 beats in 7/8 (= 3.5 s at 120 BPM)", () => {
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 7,
+      pxPerSec: 30,
+      beatsPerBar: 7,
+    });
+    const bars = ticks.filter((t) => t.kind === "bar");
+    expect(bars.map((t) => t.t)).toEqual([0, 3.5, 7]);
+    expect(bars.map((t) => t.barNumber)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("buildRulerTicks — bar offset (anacrusis / pickup)", () => {
+  it("renders pickup beats as beat ticks, not bar ticks", () => {
+    // 4/4 at 120 BPM, pickup of 2 beats. Bar 1 at t=1.0.
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 5,
+      pxPerSec: 30,
+      beatsPerBar: 4,
+      barOffsetBeats: 2,
+    });
+    // The two pickup positions (t=0, t=0.5) should be `beat`, not `bar`.
+    const t0 = ticks.find((t) => Math.abs(t.t - 0) < 1e-6);
+    const t05 = ticks.find((t) => Math.abs(t.t - 0.5) < 1e-6);
+    expect(t0?.kind).toBe("beat");
+    expect(t05?.kind).toBe("beat");
+  });
+
+  it("anchors bar 1 at `barOffsetBeats * beatPeriod` after the phase", () => {
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 5,
+      pxPerSec: 30,
+      beatsPerBar: 4,
+      barOffsetBeats: 2,
+    });
+    const bars = ticks.filter((t) => t.kind === "bar");
+    expect(bars[0].t).toBeCloseTo(1.0, 6);
+    expect(bars[0].barNumber).toBe(1);
+    expect(bars[1].t).toBeCloseTo(3.0, 6);
+    expect(bars[1].barNumber).toBe(2);
+  });
+
+  it("does not emit bar ticks before the first downbeat (pickup ≠ bar 0)", () => {
+    const ticks = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 5,
+      pxPerSec: 30,
+      beatsPerBar: 4,
+      barOffsetBeats: 2,
+    });
+    const bars = ticks.filter((t) => t.kind === "bar");
+    for (const b of bars) {
+      expect(b.t).toBeGreaterThanOrEqual(1.0 - 1e-9);
+      // bar numbers must be ≥ 1 — pickup ticks are beat-kind, not bar-kind.
+      expect(b.barNumber!).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("an offset equal to beatsPerBar collapses back to no offset", () => {
+    const a = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 5,
+      pxPerSec: 30,
+      beatsPerBar: 4,
+      barOffsetBeats: 0,
+    });
+    const b = buildRulerTicks({
+      bpm: BPM,
+      beatPhase: PHASE,
+      startS: 0,
+      endS: 5,
+      pxPerSec: 30,
+      beatsPerBar: 4,
+      barOffsetBeats: 4,
+    });
+    expect(b).toEqual(a);
+  });
+});

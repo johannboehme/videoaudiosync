@@ -3,8 +3,10 @@
  * visible time-range. Subdivisions appear/hide based on the zoom level
  * (px-per-beat) so the ruler stays legible at every zoom.
  *
- * 4/4 fixed in V1: a "bar" = 4 beats. The ruler treats `beatPhase` as
- * beat 0 of bar 1.
+ * `beatsPerBar` (default 4) controls how many beats live in one bar.
+ * `barOffsetBeats` (default 0) shifts where bar 1 begins — for songs
+ * with an anacrusis / pickup the first N beats render as `beat` ticks
+ * and bar 1 starts on the (N+1)th detected beat.
  */
 
 export type RulerTickKind = "bar" | "beat" | "div8" | "div16";
@@ -17,12 +19,8 @@ export interface RulerTick {
   barNumber?: number;
 }
 
-const BEATS_PER_BAR = 4;
+const DEFAULT_BEATS_PER_BAR = 4;
 
-// Density thresholds in px-per-beat. Below 8 px/beat the beats blur into
-// the bars; below 32 px/beat the 1/8 subdivisions become hairline; below
-// 64 px/beat the 1/16s become indistinguishable. These cuts keep the
-// ruler from turning into solid grey at any zoom.
 const MIN_PX_PER_BEAT_FOR_BEATS = 8;
 const MIN_PX_PER_BEAT_FOR_DIV8 = 32;
 const MIN_PX_PER_BEAT_FOR_DIV16 = 64;
@@ -33,14 +31,31 @@ export interface BuildRulerTicksOpts {
   startS: number;
   endS: number;
   pxPerSec: number;
+  /** Beats per bar — default 4. */
+  beatsPerBar?: number;
+  /** Anacrusis / pickup, in beats. Default 0. The first N beats after the
+   *  phase render as `beat` ticks; bar 1 starts at beat N. */
+  barOffsetBeats?: number;
 }
 
 export function buildRulerTicks(opts: BuildRulerTicksOpts): RulerTick[] {
-  const { bpm, beatPhase, startS, endS, pxPerSec } = opts;
+  const {
+    bpm,
+    beatPhase,
+    startS,
+    endS,
+    pxPerSec,
+    beatsPerBar = DEFAULT_BEATS_PER_BAR,
+    barOffsetBeats = 0,
+  } = opts;
   if (!bpm || bpm <= 0 || endS <= startS) return [];
 
+  const bpb = beatsPerBar > 0 ? Math.floor(beatsPerBar) : DEFAULT_BEATS_PER_BAR;
+  // Canonicalise the offset into [0, bpb) — pickup of `bpb` ≡ no pickup.
+  let off = Math.floor(barOffsetBeats) % bpb;
+  if (off < 0) off += bpb;
+
   const beatS = 60 / bpm;
-  const barS = beatS * BEATS_PER_BAR;
   const pxPerBeat = beatS * pxPerSec;
 
   const showBeats = pxPerBeat >= MIN_PX_PER_BEAT_FOR_BEATS;
@@ -49,12 +64,9 @@ export function buildRulerTicks(opts: BuildRulerTicksOpts): RulerTick[] {
 
   const ticks: RulerTick[] = [];
 
-  // Compute the first beat-index at or before startS so we can iterate
-  // forward without missing the first visible tick. Clamp to 0 so the
-  // intro silence (before `beatPhase`, i.e. the part of the recording
-  // captured before the music started) stays empty — Bar 1 lands on the
-  // first real beat, not on a fictional negative-bar a hop before the
-  // performance.
+  // Iterate from the first beat at-or-before startS up to endS. We clamp
+  // to >= 0 so the silent intro before beatPhase stays empty (no negative
+  // bars hovering in the dead air).
   const firstBeatIdx = Math.max(0, Math.floor((startS - beatPhase) / beatS));
   const lastBeatIdx = Math.ceil((endS - beatPhase) / beatS);
 
@@ -62,22 +74,24 @@ export function buildRulerTicks(opts: BuildRulerTicksOpts): RulerTick[] {
     const beatT = beatPhase + i * beatS;
     if (beatT < startS - 1e-9 || beatT > endS + 1e-9) continue;
 
-    const isBarStart = i % BEATS_PER_BAR === 0;
+    // `j` = beat index relative to bar 1 / beat 1. Pickup beats sit at
+    // j < 0 (we render them as `beat` ticks) and bar starts are at
+    // j = 0, bpb, 2*bpb, …
+    const j = i - off;
+    const isBarStart = j >= 0 && j % bpb === 0;
     if (isBarStart) {
-      const barNumber = Math.floor(i / BEATS_PER_BAR) + 1;
+      const barNumber = j / bpb + 1;
       ticks.push({ t: beatT, kind: "bar", barNumber });
     } else if (showBeats) {
       ticks.push({ t: beatT, kind: "beat" });
     }
 
-    // 1/8 ticks (= half-beats): one between every consecutive beat pair.
     if (showDiv8) {
       const halfT = beatT + beatS / 2;
       if (halfT >= startS - 1e-9 && halfT <= endS + 1e-9) {
         ticks.push({ t: halfT, kind: "div8" });
       }
     }
-    // 1/16 ticks (= quarter-beats): two more per beat.
     if (showDiv16) {
       const q1 = beatT + beatS / 4;
       const q3 = beatT + (3 * beatS) / 4;
@@ -89,9 +103,6 @@ export function buildRulerTicks(opts: BuildRulerTicksOpts): RulerTick[] {
       }
     }
   }
-  // Sort ascending in time; subdivisions and beats may have been emitted
-  // out of order during the per-beat loop.
   ticks.sort((a, b) => a.t - b.t);
-  void barS; // (currently only beat-period drives the layout; barS kept readable)
   return ticks;
 }

@@ -31,7 +31,12 @@ import { BpmReadout } from "./BpmReadout";
 import { SnapModeButtons } from "./SnapModeButtons";
 import { snapTime, type SnapCtx, type SnapMode } from "../snap";
 import { DEFAULT_MATCH_CONFIDENCE_THRESHOLD } from "../match-snap";
-import { effectiveBeatPhaseS } from "../selectors/timing";
+import {
+  effectiveBeatPhaseS,
+  effectiveBeatsPerBar,
+  effectiveBarOffsetBeats,
+} from "../selectors/timing";
+import { BarsHeader } from "./timeline/BarsHeader";
 import { MASTER_AUDIO_ID } from "../types";
 
 interface CamAssetInfo {
@@ -199,6 +204,10 @@ export function Timeline({
   const lanesLocked = useEditorStore((s) => s.ui.lanesLocked);
   const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
   const beatPhase = useEditorStore((s) => effectiveBeatPhaseS(s.jobMeta));
+  const beatsPerBar = useEditorStore((s) => effectiveBeatsPerBar(s.jobMeta));
+  const barOffsetBeats = useEditorStore((s) =>
+    effectiveBarOffsetBeats(s.jobMeta),
+  );
   const quantizePreview = useEditorStore((s) => s.quantizePreview);
   const fx = useEditorStore((s) => s.fx);
   const fxHolds = useEditorStore((s) => s.fxHolds);
@@ -677,6 +686,8 @@ export function Timeline({
     return {
       bpm,
       beatPhase,
+      beatsPerBar,
+      barOffsetBeats,
       candidatePositions: extraCandidates,
     };
   }
@@ -1073,14 +1084,7 @@ export function Timeline({
       <div className="rounded-md overflow-hidden border border-rule shadow-panel bg-paper-hi-deep">
         {/* Bar/beat ruler row — bars + beats + subdivisions, click to seek. */}
         <div className="flex border-b border-rule">
-          <div
-            className="shrink-0 flex items-center justify-end px-2 border-r border-rule bg-paper-hi"
-            style={{ width: HEADER_W, height: 26 }}
-          >
-            <span className="font-mono text-[9px] tracking-label uppercase text-ink-3">
-              BARS
-            </span>
-          </div>
+          <BarsHeader width={HEADER_W} height={26} />
           <div className="flex-1" style={{ width: canvasWidth }}>
             <BeatRuler
               contentWidthPx={canvasWidth}

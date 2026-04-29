@@ -110,6 +110,82 @@ describe("gridStepSeconds — helper", () => {
     expect(gridStepSeconds("1/4", null)).toBeNull();
     expect(gridStepSeconds("1/4", 0)).toBeNull();
   });
+
+  it("uses beatsPerBar for bar-level steps when supplied", () => {
+    // 3/4 at 120 BPM: bar = 3 beats = 1.5 s, half-bar = 0.75 s.
+    expect(gridStepSeconds("1", BPM, 3)).toBeCloseTo(1.5, 6);
+    expect(gridStepSeconds("1/2", BPM, 3)).toBeCloseTo(0.75, 6);
+    // sub-beat steps are independent of beatsPerBar.
+    expect(gridStepSeconds("1/4", BPM, 3)).toBeCloseTo(0.5, 6);
+    expect(gridStepSeconds("1/8", BPM, 3)).toBeCloseTo(0.25, 6);
+    expect(gridStepSeconds("1/16", BPM, 3)).toBeCloseTo(0.125, 6);
+  });
+
+  it("falls back to 4 beats per bar when beatsPerBar is omitted", () => {
+    expect(gridStepSeconds("1", BPM)).toBeCloseTo(2.0, 6);
+  });
+});
+
+describe("snapTime — non-4/4 time signatures", () => {
+  it("snaps whole-bar in 3/4 (= 3 beats = 1.5 s at 120 BPM)", () => {
+    const ctx = { bpm: BPM, beatPhase: 0, beatsPerBar: 3 };
+    expect(snapTime(0.7, "1", ctx)).toBeCloseTo(0, 6);
+    expect(snapTime(0.8, "1", ctx)).toBeCloseTo(1.5, 6);
+    expect(snapTime(2.2, "1", ctx)).toBeCloseTo(1.5, 6);
+    expect(snapTime(2.3, "1", ctx)).toBeCloseTo(3.0, 6);
+  });
+
+  it("snaps whole-bar in 7/8 (= 7 beats = 3.5 s at 120 BPM)", () => {
+    const ctx = { bpm: BPM, beatPhase: 0, beatsPerBar: 7 };
+    expect(snapTime(1.6, "1", ctx)).toBeCloseTo(0, 6);
+    expect(snapTime(1.8, "1", ctx)).toBeCloseTo(3.5, 6);
+  });
+
+  it("leaves sub-beat snaps untouched by beatsPerBar", () => {
+    const ctx3 = { bpm: BPM, beatPhase: 0, beatsPerBar: 3 };
+    const ctx4 = { bpm: BPM, beatPhase: 0, beatsPerBar: 4 };
+    expect(snapTime(0.51, "1/4", ctx3)).toBeCloseTo(0.5, 6);
+    expect(snapTime(0.51, "1/4", ctx4)).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe("snapTime — bar offset (anacrusis / pickup)", () => {
+  it("anchors whole-bar snap to bar 1 (= beat 0 + offset * period)", () => {
+    // 4/4 at 120 BPM, pickup of 2 beats → bar 1 at t=1.0; bars at -1.0, 1.0, 3.0, 5.0.
+    // Snaps go to the nearest of those.
+    const ctx = {
+      bpm: BPM,
+      beatPhase: 0,
+      beatsPerBar: 4,
+      barOffsetBeats: 2,
+    };
+    expect(snapTime(-0.1, "1", ctx)).toBeCloseTo(-1.0, 6);
+    expect(snapTime(0.4, "1", ctx)).toBeCloseTo(1.0, 6);
+    expect(snapTime(1.9, "1", ctx)).toBeCloseTo(1.0, 6);
+    expect(snapTime(2.1, "1", ctx)).toBeCloseTo(3.0, 6);
+  });
+
+  it("ignores bar offset for sub-beat snaps (those follow beatPhase)", () => {
+    const ctx = {
+      bpm: BPM,
+      beatPhase: 0,
+      beatsPerBar: 4,
+      barOffsetBeats: 2,
+    };
+    expect(snapTime(0.51, "1/4", ctx)).toBeCloseTo(0.5, 6);
+    expect(snapTime(0.13, "1/8", ctx)).toBeCloseTo(0.25, 6);
+  });
+
+  it("treats barOffsetBeats=0 the same as no offset", () => {
+    const ctx0 = { bpm: BPM, beatPhase: 0, beatsPerBar: 4, barOffsetBeats: 0 };
+    const ctxNone = { bpm: BPM, beatPhase: 0, beatsPerBar: 4 };
+    for (const t of [0.4, 1.1, 2.3, 3.6]) {
+      expect(snapTime(t, "1", ctx0)).toBeCloseTo(
+        snapTime(t, "1", ctxNone),
+        6,
+      );
+    }
+  });
 });
 
 describe("snapTime — non-mode-dependent shape", () => {

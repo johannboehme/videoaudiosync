@@ -9,7 +9,11 @@
  */
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../store";
-import { effectiveBeatPhaseS } from "../../selectors/timing";
+import {
+  effectiveBeatPhaseS,
+  effectiveBeatsPerBar,
+  effectiveBarOffsetBeats,
+} from "../../selectors/timing";
 import { buildRulerTicks } from "./beat-ruler-ticks";
 
 interface BeatRulerProps {
@@ -39,6 +43,10 @@ export function BeatRuler({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
   const beatPhase = useEditorStore((s) => effectiveBeatPhaseS(s.jobMeta));
+  const beatsPerBar = useEditorStore((s) => effectiveBeatsPerBar(s.jobMeta));
+  const barOffsetBeats = useEditorStore((s) =>
+    effectiveBarOffsetBeats(s.jobMeta),
+  );
   const seek = useEditorStore((s) => s.seek);
 
   // Repaint whenever any of the dependencies change.
@@ -72,6 +80,8 @@ export function BeatRuler({
       startS: viewStartS,
       endS: viewEndS,
       pxPerSec,
+      beatsPerBar,
+      barOffsetBeats,
     });
 
     // Pick a "nice" label step so the labelled bars are always at
@@ -79,7 +89,7 @@ export function BeatRuler({
     // labelStep is the smallest entry from NICE_STEPS such that one
     // step on screen covers at least MIN_LABEL_SPACING_PX.
     const beatS = 60 / bpm;
-    const barS = beatS * 4;
+    const barS = beatS * beatsPerBar;
     const pxPerBar = barS * pxPerSec;
     const NICE_STEPS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000];
     const MIN_LABEL_SPACING_PX = 36;
@@ -145,7 +155,16 @@ export function BeatRuler({
         ctx.fillText(String(tick.barNumber), Math.floor(x), 1);
       }
     }
-  }, [bpm, beatPhase, viewStartS, viewEndS, contentWidthPx, height]);
+  }, [
+    bpm,
+    beatPhase,
+    beatsPerBar,
+    barOffsetBeats,
+    viewStartS,
+    viewEndS,
+    contentWidthPx,
+    height,
+  ]);
 
   function onClick(e: React.MouseEvent<HTMLCanvasElement>) {
     const visibleS = viewEndS - viewStartS;
