@@ -112,14 +112,18 @@ export interface VideoClip {
   /** Index into `candidates` of the user-selected primary. Defaults to 0
    *  (top-confidence candidate). The user can move this with match-snap. */
   selectedCandidateIdx: number;
-  /** Per-clip trim from the source's start (seconds, 0..sourceDurationS).
-   *  Optional — undefined / 0 = full source from frame 0. The cam still
-   *  plays from source-time 0 onward; trim only restricts the master-
-   *  timeline range during which this cam is "available" for cuts /
-   *  rendering. */
+  /** Per-clip in-point (seconds, 0..sourceDurationS). Optional —
+   *  undefined / 0 = play from source frame 0. Functions as a real cut
+   *  from the front: the visible master-timeline range narrows on the
+   *  left by `trimInS`, and the cam plays from source-time `trimInS`
+   *  onward at the new visible left edge. The anchor (`anchorS` from
+   *  `clipRangeS`) — where source-time 0 lives on the master timeline —
+   *  stays fixed regardless of trim. */
   trimInS?: number;
-  /** Per-clip trim end (seconds, in source-time). Undefined = full
-   *  source through the end. */
+  /** Per-clip out-point (seconds, in source-time). Undefined = play
+   *  through end of source. Same anchor-vs-visible semantics as
+   *  `trimInS` — narrows the visible range from the right; the anchor
+   *  is unaffected. */
   trimOutS?: number;
   /** Post-rotation displayed width/height (CSS-pixel scale, browser-
    *  decoded). Filled in lazily when the underlying `<video>` reports
@@ -208,28 +212,40 @@ export function clipEffectiveDisplayDims(
 }
 
 /**
- * Compute the [startS, endS) range a clip occupies on the master timeline.
+ * Compute where a clip lives on the master timeline.
+ *
+ * Returns three values that callers must NOT confuse:
+ *   - `anchorS`: where this clip's source-time 0 sits on the master
+ *     timeline. Trim does NOT move it — only sync does. Feed this into
+ *     `camSourceTimeS()` / `camSourceTimeUs()`.
+ *   - `startS` / `endS`: the visible range [startS, endS) the clip
+ *     occupies on the tape. Narrowed by `trimInS` / `trimOutS` so a
+ *     trim drag works as a true cut. Use these for hit-testing,
+ *     drawing, cuts routing (`activeCamAt`).
+ *
+ * For image clips, `anchorS === startS` (no sync, no trim).
  *
  * Video sign convention: `syncOffsetMs` is the delay applied to the master
  * audio to align with this video's audio. When positive, the master audio
  * starts later than the video → the video begins *before* master t=0, so
- * its startS is negative. `syncOverrideMs` and `startOffsetS` add to this.
- *
- * Image clips have no sync — they sit at `startOffsetS` for `durationS`.
+ * `anchorS` is negative. `syncOverrideMs` and `startOffsetS` add to this.
  */
-export function clipRangeS(clip: Clip): { startS: number; endS: number } {
+export function clipRangeS(
+  clip: Clip,
+): { anchorS: number; startS: number; endS: number } {
   if (isImageClip(clip)) {
-    return { startS: clip.startOffsetS, endS: clip.startOffsetS + clip.durationS };
+    return {
+      anchorS: clip.startOffsetS,
+      startS: clip.startOffsetS,
+      endS: clip.startOffsetS + clip.durationS,
+    };
   }
   const totalSyncS = (clip.syncOffsetMs + clip.syncOverrideMs) / 1000;
   const baseStartS = -totalSyncS + clip.startOffsetS;
-  // Per-clip trim applies on top of the cam's natural master-timeline
-  // span. The cam still *plays* from source-time 0 onward, but only the
-  // [startS + trimInS, startS + trimOutS] portion is "available" — cuts
-  // outside this window route to other cams or the test pattern.
   const trimInS = clip.trimInS ?? 0;
   const trimOutS = clip.trimOutS ?? clip.sourceDurationS;
   return {
+    anchorS: baseStartS,
     startS: baseStartS + trimInS,
     endS: baseStartS + trimOutS,
   };

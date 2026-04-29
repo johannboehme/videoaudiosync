@@ -22,7 +22,7 @@ describe("clipRangeS — Video", () => {
       candidates: [],
       selectedCandidateIdx: 0,
     };
-    expect(clipRangeS(clip)).toEqual({ startS: 0, endS: 10 });
+    expect(clipRangeS(clip)).toEqual({ anchorS: 0, startS: 0, endS: 10 });
   });
 
   it("applies sync override + start offset", () => {
@@ -40,8 +40,79 @@ describe("clipRangeS — Video", () => {
       selectedCandidateIdx: 0,
     };
     // -(500 - 100)/1000 + 0.2 = -0.4 + 0.2 = -0.2
+    expect(clipRangeS(clip).anchorS).toBeCloseTo(-0.2, 6);
     expect(clipRangeS(clip).startS).toBeCloseTo(-0.2, 6);
     expect(clipRangeS(clip).endS).toBeCloseTo(9.8, 6);
+  });
+
+  // Trim is the in-point / out-point of a true cut: the visible
+  // [startS, endS] range narrows, but anchorS — where the cam's
+  // source-time 0 lives on the master timeline — must NOT move.
+  // Otherwise the live preview's <video> currentTime computation
+  // (CamCanvas) plays from source frame 0 instead of frame trimInS.
+  it("trimInS narrows startS but anchorS stays put", () => {
+    const clip: VideoClip = {
+      kind: "video",
+      id: "cam-1",
+      filename: "v.mp4",
+      color: "#fff",
+      sourceDurationS: 10,
+      syncOffsetMs: 0,
+      syncOverrideMs: 0,
+      startOffsetS: 0,
+      driftRatio: 1,
+      candidates: [],
+      selectedCandidateIdx: 0,
+      trimInS: 2,
+    };
+    const r = clipRangeS(clip);
+    expect(r.anchorS).toBeCloseTo(0, 6);
+    expect(r.startS).toBeCloseTo(2, 6);
+    expect(r.endS).toBeCloseTo(10, 6);
+  });
+
+  it("trimOutS narrows endS but anchorS stays put", () => {
+    const clip: VideoClip = {
+      kind: "video",
+      id: "cam-1",
+      filename: "v.mp4",
+      color: "#fff",
+      sourceDurationS: 10,
+      syncOffsetMs: 0,
+      syncOverrideMs: 0,
+      startOffsetS: 0,
+      driftRatio: 1,
+      candidates: [],
+      selectedCandidateIdx: 0,
+      trimOutS: 7,
+    };
+    const r = clipRangeS(clip);
+    expect(r.anchorS).toBeCloseTo(0, 6);
+    expect(r.startS).toBeCloseTo(0, 6);
+    expect(r.endS).toBeCloseTo(7, 6);
+  });
+
+  it("trim combines with sync override — anchor still derived from sync only", () => {
+    const clip: VideoClip = {
+      kind: "video",
+      id: "cam-1",
+      filename: "v.mp4",
+      color: "#fff",
+      sourceDurationS: 10,
+      syncOffsetMs: 500,
+      syncOverrideMs: 0,
+      startOffsetS: 0,
+      driftRatio: 1,
+      candidates: [],
+      selectedCandidateIdx: 0,
+      trimInS: 1.5,
+      trimOutS: 8,
+    };
+    const r = clipRangeS(clip);
+    // -(500)/1000 = -0.5 → anchorS = -0.5; visible = [-0.5+1.5, -0.5+8] = [1.0, 7.5]
+    expect(r.anchorS).toBeCloseTo(-0.5, 6);
+    expect(r.startS).toBeCloseTo(1.0, 6);
+    expect(r.endS).toBeCloseTo(7.5, 6);
   });
 });
 
@@ -55,7 +126,7 @@ describe("clipRangeS — Image", () => {
       durationS: 5,
       startOffsetS: 12.5,
     };
-    expect(clipRangeS(clip)).toEqual({ startS: 12.5, endS: 17.5 });
+    expect(clipRangeS(clip)).toEqual({ anchorS: 12.5, startS: 12.5, endS: 17.5 });
   });
 
   it("startS = 0 when the image sits at the timeline origin", () => {
@@ -67,7 +138,7 @@ describe("clipRangeS — Image", () => {
       durationS: 3,
       startOffsetS: 0,
     };
-    expect(clipRangeS(clip)).toEqual({ startS: 0, endS: 3 });
+    expect(clipRangeS(clip)).toEqual({ anchorS: 0, startS: 0, endS: 3 });
   });
 });
 

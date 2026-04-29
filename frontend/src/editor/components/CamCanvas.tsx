@@ -56,10 +56,14 @@ export function CamCanvas({ videoUrl, visible, clip }: Props) {
   // sourceT = where this cam's <video> should be playing internally.
   // Same `camSourceTimeS` helper the render pipeline uses, so what the
   // user sees here is what gets baked.
+  //
+  // Anchor (NOT visible-startS) is what feeds camSourceTimeS — trim is
+  // a true cut, the cam plays from source-time `trimInS` at the visible
+  // left edge, not from source frame 0.
   const masterT = currentTime;
   const range = clipRangeS(clip);
   const sourceT = camSourceTimeS(masterT, {
-    masterStartS: range.startS,
+    masterStartS: range.anchorS,
     driftRatio: clip.driftRatio,
   });
   const hasMaterial = sourceT >= 0 && sourceT < clip.sourceDurationS;
