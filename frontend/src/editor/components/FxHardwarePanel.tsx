@@ -68,31 +68,27 @@ export function FxHardwarePanel() {
       style={{
         height: open ? EXPANDED_H : TAB_H,
         marginTop: -12, // always — tab top is flush with transport-bottom
-        marginBottom: open ? 0 : -12,
+        marginBottom: -12, // always — pad body / tab bottom flush with timeline-top
         overflow: "visible",
-        transition: "height 200ms ease-out, margin-bottom 200ms ease-out",
+        transition: "height 200ms ease-out",
       }}
     >
-      {/* Tab is at the TOP. Stays put as the container grows; the pads
-       *  unfold downward from below it, pushing the timeline away. */}
+      {/* Pad body fills the FULL container so its rounded corners are
+       *  flush with the timeline (no gap), and its left/right top
+       *  corners are visible at the panel edges while the tab embeds
+       *  in the top-center. Renders only when expanded. */}
+      {open && (
+        <div className="absolute inset-0">
+          <PadBody />
+        </div>
+      )}
+      {/* Tab anchored at TOP of container, embedded in pad body's top-
+       *  center in expanded state. Stays put as the container grows. */}
       <Tab
         open={open}
         onClick={() => setFxPanelOpen(!fxPanelOpen)}
         toggleable={!isMobile}
       />
-      {open && (
-        <div
-          className="absolute"
-          style={{
-            top: TAB_H,
-            left: 0,
-            right: 0,
-            bottom: 0,
-          }}
-        >
-          <PadBody />
-        </div>
-      )}
     </div>
   );
 }
@@ -127,12 +123,13 @@ function Tab({
         transform: "translateX(-50%)",
         width: TAB_WIDTH,
         height: TAB_H,
-        // Rounded only on the BOTTOM — the tab pokes DOWN out of the
-        // transport bar / pad body's top edge.
-        borderRadius: "0 0 6px 6px",
+        // Rounded TOP, flat bottom — the tab pokes UP from where it
+        // anchors. Bottom is the "attached" edge (merges with pad body
+        // top in expanded, with timeline-top in collapsed).
+        borderRadius: "6px 6px 0 0",
         cursor: toggleable ? "pointer" : "default",
         ...ALUMINUM_BODY,
-        borderTop: "none",
+        borderBottom: "none",
       }}
     >
       <span
