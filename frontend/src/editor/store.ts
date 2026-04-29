@@ -56,6 +56,10 @@ export interface JobMeta {
   beats?: number[];
   /** Every 4th beat (4/4 fixed in V1). */
   downbeats?: number[];
+  /** When the actual performance starts in the master audio (seconds).
+   *  0 when the file is non-silent throughout. Used by the "go to audio
+   *  start" transport button. */
+  audioStartS?: number;
 }
 
 export type PanelTab = "sync" | "trim" | "overlays" | "export";

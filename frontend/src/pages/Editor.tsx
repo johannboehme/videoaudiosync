@@ -554,6 +554,7 @@ export default function Editor() {
           detectedBpm: detectedBpmInfo,
           beats: analysis?.beats ?? [],
           downbeats: analysis?.downbeats ?? [],
+          audioStartS: analysis?.audioStartS ?? 0,
         },
         {
           lastSyncOverrideMs: null,

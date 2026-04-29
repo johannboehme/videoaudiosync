@@ -4,6 +4,7 @@ import { useEditorStore } from "../store";
 import { ChunkyButton } from "./ChunkyButton";
 import { MonoReadout, formatTime } from "./MonoReadout";
 import {
+  AudioStartIcon,
   InIcon,
   LoopIcon,
   OutIcon,
@@ -28,6 +29,7 @@ export function TransportBar() {
 
   const fps = meta?.fps && meta.fps > 0 ? meta.fps : 30;
   const duration = meta?.duration ?? 0;
+  const audioStartS = meta?.audioStartS ?? 0;
 
   function step(deltaSec: number) {
     seek(currentTime + deltaSec);
@@ -99,6 +101,16 @@ export function TransportBar() {
         >
           <SkipBackIcon />
         </ChunkyButton>
+        {audioStartS > 0 && (
+          <ChunkyButton
+            variant="secondary"
+            size="md"
+            onClick={() => seek(audioStartS)}
+            aria-label="Jump to audio start"
+          >
+            <AudioStartIcon />
+          </ChunkyButton>
+        )}
         <ChunkyButton
           variant="secondary"
           size="md"

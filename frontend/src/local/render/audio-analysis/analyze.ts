@@ -150,9 +150,24 @@ export function analyzeAudio(
   // by least squares. Averaging across many beats gives sub-frame precision
   // and — crucially — recovers the true phase from the actual beat positions
   // instead of the autocorrelation's first-period-only search.
-  const tempo = seedTempo && beats.length >= 2
+  let tempo = seedTempo && beats.length >= 2
     ? refineTempoFromBeats(beats, seedTempo)
     : seedTempo;
+
+  // Phase anchor: when the file has a confirmed silent intro (audioStartS > 0),
+  // the music genuinely begins at audioStartS. The DP tracker's 2-period
+  // initialization window means its chain sometimes starts on beat 2 rather
+  // than beat 1, making the regression report phase = audioStartS + 1·period
+  // instead of audioStartS — so Bar 1 appears one beat late in the ruler.
+  // Walk the phase backward by whole periods until it sits within ±½ period
+  // of audioStartS, anchoring Bar 1 at the actual music start.
+  if (tempo && audioStartS > 0) {
+    const period = 60 / tempo.bpm;
+    let p = tempo.phase;
+    while (p > audioStartS + period / 2) p -= period;
+    while (p < audioStartS - period / 2) p += period;
+    tempo = { ...tempo, phase: p };
+  }
 
   const downbeats = beats.filter((_, i) => i % 4 === 0);
 

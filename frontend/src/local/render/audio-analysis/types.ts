@@ -30,7 +30,7 @@ export interface Tempo {
  * cached results (e.g. v1→v2: phase + bpm now derived from least-squares
  * regression through detected beats; window-center frame timing).
  */
-export const ANALYSIS_VERSION = 2;
+export const ANALYSIS_VERSION = 3;
 export type AnalysisVersion = typeof ANALYSIS_VERSION;
 
 export interface AudioAnalysis {

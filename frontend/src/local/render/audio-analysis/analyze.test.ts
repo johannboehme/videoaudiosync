@@ -32,7 +32,7 @@ describe("analyzeAudio — pure pipeline", () => {
   it("populates the basic shape and bands for a normal-length track", () => {
     const pcm = buildClickTrack(120, 8); // 8 seconds, 120 BPM
     const a = analyzeAudio(pcm, SR);
-    expect(a.version).toBe(2);
+    expect(a.version).toBe(3);
     expect(a.sampleRate).toBe(SR);
     expect(a.duration).toBeCloseTo(8, 1);
     expect(a.bands.bass.length).toBeGreaterThan(0);
@@ -188,9 +188,12 @@ describe("analyzeAudio — pure pipeline", () => {
   });
 
   it("grid (phase + k·period) tracks detected beats with no accumulating drift", () => {
-    // For a steady click track the residual between every detected beat and
-    // its corresponding grid line must stay within roughly one analysis hop
-    // — the grid does not shear away from the music as time progresses.
+    // For a steady click track every detected beat must be within one hop of
+    // SOME grid line phase + k·period — no accumulating shear over time.
+    // We check nearest-grid-line (not beats[i] ≡ phase+i·period) because
+    // the DP tracker may miss beat 1 and start from beat 2; after phase
+    // anchoring, beats[i] and phase+i·period are offset by one period but
+    // each beat still lies on a grid line.
     const pcm = buildClickTrack(120, 20);
     const a = analyzeAudio(pcm, SR);
     expect(a.tempo).not.toBeNull();
@@ -198,9 +201,10 @@ describe("analyzeAudio — pure pipeline", () => {
     const phase = a.tempo!.phase;
     const tol = 1 / a.framesPerSec; // one hop ≈ 33 ms
     let maxResid = 0;
-    for (let i = 0; i < a.beats.length; i++) {
-      const grid = phase + i * period;
-      const r = Math.abs(a.beats[i] - grid);
+    for (const b of a.beats) {
+      const k = Math.round((b - phase) / period);
+      const nearest = phase + k * period;
+      const r = Math.abs(b - nearest);
       if (r > maxResid) maxResid = r;
     }
     expect(maxResid).toBeLessThan(tol);

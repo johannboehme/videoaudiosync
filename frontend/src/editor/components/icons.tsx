@@ -105,6 +105,20 @@ export const ChevronLeftIcon = (p: SVGProps<SVGSVGElement>) => (
     <polyline points="15 18 9 12 15 6" />
   </svg>
 );
+/** Skip to the detected audio start: flat silence → marker → waveform. */
+export const AudioStartIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    {/* flat line = silence before the music */}
+    <line x1="1" y1="12" x2="6" y2="12" />
+    {/* vertical bar = the audio-start marker */}
+    <line x1="8" y1="4" x2="8" y2="20" />
+    {/* waveform bars = the audio content that follows */}
+    <line x1="11" y1="9" x2="11" y2="15" />
+    <line x1="14" y1="6" x2="14" y2="18" />
+    <line x1="17" y1="9" x2="17" y2="15" />
+    <line x1="20" y1="11" x2="20" y2="13" />
+  </svg>
+);
 export const SyncIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...baseProps} {...p}>
     <polyline points="23 4 23 10 17 10" />
