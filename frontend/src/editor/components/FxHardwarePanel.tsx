@@ -1,22 +1,20 @@
 /**
- * FX-Hardware-Panel — TE-inspirierter, skeuomorpher Pad-Streifen für die
- * Live-Performance der Punch-In-FX.
+ * FX-Hardware-Panel — pill-shaped pull tab in the gap-3 between transport
+ * and timeline, plus an expandable pad row.
  *
- * Optik: Innenraum eines geöffneten Kassettenrekorders. Brushed-aluminium-
- * Body, Phillips-Schrauben, recessed Rubber-Pads mit LED-Ring.
+ * Layout strategy:
+ *   - Collapsed: container is 12 px tall with mt:-6 and mb:-6, so it
+ *     consumes ZERO net vertical space (it slots exactly into the
+ *     existing gap-3 with 6 px breathing room above + below). The tab
+ *     itself is a small ~96 × 12 px pill centered in the gap, NOT a
+ *     full-width strip — that's why the previous design read as
+ *     "abgeschnitten" at the edges.
+ *   - Expanded: container grows to ~88 px and goes back into normal
+ *     flex flow (mt/mb 0). Pads + LCD render below the tab. Re-clicking
+ *     the same tab collapses again.
  *
- * Layout:
- *   - Top-Edge-Strip ist immer sichtbar — knurled grip + label + chevron.
- *     Click toggelt collapsed/expanded. Konsistent zwischen den beiden
- *     Zuständen, keine versteckten Affordances.
- *   - Collapsed: nur die Top-Edge ist da (~16 px), Panel darunter null.
- *   - Expanded: Top-Edge oben + Pad-Bereich darunter (~80 px gesamt ~96).
- *
- * Mobile: Top-Edge dient nur als Label, Panel ist immer expanded
- *   (kein keyboard → Pads sind das einzige Trigger-Mittel).
- *
- * Trigger: pointerdown→beginFxHold, pointerup/cancel→endFxHold. RAF
- * tick im Editor zieht outS live an die Playhead-Position.
+ * Mobile (`pointer: coarse`): always expanded — pads are the only trigger
+ *   without a keyboard. Tab is non-interactive on mobile.
  */
 import {
   CSSProperties,
@@ -37,9 +35,11 @@ interface PadDef {
 
 const PADS: readonly PadDef[] = [{ slotKey: "pad:0", kind: "vignette" }];
 
-const EDGE_H = 16;       // top-edge strip height (also collapsed-state full)
-const EXPANDED_BODY_H = 76; // pad row body height in expanded state
-const EXPANDED_TOTAL_H = EDGE_H + EXPANDED_BODY_H;
+const COLLAPSED_H = 12; // container height when tab-only
+const TAB_H = 12;
+const PAD_BODY_H = 76;
+const EXPANDED_H = TAB_H + PAD_BODY_H;
+const TAB_WIDTH = 100;
 
 export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
@@ -47,103 +47,117 @@ export function FxHardwarePanel() {
   const isMobile = useIsCoarsePointer();
   const open = isMobile || fxPanelOpen;
 
-  // In collapsed state pull the panel up to absorb most of the parent's
-  // gap-3 (12 px) above. The tab then reads as a divider rather than a
-  // standalone block — matches the user's "Konsistenz mit Player→Timeline"
-  // request without doubling the spacing.
-  const marginTop = open ? 0 : -8;
+  // Negative margins absorb gap-3 (12 px) above + below in collapsed
+  // state so the tab fits exactly into the existing gap with 6 px
+  // breathing room. In expanded mode it returns to normal flow.
+  const marginTopBottom = open ? 0 : -6;
 
   return (
     <div
-      className="relative w-full select-none"
+      className="relative shrink-0 w-full select-none"
       style={{
-        height: open ? EXPANDED_TOTAL_H : EDGE_H,
-        marginTop,
-        transition: "height 200ms ease-out, margin-top 200ms ease-out",
+        height: open ? EXPANDED_H : COLLAPSED_H,
+        marginTop: marginTopBottom,
+        marginBottom: marginTopBottom,
+        transition:
+          "height 200ms ease-out, margin-top 200ms ease-out, margin-bottom 200ms ease-out",
       }}
     >
-      <EdgeStrip
+      <Tab
         open={open}
+        onClick={() => setFxPanelOpen(!fxPanelOpen)}
         toggleable={!isMobile}
-        onToggle={() => setFxPanelOpen(!fxPanelOpen)}
       />
-      {open && <PadBody />}
+      {open && (
+        <div
+          className="absolute"
+          style={{
+            top: TAB_H,
+            left: 0,
+            right: 0,
+            bottom: 0,
+          }}
+        >
+          <PadBody />
+        </div>
+      )}
     </div>
   );
 }
 
-/** Always-visible top-edge strip — same component in collapsed and expanded
- *  states so the user has a stable affordance. Click toggles visibility on
- *  desktop; on mobile the click is a no-op (the panel can't collapse). */
-function EdgeStrip({
+/** Anodized-aluminum pull-tab. Small pill shape, centered horizontally,
+ *  visually inspired by the right-side PanelHandle. */
+function Tab({
   open,
+  onClick,
   toggleable,
-  onToggle,
 }: {
   open: boolean;
+  onClick: () => void;
   toggleable: boolean;
-  onToggle: () => void;
 }) {
   return (
     <button
       type="button"
-      onClick={toggleable ? onToggle : undefined}
+      onClick={toggleable ? onClick : undefined}
       aria-label={open ? "Hide FX panel" : "Show FX panel"}
-      title={toggleable ? (open ? "Hide FX panel" : "Show FX panel") : undefined}
-      className="relative w-full block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
+      title={
+        toggleable ? (open ? "Hide FX panel" : "Show FX panel") : undefined
+      }
+      className="absolute focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
       style={{
-        height: EDGE_H,
+        top: 0,
+        left: "50%",
+        transform: "translateX(-50%)",
+        width: TAB_WIDTH,
+        height: TAB_H,
+        borderRadius: 6,
         cursor: toggleable ? "pointer" : "default",
-        ...EDGE_STRIP_STYLE,
+        ...ALUMINUM_BODY,
       }}
     >
-      {/* Knurled grip bar — wider than before so the affordance reads
-       *  clearly as "drag-handle / pull tab". */}
+      {/* Knurled grip — wide enough to be recognisable as a drag handle.
+       *  Centered, doesn't touch the side edges. */}
       <span
         aria-hidden
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        style={{
-          height: 8,
-          width: 64,
-          borderRadius: 1,
-          ...KNURLED_GRIP,
-        }}
+        style={{ ...KNURLED_GRIP, height: 6, width: 40, borderRadius: 1 }}
       />
-      {/* Label on the left so it's clear what panel this opens. */}
+      {/* Chevron + FX label — clear visual cue for the toggle direction.
+       *  Bigger than the previous "▴" dot so users actually see it. */}
       <span
         aria-hidden
-        className="absolute left-3 top-1/2 -translate-y-1/2 font-display text-[9px] uppercase tracking-label"
-        style={EDGE_LABEL_STYLE}
+        className="absolute left-2 top-1/2 -translate-y-1/2 font-display leading-none"
+        style={{
+          fontSize: 8,
+          letterSpacing: 0.5,
+          ...ALUMINUM_LABEL,
+        }}
       >
         FX
       </span>
-      {/* Chevron on the right indicating direction. */}
-      {toggleable && (
-        <span
-          aria-hidden
-          className="absolute right-3 top-1/2 -translate-y-1/2 font-display text-[10px] leading-none"
-          style={EDGE_LABEL_STYLE}
-        >
-          {open ? "▾" : "▴"}
-        </span>
-      )}
+      <span
+        aria-hidden
+        className="absolute right-2 top-1/2 -translate-y-1/2 leading-none"
+        style={{ fontSize: 9, ...ALUMINUM_LABEL }}
+      >
+        {open ? "▾" : "▴"}
+      </span>
     </button>
   );
 }
 
 function PadBody() {
   return (
-    <div className="relative w-full" style={{ height: EXPANDED_BODY_H, ...MECHANISM_BODY }}>
-      {/* Vier Phillips-Schrauben in den Ecken. */}
-      <Screw left={6} top={6} />
-      <Screw right={6} top={6} />
-      <Screw left={6} bottom={6} />
-      <Screw right={6} bottom={6} />
+    <div className="relative w-full h-full" style={MECHANISM_BODY}>
+      <Screw left={5} top={5} />
+      <Screw right={5} top={5} />
+      <Screw left={5} bottom={5} />
+      <Screw right={5} bottom={5} />
 
-      {/* Etched horizontal grain. */}
       <div aria-hidden className="absolute inset-0 pointer-events-none" style={BRUSHED_GRAIN} />
 
-      <div className="relative h-full flex items-center gap-3 px-5">
+      <div className="relative h-full flex items-center gap-3 px-4">
         <Lcd />
         <div className="flex items-center gap-2">
           {PADS.map((p) => (
@@ -190,7 +204,7 @@ function FxPad({ pad }: { pad: PadDef }) {
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
-      /* capture not supported */
+      /* ignore */
     }
     const s = useEditorStore.getState();
     const t = s.snapMasterTime(s.playback.currentTime);
@@ -317,20 +331,21 @@ function useIsCoarsePointer(): boolean {
   return coarse;
 }
 
-const EDGE_STRIP_STYLE: CSSProperties = {
+const ALUMINUM_BODY: CSSProperties = {
   background:
     "linear-gradient(180deg, #E8E1D0 0%, #D5CAA8 52%, #C9BFA6 100%)",
-  borderTop: "1px solid rgba(26,24,22,0.22)",
-  borderBottom: "1px solid rgba(26,24,22,0.22)",
+  border: "1px solid rgba(26,24,22,0.22)",
   boxShadow: [
     "inset 0 1px 0 rgba(255,255,255,0.55)",
     "inset 0 -1px 0 rgba(0,0,0,0.10)",
+    "0 1px 1px rgba(0,0,0,0.08)",
   ].join(", "),
 };
 
-const EDGE_LABEL_STYLE: CSSProperties = {
+const ALUMINUM_LABEL: CSSProperties = {
   color: "rgba(26,24,22,0.6)",
   textShadow: "0 0.5px 0 rgba(255,255,255,0.5)",
+  fontWeight: 600,
 };
 
 const KNURLED_GRIP: CSSProperties = {
@@ -341,7 +356,9 @@ const KNURLED_GRIP: CSSProperties = {
 
 const MECHANISM_BODY: CSSProperties = {
   background: "linear-gradient(180deg, #2A2722 0%, #1A1816 100%)",
-  borderBottom: "1px solid rgba(0,0,0,0.5)",
+  border: "1px solid rgba(0,0,0,0.5)",
+  borderTop: "none",
+  borderRadius: "0 0 8px 8px",
   boxShadow:
     "inset 0 1px 1px rgba(255,255,255,0.04), inset 0 -1px 1px rgba(0,0,0,0.4)",
 };

@@ -74,10 +74,13 @@ export function EditorShell({
           <div className="relative flex-1 min-h-0 rounded-lg border border-rule shadow-panel bg-sunken overflow-hidden">
             <div className="absolute inset-0">{videoArea}</div>
           </div>
-          {fxPanel && <div className="shrink-0">{fxPanel}</div>}
           <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
             {transport}
           </div>
+          {/* FX-Tab lives in the existing 12px gap between transport and
+           *  timeline (collapsed it consumes nothing extra; expanded the
+           *  pad row pushes the timeline down). */}
+          {fxPanel}
           <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
             {timeline}
           </div>
@@ -113,14 +116,10 @@ export function EditorShell({
         <div className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden">
           <div className="absolute inset-0">{videoArea}</div>
         </div>
-        {fxPanel && (
-          <div className="shrink-0 rounded-lg overflow-hidden border border-rule shadow-panel">
-            {fxPanel}
-          </div>
-        )}
         <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
           {transport}
         </div>
+        {fxPanel}
         <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
           {timeline}
         </div>

@@ -1,34 +1,30 @@
 /**
- * FX-Capsule-Layer für die ProgramStrip.
+ * FX-Capsule-Layer für die ProgramStrip — fresh-take redesign.
  *
- * Greedy-packed FX-Capsules in Sub-Slots (Stack-Tiefe = max gleichzeitige
- * Überlappung). FX überlappen frei und stapeln sich — anders als Cuts
- * (exklusiv schaltend), Stacking ist hier ein Feature, nicht ein Bug.
- *
- * Bedienung:
- *   - Pointerdown auf Body → wenn pointer < 5 px in 250 ms zurücklegt =
- *     Tap → toggle Delete-X-Sichtbarkeit. Sonst → drag-move (verschiebt
- *     in/out gemeinsam, snapt auf inS).
- *   - Pointerdown auf left/right grippy edge → drag-in/out (snap-aware).
- *   - Tap auf Delete-X → onRemoveFx.
- *   - Hover (mouse only) → revealed temporär (click outside löscht).
- *
- * Visual-Mindestbreite: 14 px für sehr kurze Capsules (Tap-default-length
- * bei stark herausgezoomter Timeline ergibt 1-2 px breite Capsules — die
- * sind unbedienbar). Die Drag-Edges greifen auf die *visuelle* Position;
- * der User editiert direkt den Time-Range darunter.
+ * Konzept (anders als die Sub-Row-Lösung von davor):
+ *   - **Eine** Lane für alle FX, jede Capsule nutzt die volle Höhe der
+ *     FX-Hälfte. Kein Jumping zwischen Sub-Rows beim Drag.
+ *   - Überlappende Capsules werden via z-Order gestapelt (spätere im
+ *     Store rendern oben drauf), mit ~85 % Opacity, sodass darunter
+ *     liegende noch sichtbar sind. Stack-Tiefe ist visuell durch die
+ *     gemischten Farbton-Layer ablesbar.
+ *   - Edge-Grips sind IMMER da, auch für Mini-Capsules — die Hit-Area
+ *     ragt nach außen über den sichtbaren Capsule-Rand hinaus, sodass
+ *     der User auch eine 14 px breite Capsule am Rand greifen kann.
+ *   - Lösch-Affordance: tap-to-select. Selected-Capsule kriegt einen
+ *     hellen Outline + ein persistentes × als Sibling der Capsules
+ *     (nicht als Child, damit hover-leave-Race entfällt). × bleibt
+ *     sichtbar bis Click-Outside / anderer Tap / Delete-Key / Esc.
  */
 import {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 import type { PunchFx } from "../../fx/types";
 import { fxCatalog } from "../../fx/catalog";
-import { packFxIntoSlots } from "../../fx/pack";
 
 interface Props {
   fx: readonly PunchFx[];
@@ -45,14 +41,15 @@ interface Props {
   onRemoveFx?: (id: string) => void;
 }
 
-const HANDLE_HIT_PX = 22;
-const HANDLE_VISIBLE_PX = 5;
 const MIN_VISIBLE_W = 14;
-const MIN_SLOT_H = 10;
-const X_BUTTON_SIZE = 18;
+/** Edge-Drag-Hit ragt nach außen UND ein wenig nach innen. Mini-Capsules
+ *  bekommen so trotzdem eine greifbare Edge. */
+const EDGE_HIT_OUTER_PX = 10;
+const EDGE_HIT_INNER_PX = 4;
+const EDGE_VISUAL_PX = 4;
+const X_BUTTON_SIZE = 20;
 const X_BUTTON_GAP = 4;
 const TAP_THRESHOLD_PX = 5;
-const TAP_THRESHOLD_MS = 260;
 
 export function FxStripLayer({
   fx,
@@ -68,42 +65,68 @@ export function FxStripLayer({
   onRemoveFx,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  /** Which fx is showing its delete-X. Set by tap, hover (mouse), or
-   *  external "currently dragging" hint. Cleared by click outside or
-   *  Escape. */
-  const [revealedFxId, setRevealedFxId] = useState<string | null>(null);
+  /** Sticky selection — set by tap, cleared by click-outside, Esc, or
+   *  Delete-key. Drives the visible × affordance and (later) keyboard
+   *  delete shortcut. */
+  const [selectedFxId, setSelectedFxId] = useState<string | null>(null);
 
-  // Click-outside dismissal: any pointerdown that lands outside this
-  // layer clears the reveal. Without this the X would persist forever
-  // after a tap.
+  // Click outside the layer → clear selection. The × button is a child
+  // of the layer (rendered as a sibling of the capsules), so clicks on
+  // it correctly count as "inside" and don't dismiss.
   useEffect(() => {
-    if (!revealedFxId) return;
+    if (!selectedFxId) return;
     const onDown = (e: PointerEvent) => {
-      const t = e.target as HTMLElement | null;
+      const t = e.target as Node | null;
       if (t && containerRef.current?.contains(t)) return;
-      setRevealedFxId(null);
+      setSelectedFxId(null);
     };
-    window.addEventListener("pointerdown", onDown);
-    return () => window.removeEventListener("pointerdown", onDown);
-  }, [revealedFxId]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedFxId(null);
+      } else if (
+        (e.key === "Delete" || e.key === "Backspace") &&
+        selectedFxId &&
+        onRemoveFx
+      ) {
+        // Don't fire when typing in inputs.
+        const ae = document.activeElement as HTMLElement | null;
+        const tag = ae?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || ae?.isContentEditable) return;
+        e.preventDefault();
+        onRemoveFx(selectedFxId);
+        setSelectedFxId(null);
+      }
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [selectedFxId, onRemoveFx]);
 
-  const layout = useMemo(() => packFxIntoSlots(fx), [fx]);
-  const slotById = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const l of layout.layout) m.set(l.id, l.slotIdx);
-    return m;
-  }, [layout]);
+  // If the selected fx is removed externally, drop the selection.
+  useEffect(() => {
+    if (!selectedFxId) return;
+    if (!fx.some((f) => f.id === selectedFxId)) setSelectedFxId(null);
+  }, [fx, selectedFxId]);
 
   const visibleSpan = Math.max(1e-6, viewEndS - viewStartS);
-  // Cap visible sub-rows so very deep stacks don't shrink each capsule
-  // into invisibility. Excess rows wrap around to the last visible slot
-  // with a slight z-offset (handled by CSS box-shadow on the body).
-  const maxVisibleSlots = Math.max(1, Math.floor(height / MIN_SLOT_H));
-  const visibleSlots = Math.min(layout.slots, maxVisibleSlots);
-  const slotH = visibleSlots > 0 ? height / visibleSlots : height;
-
   const tToX = (t: number) => ((t - viewStartS) / visibleSpan) * width;
   const xToT = (x: number) => viewStartS + (x / width) * visibleSpan;
+
+  /** Resolve visual rect for a fx — clamps to MIN_VISIBLE_W centered
+   *  on the natural midpoint when actual extent is smaller. */
+  const visualRect = (f: PunchFx) => {
+    const naturalLeft = tToX(f.inS);
+    const naturalRight = tToX(f.outS);
+    const naturalW = naturalRight - naturalLeft;
+    if (naturalW >= MIN_VISIBLE_W) {
+      return { left: naturalLeft, width: naturalW };
+    }
+    const center = (naturalLeft + naturalRight) / 2;
+    return { left: center - MIN_VISIBLE_W / 2, width: MIN_VISIBLE_W };
+  };
 
   const beginEdgeDrag = (
     f: PunchFx,
@@ -114,12 +137,14 @@ export function FxStripLayer({
     if (!cb || !containerRef.current) return;
     e.stopPropagation();
     e.preventDefault();
+    setSelectedFxId(f.id);
     const onMove = (ev: PointerEvent) => {
       if (!containerRef.current) return;
       const r = containerRef.current.getBoundingClientRect();
       const newPointerX = ev.clientX - r.left;
-      const newPointerT = xToT(Math.max(0, Math.min(width, newPointerX)));
-      cb(f.id, newPointerT, { shiftKey: ev.shiftKey });
+      cb(f.id, xToT(Math.max(0, Math.min(width, newPointerX))), {
+        shiftKey: ev.shiftKey,
+      });
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -131,64 +156,50 @@ export function FxStripLayer({
     window.addEventListener("pointercancel", onUp);
   };
 
-  /**
-   * Body pointerdown: distinguishes tap (toggle X-reveal) from drag-move.
-   * Tap = pointer moved < TAP_THRESHOLD_PX within TAP_THRESHOLD_MS. Drag
-   * promotes immediately when threshold crossed and hands off to onFxMove.
-   */
+  /** Body pointerdown — selects immediately, promotes to drag-move when
+   *  pointer travels past TAP_THRESHOLD_PX. Pure tap leaves the capsule
+   *  selected (visible × affordance). */
   const beginBodyPointer = (
     f: PunchFx,
     e: ReactPointerEvent<HTMLDivElement>,
   ) => {
     if (!containerRef.current) return;
     e.stopPropagation();
+    setSelectedFxId(f.id);
+
+    if (!onFxMove) return;
     const startX = e.clientX;
     const startY = e.clientY;
-    const startTime = performance.now();
     const containerRect = containerRef.current.getBoundingClientRect();
     const grabT = xToT(e.clientX - containerRect.left);
     const grabOffsetT = grabT - f.inS;
-    let promotedToDrag = false;
+    let dragging = false;
 
     const onMove = (ev: PointerEvent) => {
-      if (promotedToDrag) {
-        if (!onFxMove || !containerRef.current) return;
-        const r = containerRef.current.getBoundingClientRect();
-        const newPointerT = xToT(ev.clientX - r.left);
-        onFxMove(f.id, newPointerT - grabOffsetT, { shiftKey: ev.shiftKey });
-        return;
+      if (!dragging) {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (Math.hypot(dx, dy) < TAP_THRESHOLD_PX) return;
+        dragging = true;
       }
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (Math.hypot(dx, dy) >= TAP_THRESHOLD_PX) {
-        promotedToDrag = true;
-        if (!onFxMove) {
-          // No drag callback wired — abort gracefully.
-          cleanup();
-          return;
-        }
-      }
+      if (!containerRef.current) return;
+      const r = containerRef.current.getBoundingClientRect();
+      const newPointerT = xToT(ev.clientX - r.left);
+      onFxMove(f.id, newPointerT - grabOffsetT, { shiftKey: ev.shiftKey });
     };
-    const onUp = (ev: PointerEvent) => {
-      cleanup();
-      const dt = performance.now() - startTime;
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      const moved = Math.hypot(dx, dy) >= TAP_THRESHOLD_PX;
-      if (!promotedToDrag && !moved && dt < TAP_THRESHOLD_MS) {
-        // Tap — toggle reveal for this capsule.
-        setRevealedFxId((prev) => (prev === f.id ? null : f.id));
-      }
-    };
-    function cleanup() {
+    const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
-    }
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
   };
+
+  const selectedFx = selectedFxId
+    ? fx.find((f) => f.id === selectedFxId) ?? null
+    : null;
 
   return (
     <div
@@ -196,43 +207,13 @@ export function FxStripLayer({
       className="relative"
       style={{ width, height, overflow: "visible" }}
     >
-      {fx.map((f) => {
-        const slotIdx = slotById.get(f.id) ?? 0;
-        const naturalLeft = tToX(f.inS);
-        const naturalRight = tToX(f.outS);
-        // Visual layout: enforce a minimum width so very short taps stay
-        // grabbable at any zoom. The visual range may extend past the
-        // actual time range — drag-edges still map back to inS/outS via
-        // the natural anchor, so editing remains accurate.
-        const naturalWidth = naturalRight - naturalLeft;
-        let visualLeft = naturalLeft;
-        let visualWidth = naturalWidth;
-        if (naturalWidth < MIN_VISIBLE_W) {
-          const center = (naturalLeft + naturalRight) / 2;
-          visualLeft = center - MIN_VISIBLE_W / 2;
-          visualWidth = MIN_VISIBLE_W;
-        }
+      {fx.map((f, idx) => {
+        const { left: visualLeft, width: visualWidth } = visualRect(f);
         if (visualLeft + visualWidth < -8 || visualLeft > width + 8) return null;
-        // Stacks past visibleSlots wrap onto the last slot with a darker
-        // overlay so the user sees "more underneath".
-        const visibleSlotIdx = Math.min(slotIdx, visibleSlots - 1);
-        const isOverflowSlot = slotIdx >= visibleSlots;
-        const top = visibleSlotIdx * slotH;
         const isLive = liveFxIds.has(f.id);
-        const isRevealed = revealedFxId === f.id;
+        const isSelected = selectedFxId === f.id;
         const def = fxCatalog[f.kind];
-
-        // Wrapper extends BEYOND the visible capsule to include the X-
-        // button hover area, so moving from capsule to X doesn't leave
-        // the hover region.
-        const wrapperHeight = slotH + X_BUTTON_GAP + X_BUTTON_SIZE;
-        const wrapperTop = xDirection === "up" ? top - X_BUTTON_GAP - X_BUTTON_SIZE : top;
-        const capsuleY = xDirection === "up" ? X_BUTTON_GAP + X_BUTTON_SIZE : 0;
-        // Capsules can be very narrow — only show the etched label when
-        // there's room. Edge-grip is suppressed for capsules too narrow
-        // to even show body grip — falls back to body-drag only.
-        const showLabel = visualWidth > 30 && slotH >= 12;
-        const showEdgeGrips = visualWidth >= 22 && slotH >= 8;
+        const showLabel = visualWidth > 32 && height >= 14;
 
         return (
           <div
@@ -240,39 +221,22 @@ export function FxStripLayer({
             className="absolute"
             style={{
               left: visualLeft,
-              top: wrapperTop,
+              top: 0,
               width: visualWidth,
-              height: wrapperHeight,
-            }}
-            onPointerEnter={(e) => {
-              if (e.pointerType === "mouse") setRevealedFxId(f.id);
-            }}
-            onPointerLeave={(e) => {
-              // Only auto-hide for mouse — touch-revealed entries stick
-              // until tap-outside (handled in the document-level effect).
-              if (e.pointerType === "mouse") {
-                // Don't auto-hide if a tap revealed and pointer just hovered
-                // away — let the click-outside listener take care of that.
-                setRevealedFxId((prev) => (prev === f.id ? null : prev));
-              }
+              height,
+              // Later in array → renders on top so the user sees their
+              // most recent FX clearly.
+              zIndex: 10 + idx,
             }}
             data-fx-id={f.id}
           >
-            {/* Capsule body */}
+            {/* Capsule body — handles tap-select + body drag-move. */}
             <div
-              aria-hidden
-              className="absolute rounded-[4px] overflow-hidden"
-              style={{
-                left: 0,
-                top: capsuleY,
-                width: visualWidth,
-                height: Math.max(MIN_SLOT_H - 1, slotH - 1),
-                ...capsuleBodyStyle(def.capsuleColor, isLive, isOverflowSlot),
-              }}
+              className="absolute inset-0 rounded-[3px]"
+              style={capsuleBodyStyle(def.capsuleColor, isLive, isSelected)}
               onPointerDown={(e) => {
                 const target = e.target as HTMLElement;
                 if (target.closest("[data-fx-edge]")) return;
-                if (target.closest("[data-fx-x]")) return;
                 beginBodyPointer(f, e);
               }}
             >
@@ -293,7 +257,7 @@ export function FxStripLayer({
                 <span
                   className="absolute inset-0 flex items-center justify-center font-display uppercase tracking-label pointer-events-none"
                   style={{
-                    fontSize: Math.min(9, Math.max(7, slotH - 4)),
+                    fontSize: Math.min(9, Math.max(7, height - 6)),
                     color: "rgba(255,255,255,0.92)",
                     textShadow: "0 1px 0 rgba(0,0,0,0.55)",
                   }}
@@ -303,108 +267,143 @@ export function FxStripLayer({
               )}
             </div>
 
-            {/* Left grippy edge — drag-in. Suppressed for sub-min capsules. */}
-            {showEdgeGrips && (
-              <div
-                data-fx-edge="in"
-                onPointerDown={(e) => beginEdgeDrag(f, "in", e)}
-                className="absolute"
+            {/* Left grippy edge — extends OUTSIDE the visible capsule for
+             *  generous hit-area, even on tiny capsules. Higher z than
+             *  the body so the edge wins pointer events at the corners. */}
+            <div
+              data-fx-edge="in"
+              onPointerDown={(e) => beginEdgeDrag(f, "in", e)}
+              className="absolute"
+              style={{
+                left: -EDGE_HIT_OUTER_PX,
+                top: 0,
+                width: EDGE_HIT_OUTER_PX + EDGE_HIT_INNER_PX,
+                height,
+                cursor: "ew-resize",
+                touchAction: "none",
+                zIndex: 5,
+              }}
+              aria-label="Drag fx in"
+            >
+              <span
+                aria-hidden
+                className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
                 style={{
-                  left: -HANDLE_HIT_PX / 2 + HANDLE_VISIBLE_PX / 2,
-                  top: capsuleY,
-                  width: HANDLE_HIT_PX,
-                  height: slotH,
-                  cursor: "ew-resize",
-                  touchAction: "none",
+                  left: EDGE_HIT_OUTER_PX - EDGE_VISUAL_PX / 2,
+                  width: EDGE_VISUAL_PX,
+                  height: Math.min(height - 4, 14),
+                  background:
+                    "repeating-linear-gradient(90deg, rgba(0,0,0,0.65) 0 1px, rgba(255,255,255,0.85) 1px 2px)",
+                  borderRadius: 1,
                 }}
-                aria-label="Drag fx in"
-              >
-                <span
-                  aria-hidden
-                  className="absolute top-1/2 -translate-y-1/2"
-                  style={{
-                    left: HANDLE_HIT_PX / 2 - HANDLE_VISIBLE_PX / 2,
-                    width: HANDLE_VISIBLE_PX,
-                    height: Math.min(slotH - 4, 14),
-                    background:
-                      "repeating-linear-gradient(90deg, rgba(0,0,0,0.55) 0 1px, rgba(255,255,255,0.7) 1px 2px)",
-                    borderRadius: 1,
-                  }}
-                />
-              </div>
-            )}
+              />
+            </div>
 
-            {/* Right grippy edge — drag-out. */}
-            {showEdgeGrips && (
-              <div
-                data-fx-edge="out"
-                onPointerDown={(e) => beginEdgeDrag(f, "out", e)}
-                className="absolute"
+            {/* Right grippy edge — drag-out. Always visible. */}
+            <div
+              data-fx-edge="out"
+              onPointerDown={(e) => beginEdgeDrag(f, "out", e)}
+              className="absolute"
+              style={{
+                right: -EDGE_HIT_OUTER_PX,
+                top: 0,
+                width: EDGE_HIT_OUTER_PX + EDGE_HIT_INNER_PX,
+                height,
+                cursor: "ew-resize",
+                touchAction: "none",
+                zIndex: 5,
+              }}
+              aria-label="Drag fx out"
+            >
+              <span
+                aria-hidden
+                className="absolute top-1/2 -translate-y-1/2 pointer-events-none"
                 style={{
-                  right: -HANDLE_HIT_PX / 2 + HANDLE_VISIBLE_PX / 2,
-                  top: capsuleY,
-                  width: HANDLE_HIT_PX,
-                  height: slotH,
-                  cursor: "ew-resize",
-                  touchAction: "none",
+                  right: EDGE_HIT_OUTER_PX - EDGE_VISUAL_PX / 2,
+                  width: EDGE_VISUAL_PX,
+                  height: Math.min(height - 4, 14),
+                  background:
+                    "repeating-linear-gradient(90deg, rgba(0,0,0,0.65) 0 1px, rgba(255,255,255,0.85) 1px 2px)",
+                  borderRadius: 1,
                 }}
-                aria-label="Drag fx out"
-              >
-                <span
-                  aria-hidden
-                  className="absolute top-1/2 -translate-y-1/2"
-                  style={{
-                    right: HANDLE_HIT_PX / 2 - HANDLE_VISIBLE_PX / 2,
-                    width: HANDLE_VISIBLE_PX,
-                    height: Math.min(slotH - 4, 14),
-                    background:
-                      "repeating-linear-gradient(90deg, rgba(0,0,0,0.55) 0 1px, rgba(255,255,255,0.7) 1px 2px)",
-                    borderRadius: 1,
-                  }}
-                />
-              </div>
-            )}
-
-            {/* Delete-X — popping in xDirection. Inside the wrapper so
-             *  hover doesn't leak when moving toward it. */}
-            {isRevealed && onRemoveFx && (
-              <button
-                data-fx-x
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemoveFx(f.id);
-                  setRevealedFxId(null);
-                }}
-                aria-label="Remove fx"
-                className="absolute z-10 flex items-center justify-center rounded-full bg-paper-hi border border-rule shadow-md text-ink-2 hover:text-danger hover:border-danger font-mono leading-none"
-                style={{
-                  left: Math.max(0, visualWidth / 2 - X_BUTTON_SIZE / 2),
-                  width: X_BUTTON_SIZE,
-                  height: X_BUTTON_SIZE,
-                  fontSize: 12,
-                  ...(xDirection === "down"
-                    ? { top: capsuleY + slotH + X_BUTTON_GAP }
-                    : { top: 0 }),
-                }}
-              >
-                ×
-              </button>
-            )}
+              />
+            </div>
           </div>
         );
       })}
+
+      {/* Persistent delete button for the currently-selected fx. Rendered
+       *  as a sibling of the capsules (not a child) so hover-leave races
+       *  can't dismiss it — only an explicit click-outside or another
+       *  selection clears it. */}
+      {selectedFx && onRemoveFx && (
+        <DeleteButton
+          fx={selectedFx}
+          visualRect={visualRect(selectedFx)}
+          stripWidth={width}
+          stripHeight={height}
+          xDirection={xDirection}
+          onRemove={() => {
+            onRemoveFx(selectedFx.id);
+            setSelectedFxId(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function DeleteButton({
+  visualRect: rect,
+  stripWidth,
+  stripHeight,
+  xDirection,
+  onRemove,
+}: {
+  fx: PunchFx;
+  visualRect: { left: number; width: number };
+  stripWidth: number;
+  stripHeight: number;
+  xDirection: "up" | "down";
+  onRemove: () => void;
+}) {
+  // Centre the X above/below the capsule visual midpoint.
+  const cx = rect.left + rect.width / 2;
+  const xLeft = Math.max(2, Math.min(stripWidth - X_BUTTON_SIZE - 2, cx - X_BUTTON_SIZE / 2));
+  const top =
+    xDirection === "down"
+      ? stripHeight + X_BUTTON_GAP
+      : -X_BUTTON_GAP - X_BUTTON_SIZE;
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onRemove();
+      }}
+      aria-label="Remove fx"
+      title="Remove fx (Delete)"
+      className="absolute z-50 flex items-center justify-center rounded-full bg-paper-hi border border-rule shadow-md text-ink-2 hover:text-danger hover:border-danger font-mono leading-none"
+      style={{
+        left: xLeft,
+        top,
+        width: X_BUTTON_SIZE,
+        height: X_BUTTON_SIZE,
+        fontSize: 13,
+      }}
+    >
+      ×
+    </button>
   );
 }
 
 function capsuleBodyStyle(
   color: string,
   isLive: boolean,
-  isOverflowSlot: boolean,
+  isSelected: boolean,
 ): CSSProperties {
-  const stroke = darken(color, 0.55);
-  const dim = isOverflowSlot ? 0.7 : 1;
+  const stroke = darken(color, 0.6);
   return {
     background: `linear-gradient(180deg, ${lighten(color, 0.18)} 0%, ${color} 45%, ${darken(color, 0.32)} 100%)`,
     boxShadow: [
@@ -412,12 +411,16 @@ function capsuleBodyStyle(
       "inset 0 -1px 0 rgba(0,0,0,0.45)",
       isLive
         ? `0 0 4px ${color}, 0 0 8px rgba(255,255,255,0.45)`
-        : isOverflowSlot
-          ? "0 1px 0 rgba(0,0,0,0.5), 0 0 0 1px rgba(0,0,0,0.35)"
-          : "0 1px 1px rgba(0,0,0,0.35)",
-    ].join(", "),
+        : "0 1px 1px rgba(0,0,0,0.35)",
+      isSelected
+        ? "0 0 0 2px rgba(255,255,255,0.85), 0 0 6px rgba(255,255,255,0.4)"
+        : "",
+    ]
+      .filter(Boolean)
+      .join(", "),
     border: `1px solid ${stroke}`,
-    opacity: dim,
+    // 0.85 opacity so overlapping capsules show through.
+    opacity: 0.88,
   };
 }
 
