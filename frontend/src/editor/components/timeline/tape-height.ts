@@ -1,9 +1,6 @@
-/** Strip-height per ProgramStrip mode. Lives in its own module so Vite's
- *  fast-refresh can keep treating ProgramStrip.tsx as a pure component
- *  file (only-component-exports). cuts mode is unchanged so existing
- *  layouts don't shift when the user has no FX in the project. */
-export function tapeHeightForMode(mode: "cuts" | "fx" | "both"): number {
-  if (mode === "fx") return 36;
-  if (mode === "both") return 50;
-  return 32;
+/** Strip-height per ProgramStrip mode. Same in every mode now: in `both`
+ *  the cuts and fx halves split this height vertically, so the timeline
+ *  layout never shifts when the user toggles the program-strip view. */
+export function tapeHeightForMode(_mode: "cuts" | "fx" | "both"): number {
+  return 36;
 }

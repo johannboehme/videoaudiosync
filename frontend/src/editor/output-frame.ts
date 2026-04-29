@@ -1,23 +1,19 @@
 /**
- * Output-Frame-Berechnung für die Live-Preview.
+ * Output-Frame-Berechnung für Live-Preview und Render-Pipeline.
  *
- * Im Render heute (siehe `local/render/edit.ts:570-582`) ist das Output-
- * Frame standardmäßig die *displayed* (post-rotation) Dimension von cam-1.
- * Wenn der User in der ExportSpec eine explizite Resolution gesetzt hat,
- * gewinnt die. Alle anderen Cams werden in dieses Frame letterbox/
- * pillarbox-gefitted (`computeFitRect` im Compositor).
+ * Es gibt keinen "Master-Cam". Der Output-Frame ist eine Bounding-Box
+ * `(max(W_i), max(H_i))` über alle Clip-Display-Dims, sodass kein cam
+ * jemals abgeschnitten wird. Cams mit anderer Aspect-Ratio werden
+ * innerhalb der Box letterboxed/pillarboxed (`computeFitRect`-Helper im
+ * Compositor). Wenn die User-ExportSpec eine explizite Resolution
+ * vorgibt, gewinnt die.
  *
- * Im Live-Preview hatten wir das nicht abgebildet — der `<video>`-Container
- * füllt die EditorShell-Spalte (z.B. 21:9), und die FxOverlay malte über
- * den GANZEN Container statt nur über das eigentliche Output-Frame. Bei
- * Hochkant-Cam-1 in einem Widescreen-Editor war die Vignette dann auf
- * die schwarzen Side-Bars appliziert — visuell falsch, weil der Renderer
- * diese Bereiche gar nicht rausschreibt.
- *
- * Diese Helper berechnen:
- *   1. die intendierte Output-AR (aus dem Editor-Store)
- *   2. das aspect-fit Rectangle innerhalb eines gegebenen Container-Bounds
+ * Future: zusätzliche transparente Lanes (Alpha-Overlays über der
+ * aktiven Cam) werden ebenfalls in dieselbe Box gefittet — der FX-
+ * Overlay sitzt darüber on top.
  */
+import type { Clip } from "./types";
+import { isVideoClip, isImageClip } from "./types";
 import type { ExportSpec } from "./types";
 
 export interface OutputFrameBox {
@@ -29,37 +25,65 @@ export interface OutputFrameBox {
   height: number;
 }
 
+export interface OutputDims {
+  w: number;
+  h: number;
+}
+
 /**
- * Bestimmt die intendierte Output-Aspect-Ratio.
+ * Bestimmt die intendierten Output-Dimensionen.
  *
  * Wenn die ExportSpec eine explizite Resolution gesetzt hat → die.
- * Sonst fällt der Renderer auf cam-1's *displayed* (post-rotation)
- * Dimension zurück — die ist im Live-Preview vom `<video>`-Element
- * via `videoWidth`/`videoHeight` ablesbar (Browser correctiert für
- * MP4-Rotation-Metadaten beim Decode). Caller liest das selbst aus
- * dem aktiven `<video>`-Ref und übergibt es als `cam1NaturalAR`.
- *
- * `jobMeta.width`/`height` aus der Storage sind die *encoded* Dimens-
- * ionen (vor Rotation) und liefern das falsche AR bei Hochkant-Phone-
- * Aufnahmen — daher reichen wir den Live-Wert durch.
+ * Sonst: Bounding-Box `(max W, max H)` über alle Clips, die bereits
+ * `displayW/displayH` reportet haben. Returns `null` solange noch kein
+ * Clip seine dims gemeldet hat (caller hält die FxOverlay zurück).
  */
-export function resolveOutputAspectRatio(args: {
-  resolution: ExportSpec["resolution"];
-  cam1NaturalAR: number | null;
-}): number | null {
-  const { resolution, cam1NaturalAR } = args;
+export function resolveOutputDims(
+  clips: readonly Clip[],
+  resolution: ExportSpec["resolution"],
+): OutputDims | null {
   if (
     resolution &&
     resolution !== "source" &&
     resolution.w > 0 &&
     resolution.h > 0
   ) {
-    return resolution.w / resolution.h;
+    return { w: resolution.w, h: resolution.h };
   }
-  if (cam1NaturalAR && cam1NaturalAR > 0) return cam1NaturalAR;
-  return null;
+  let maxW = 0;
+  let maxH = 0;
+  for (const c of clips) {
+    const w = clipDisplayW(c);
+    const h = clipDisplayH(c);
+    if (w && h) {
+      if (w > maxW) maxW = w;
+      if (h > maxH) maxH = h;
+    }
+  }
+  if (maxW <= 0 || maxH <= 0) return null;
+  return { w: maxW, h: maxH };
 }
 
+/** Convenience for callers that only care about the AR. */
+export function resolveOutputAspectRatio(args: {
+  resolution: ExportSpec["resolution"];
+  clips: readonly Clip[];
+}): number | null {
+  const dims = resolveOutputDims(args.clips, args.resolution);
+  if (!dims) return null;
+  return dims.w / dims.h;
+}
+
+function clipDisplayW(c: Clip): number | undefined {
+  if (isVideoClip(c)) return c.displayW;
+  if (isImageClip(c)) return c.displayW;
+  return undefined;
+}
+function clipDisplayH(c: Clip): number | undefined {
+  if (isVideoClip(c)) return c.displayH;
+  if (isImageClip(c)) return c.displayH;
+  return undefined;
+}
 
 /**
  * Berechnet das Output-Frame-Rechteck — aspect-fit, zentriert in den

@@ -1,5 +1,28 @@
 import { describe, it, expect } from "vitest";
-import { computeOutputFrameBox, resolveOutputAspectRatio } from "./output-frame";
+import {
+  computeOutputFrameBox,
+  resolveOutputAspectRatio,
+  resolveOutputDims,
+} from "./output-frame";
+import type { Clip } from "./types";
+
+function videoClip(id: string, displayW?: number, displayH?: number): Clip {
+  return {
+    kind: "video",
+    id,
+    filename: `${id}.mp4`,
+    color: "#fff",
+    sourceDurationS: 60,
+    syncOffsetMs: 0,
+    syncOverrideMs: 0,
+    startOffsetS: 0,
+    driftRatio: 1,
+    candidates: [],
+    selectedCandidateIdx: 0,
+    displayW,
+    displayH,
+  };
+}
 
 describe("computeOutputFrameBox", () => {
   it("returns full container when AR matches container", () => {
@@ -8,7 +31,6 @@ describe("computeOutputFrameBox", () => {
   });
 
   it("letterboxes top/bottom when output is wider than container", () => {
-    // 16:9 output (≈1.777) in a 16:10 (1.6) container → letterbox.
     const box = computeOutputFrameBox(16 / 9, { width: 1600, height: 1000 });
     expect(box.left).toBe(0);
     expect(box.width).toBe(1600);
@@ -17,7 +39,6 @@ describe("computeOutputFrameBox", () => {
   });
 
   it("pillarboxes left/right when output is taller than container", () => {
-    // 9:16 output (0.5625) in a 16:9 (1.777) container → pillarbox.
     const box = computeOutputFrameBox(9 / 16, { width: 1600, height: 900 });
     expect(box.top).toBe(0);
     expect(box.height).toBe(900);
@@ -41,34 +62,59 @@ describe("computeOutputFrameBox", () => {
   });
 });
 
+describe("resolveOutputDims", () => {
+  it("prefers explicit resolution over clip dims", () => {
+    const dims = resolveOutputDims(
+      [videoClip("a", 1080, 1920)],
+      { w: 1920, h: 1080 },
+    );
+    expect(dims).toEqual({ w: 1920, h: 1080 });
+  });
+
+  it("returns max(W) × max(H) bounding-box across clips", () => {
+    // portrait 1080×1920 + landscape 1920×1080 → 1920×1920 box.
+    const dims = resolveOutputDims(
+      [videoClip("a", 1080, 1920), videoClip("b", 1920, 1080)],
+      undefined,
+    );
+    expect(dims).toEqual({ w: 1920, h: 1920 });
+  });
+
+  it("falls back to a single clip's dims when only one has them", () => {
+    const dims = resolveOutputDims(
+      [videoClip("a", 1080, 1920), videoClip("b")],
+      "source",
+    );
+    expect(dims).toEqual({ w: 1080, h: 1920 });
+  });
+
+  it("returns null when no clip has dims yet and no explicit resolution", () => {
+    expect(resolveOutputDims([videoClip("a")], "source")).toBeNull();
+    expect(resolveOutputDims([], undefined)).toBeNull();
+  });
+});
+
 describe("resolveOutputAspectRatio", () => {
-  it("prefers explicit resolution over cam-1 natural", () => {
+  it("derives AR from explicit resolution", () => {
     const ar = resolveOutputAspectRatio({
       resolution: { w: 1920, h: 1080 },
-      cam1NaturalAR: 9 / 16,
+      clips: [],
     });
     expect(ar).toBeCloseTo(16 / 9, 6);
   });
 
-  it('falls back to cam-1 natural for "source" resolution', () => {
+  it("derives AR from the bounding-box of clips", () => {
     const ar = resolveOutputAspectRatio({
       resolution: "source",
-      cam1NaturalAR: 9 / 16,
+      clips: [videoClip("a", 1080, 1920), videoClip("b", 1920, 1080)],
     });
-    expect(ar).toBeCloseTo(9 / 16, 6);
-  });
-
-  it("falls back to cam-1 natural when resolution undefined", () => {
-    const ar = resolveOutputAspectRatio({
-      resolution: undefined,
-      cam1NaturalAR: 1.5,
-    });
-    expect(ar).toBe(1.5);
+    // bbox 1920×1920 → 1.
+    expect(ar).toBe(1);
   });
 
   it("returns null when nothing is known", () => {
     expect(
-      resolveOutputAspectRatio({ resolution: "source", cam1NaturalAR: null }),
+      resolveOutputAspectRatio({ resolution: "source", clips: [] }),
     ).toBeNull();
   });
 });

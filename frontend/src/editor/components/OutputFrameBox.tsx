@@ -1,15 +1,14 @@
 /**
  * Output-Frame-Wrapper für die Live-Preview.
  *
- * Misst den Container, ermittelt cam-1's natural Aspect-Ratio (post-
- * rotation) live aus dem `<video data-cam-master>`-Element, berechnet das
- * Output-Frame-Rechteck (= aspect-fit zentriert), und positioniert
- * Children absolut innerhalb dieses Rechtecks.
+ * Misst den umgebenden Container (CSS-pixel) und kombiniert die mit der
+ * vom Store aufgelösten Output-Aspect-Ratio. Children werden absolut
+ * innerhalb des berechneten Output-Rechtecks positioniert.
  *
- * Children sehen das Output-Frame als ihre `relative` parent-bounds. Eine
- * dünne stroke-Linie zeichnet den Rand des Output-Frames als visueller
- * „so wird gerendert"-Indikator — entkoppelt vom darunter liegenden
- * `<video>`-Stack, der seine eigene letterbox-Darstellung weiterführt.
+ * Es gibt keinen "Master-Cam" mehr — die AR kommt aus dem `clips`-Array
+ * (jede `displayW/displayH` reportet sich selbst, sobald die Metadaten
+ * geladen sind) plus der `exportSpec.resolution`. Der `<video>`-Stack
+ * sitzt INNERHALB der Box und wird hier nicht mehr abgefragt.
  */
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store";
@@ -26,13 +25,11 @@ interface Props {
   showIndicator?: boolean;
 }
 
-const VIDEO_QUERY = "[data-cam-master]";
-
 export function OutputFrameBox({ children, showIndicator = true }: Props) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-  const [cam1AR, setCam1AR] = useState<number | null>(null);
   const exportSpec = useEditorStore((s) => s.exportSpec);
+  const clips = useEditorStore((s) => s.clips);
 
   // Track the container's CSS bounds.
   useEffect(() => {
@@ -48,87 +45,56 @@ export function OutputFrameBox({ children, showIndicator = true }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // Track cam-1's natural (post-rotation) aspect ratio. The browser
-  // applies MP4 rotation metadata when decoding, so videoWidth/Height
-  // here equal what the user actually sees in the <video> element.
-  useEffect(() => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper) return;
-    let video: HTMLVideoElement | null = null;
-    const findAndAttach = () => {
-      const next = wrapper.querySelector<HTMLVideoElement>(VIDEO_QUERY);
-      if (next === video) return;
-      // Detach old listeners.
-      if (video) {
-        video.removeEventListener("loadedmetadata", readAR);
-        video.removeEventListener("resize", readAR);
-      }
-      video = next;
-      if (video) {
-        video.addEventListener("loadedmetadata", readAR);
-        video.addEventListener("resize", readAR);
-        readAR();
-      } else {
-        setCam1AR(null);
-      }
-    };
-    function readAR() {
-      if (!video) return;
-      const w = video.videoWidth;
-      const h = video.videoHeight;
-      if (w > 0 && h > 0) setCam1AR(w / h);
-    }
-    findAndAttach();
-    // The cam-master <video> may mount/unmount when clips swap. A simple
-    // mutation observer on the wrapper subtree catches that.
-    const mo = new MutationObserver(findAndAttach);
-    mo.observe(wrapper, { childList: true, subtree: true });
-    return () => {
-      mo.disconnect();
-      if (video) {
-        video.removeEventListener("loadedmetadata", readAR);
-        video.removeEventListener("resize", readAR);
-      }
-    };
-  }, []);
-
   const outputAR = resolveOutputAspectRatio({
     resolution: exportSpec.resolution,
-    cam1NaturalAR: cam1AR,
+    clips,
   });
 
-  const box: Box | null =
+  // Bootstrap problem: children include the <video> elements that report
+  // their natural dims into the store, which is what we use to compute
+  // the box. So children must mount *before* a box is known. While the
+  // dims are still arriving we fall back to the full container; once a
+  // dim is available we shrink to the bounding-box rectangle.
+  const rawBox: Box =
     outputAR && containerSize.width > 0 && containerSize.height > 0
       ? computeOutputFrameBox(outputAR, containerSize)
-      : null;
+      : { left: 0, top: 0, width: containerSize.width, height: containerSize.height };
+  // Snap to integer pixels so the FX canvas, the <video>, and the
+  // dashed indicator all align exactly. Subpixel float widths cause
+  // the browser to rasterize children inconsistently — the FX canvas
+  // would land one pixel short of the video, leaving a hairline
+  // unaffected stripe at the edge.
+  const box: Box = {
+    left: Math.round(rawBox.left),
+    top: Math.round(rawBox.top),
+    width: Math.round(rawBox.width),
+    height: Math.round(rawBox.height),
+  };
+  const boxResolved = outputAR !== null;
 
   return (
     <div ref={wrapperRef} className="absolute inset-0 pointer-events-none">
-      {box && (
-        <div
-          className="absolute pointer-events-none"
-          style={{
-            left: box.left,
-            top: box.top,
-            width: box.width,
-            height: box.height,
-          }}
-        >
-          {/* Faint stroke so the user sees where the renderable area ends.
-           *  Subtle on purpose — never obstructs the video underneath. */}
-          {showIndicator && (
-            <div
-              aria-hidden
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                outline: "1px dashed rgba(255,255,255,0.18)",
-                outlineOffset: -1,
-              }}
-            />
-          )}
-          {children}
-        </div>
-      )}
+      <div
+        className="absolute pointer-events-none"
+        style={{
+          left: box.left,
+          top: box.top,
+          width: box.width,
+          height: box.height,
+        }}
+      >
+        {showIndicator && boxResolved && (
+          <div
+            aria-hidden
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              outline: "1px dashed rgba(255,255,255,0.18)",
+              outlineOffset: -1,
+            }}
+          />
+        )}
+        {children}
+      </div>
     </div>
   );
 }

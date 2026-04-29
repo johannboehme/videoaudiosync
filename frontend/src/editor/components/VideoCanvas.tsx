@@ -21,6 +21,8 @@ export function VideoCanvas({ videoUrl, audioUrl }: Props) {
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const seekRequest = useEditorStore((s) => s.playback.seekRequest);
   const clearSeekRequest = useEditorStore((s) => s.clearSeekRequest);
+  const setClipDisplayDims = useEditorStore((s) => s.setClipDisplayDims);
+  const cam1Id = useEditorStore((s) => s.clips[0]?.id ?? null);
   // Cam-1's master-timeline startS — used to translate master-time
   // (the canonical playhead position) into cam-1's video-file
   // time-domain when paused.
@@ -28,6 +30,26 @@ export function VideoCanvas({ videoUrl, audioUrl }: Props) {
     const cam1 = s.clips[0];
     return cam1 ? clipRangeS(cam1).startS : 0;
   });
+
+  // Report this video's post-rotation natural dims into the store so
+  // the output-frame resolver can take them into account. Browser
+  // applies any MP4 rotation matrix when populating videoWidth/Height.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !cam1Id) return;
+    const report = () => {
+      if (v.videoWidth > 0 && v.videoHeight > 0) {
+        setClipDisplayDims(cam1Id, v.videoWidth, v.videoHeight);
+      }
+    };
+    v.addEventListener("loadedmetadata", report);
+    v.addEventListener("resize", report);
+    report();
+    return () => {
+      v.removeEventListener("loadedmetadata", report);
+      v.removeEventListener("resize", report);
+    };
+  }, [cam1Id, setClipDisplayDims, videoUrl]);
 
   // Apply external seek while paused. During play the RAF loop in
   // useOffsetScheduler keeps the video synced; this effect is the
@@ -63,7 +85,7 @@ export function VideoCanvas({ videoUrl, audioUrl }: Props) {
   }, [cam1StartS, isPlaying]);
 
   return (
-    <div className="relative w-full h-full bg-sunken flex items-center justify-center overflow-hidden">
+    <div className="relative w-full h-full overflow-hidden">
       <video
         ref={videoRef}
         src={videoUrl}
@@ -71,11 +93,8 @@ export function VideoCanvas({ videoUrl, audioUrl }: Props) {
         playsInline
         crossOrigin="anonymous"
         preload="auto"
-        className="max-h-full max-w-full"
-        style={{ display: "block" }}
-        // Tagged so OutputFrameBox can locate this element to read its
-        // post-rotation natural dimensions (videoWidth/videoHeight).
-        data-cam-master
+        className="absolute inset-0 w-full h-full"
+        style={{ display: "block", objectFit: "contain" }}
       />
       {!handle.isReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-sunken/90 text-paper-hi">

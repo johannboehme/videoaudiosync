@@ -60,46 +60,47 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
   // the user took another cam ON AIR.
   return (
     <div className="relative w-full h-full bg-sunken overflow-hidden">
-      <div className="absolute inset-0">
-        <VideoCanvas videoUrl={cam1Url} audioUrl={audioUrl} />
-      </div>
-
-      {clips.slice(1).map((clip) => {
-        const url = cams[clip.id]?.videoUrl;
-        if (!url) return null;
-        if (isVideoClip(clip)) {
-          return (
-            <SatelliteCam
-              key={clip.id}
-              videoUrl={url}
-              visible={activeCamId === clip.id}
-              clip={clip}
-            />
-          );
-        }
-        // Image clip: render an <img> overlay, only visible when this is the
-        // active programme source.
-        return (
-          <ImageOverlay
-            key={clip.id}
-            imageUrl={url}
-            visible={activeCamId === clip.id}
-            filename={clip.filename}
-          />
-        );
-      })}
-
       {showTestPattern && (
         <div className="absolute inset-0">
           <TestPattern />
         </div>
       )}
 
-      {/* Output-frame indicator + FX overlay — both constrained to the
-       *  rectangle that will actually be rendered. Without this, a
-       *  21:9 editor pane around a 9:16 cam-1 would let FX paint over
-       *  the side letterboxes (which the renderer never writes). */}
+      {/* The renderable area — every cam + the FX overlay fits inside the
+       *  output-frame bounding box. Cams outside the box (because they're
+       *  bigger than another cam in one dimension) are letterboxed; FX
+       *  paints over the whole box, on top of whichever cam is currently
+       *  visible. There is no "master" cam visually anymore — cam-1 only
+       *  drives the audio clock under the hood. */}
       <OutputFrameBox>
+        <div className="absolute inset-0 pointer-events-none">
+          <VideoCanvas videoUrl={cam1Url} audioUrl={audioUrl} />
+        </div>
+
+        {clips.slice(1).map((clip) => {
+          const url = cams[clip.id]?.videoUrl;
+          if (!url) return null;
+          if (isVideoClip(clip)) {
+            return (
+              <SatelliteCam
+                key={clip.id}
+                videoUrl={url}
+                visible={activeCamId === clip.id}
+                clip={clip}
+              />
+            );
+          }
+          return (
+            <ImageOverlay
+              key={clip.id}
+              imageUrl={url}
+              visible={activeCamId === clip.id}
+              filename={clip.filename}
+              clipId={clip.id}
+            />
+          );
+        })}
+
         <FxOverlay />
       </OutputFrameBox>
     </div>
@@ -124,6 +125,25 @@ function SatelliteCam({ videoUrl, visible, clip }: SatelliteCamProps) {
   const ref = useRef<HTMLVideoElement>(null);
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
+  const setClipDisplayDims = useEditorStore((s) => s.setClipDisplayDims);
+
+  // Report this video's post-rotation natural dims into the store.
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    const report = () => {
+      if (v.videoWidth > 0 && v.videoHeight > 0) {
+        setClipDisplayDims(clip.id, v.videoWidth, v.videoHeight);
+      }
+    };
+    v.addEventListener("loadedmetadata", report);
+    v.addEventListener("resize", report);
+    report();
+    return () => {
+      v.removeEventListener("loadedmetadata", report);
+      v.removeEventListener("resize", report);
+    };
+  }, [clip.id, setClipDisplayDims, videoUrl]);
 
   // store.currentTime is master-time (master-audio reference frame).
   // sourceT = where this satellite cam should be playing internally.
@@ -182,13 +202,29 @@ interface ImageOverlayProps {
   imageUrl: string;
   visible: boolean;
   filename: string;
+  clipId: string;
 }
 
 /** Static image clip — shown as the programme source while it's the active
  *  cam. Object-contained so portrait/landscape images don't get squished. */
-function ImageOverlay({ imageUrl, visible, filename }: ImageOverlayProps) {
+function ImageOverlay({ imageUrl, visible, filename, clipId }: ImageOverlayProps) {
+  const ref = useRef<HTMLImageElement>(null);
+  const setClipDisplayDims = useEditorStore((s) => s.setClipDisplayDims);
+  useEffect(() => {
+    const img = ref.current;
+    if (!img) return;
+    const report = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setClipDisplayDims(clipId, img.naturalWidth, img.naturalHeight);
+      }
+    };
+    if (img.complete) report();
+    img.addEventListener("load", report);
+    return () => img.removeEventListener("load", report);
+  }, [clipId, setClipDisplayDims, imageUrl]);
   return (
     <img
+      ref={ref}
       src={imageUrl}
       alt={filename}
       className="absolute inset-0 w-full h-full"

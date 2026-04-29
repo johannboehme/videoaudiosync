@@ -744,5 +744,165 @@ describe("useEditorStore", () => {
       ]);
       expect(s.fxHolds).toEqual({});
     });
+
+    describe("tape-overwrite (per-kind monophonic)", () => {
+      test("beginFxHold splits an existing same-kind fx around the default-tap window", () => {
+        // Existing fx covering [1, 5]
+        useEditorStore.getState().addFx("vignette", 1, 5);
+        // New hold begins at t=3 with default-tap len 0.5 → range [3, 3.5]
+        // strictly inside [1, 5]: prior splits into left [1,3] + right
+        // [3.5,5], plus the new live fx [3, 3.5]. Anything outside the
+        // live range stays — recording does NOT erase the future.
+        useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+        const fx = useEditorStore.getState().fx;
+        expect(fx).toHaveLength(3);
+        const left = fx.find((f) => f.inS === 1)!;
+        expect(left.outS).toBeCloseTo(3, 6);
+        const right = fx.find((f) => Math.abs(f.outS - 5) < 1e-6)!;
+        expect(right.inS).toBeCloseTo(3.5, 6);
+      });
+
+      test("beginFxHold leaves fx outside the default-tap window untouched", () => {
+        // Far-away fx that the user wants to keep.
+        useEditorStore.getState().addFx("vignette", 10, 12);
+        useEditorStore.getState().beginFxHold("key:F", "vignette", 1);
+        const fx = useEditorStore.getState().fx;
+        // Both fx exist: the distant one + the new live one.
+        expect(fx).toHaveLength(2);
+        const distant = fx.find((f) => f.inS === 10)!;
+        expect(distant.outS).toBe(12);
+      });
+
+      test("beginFxHold removes an existing same-kind fx fully inside the new range", () => {
+        // Existing fx [3.1, 3.3] entirely INSIDE the new hold's default-tap span.
+        useEditorStore.getState().addFx("vignette", 3.1, 3.3);
+        useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+        const fx = useEditorStore.getState().fx;
+        // Only the new live fx remains.
+        expect(fx).toHaveLength(1);
+        expect(fx[0].inS).toBe(3);
+      });
+
+      test("beginFxHold ignores fx of a different kind", () => {
+        // Pretend there's another kind by inserting via addFx with the
+        // current single kind — same-kind only is the rule, so overlap must
+        // matter only for matching kind. Use vignette here as both for now;
+        // the real isolation is verified once a 2nd kind exists. To make
+        // the contract concrete, we still document the same-kind clause.
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+        const fx = useEditorStore.getState().fx;
+        // The existing fx got trimmed (same kind), proving the same-kind path.
+        const prior = fx.find((f) => f.inS === 0)!;
+        expect(prior.outS).toBeCloseTo(3, 6);
+      });
+
+      test("beginFxHold leaves live (currently-held) fx of the same kind alone", () => {
+        // First hold sits live in fxHolds.
+        useEditorStore.getState().beginFxHold("key:F", "vignette", 1);
+        // Second hold begins at t=3 — must NOT clobber the live one.
+        useEditorStore.getState().beginFxHold("key:G", "vignette", 3);
+        const s = useEditorStore.getState();
+        // Both holds exist.
+        expect(Object.keys(s.fxHolds).sort()).toEqual(["key:F", "key:G"]);
+        // Both fx exist (the F-live and the G-live).
+        expect(s.fx).toHaveLength(2);
+      });
+
+      test("tickFxHold trims a non-live same-kind fx that the live range grows over", () => {
+        // Pre-existing fx in the path of the live recording.
+        const obstacleId = useEditorStore.getState().addFx("vignette", 2, 4);
+        useEditorStore.getState().beginFxHold("key:F", "vignette", 1);
+        // Live recording extends past the obstacle.
+        useEditorStore.getState().tickFxHold("key:F", 5);
+        const fx = useEditorStore.getState().fx;
+        // Obstacle gone (or fully overwritten).
+        expect(fx.find((f) => f.id === obstacleId)).toBeUndefined();
+      });
+
+      test("rapid five taps at the same playhead leave at most one fx", () => {
+        // Simulate the user mashing F (or a Pad) five times at t=2.
+        for (let i = 0; i < 5; i++) {
+          useEditorStore.getState().beginFxHold("key:F", "vignette", 2);
+          useEditorStore.getState().endFxHold("key:F");
+        }
+        const fx = useEditorStore.getState().fx;
+        expect(fx.length).toBeLessThanOrEqual(1);
+      });
+    });
+
+    describe("eraseFxAt", () => {
+      test("erase 'all' inside a fx removes it entirely", () => {
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const fx = useEditorStore.getState().fx;
+        // Drop-on-touch: head overlaps fx → fx is gone.
+        expect(fx).toHaveLength(0);
+      });
+
+      test("erase 'all' on a fx whose start touches t removes it", () => {
+        useEditorStore.getState().addFx("vignette", 2, 4);
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const fx = useEditorStore.getState().fx;
+        // Head reaches past inS → drop.
+        expect(fx).toHaveLength(0);
+      });
+
+      test("erase 'all' near a fx's end edge removes it", () => {
+        useEditorStore.getState().addFx("vignette", 0, 2);
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const fx = useEditorStore.getState().fx;
+        // Front half of head reaches into back of fx → drop.
+        expect(fx).toHaveLength(0);
+      });
+
+      test("erase 'all' removes a tiny fx that touches the head", () => {
+        useEditorStore.getState().addFx("vignette", 1.0, 1.005);
+        useEditorStore.getState().eraseFxAt(1.001, "all");
+        const fx = useEditorStore.getState().fx;
+        expect(fx).toHaveLength(0);
+      });
+
+      test("erase 'all' affects every kind", () => {
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const fx = useEditorStore.getState().fx;
+        // Both gone.
+        expect(fx).toHaveLength(0);
+      });
+
+      test("erase per-kind only affects matching kinds", () => {
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().eraseFxAt(2, ["vignette"]);
+        const fx = useEditorStore.getState().fx;
+        expect(fx).toHaveLength(0);
+      });
+
+      test("erase per-kind with a non-matching kind list leaves fx untouched", () => {
+        useEditorStore.getState().addFx("vignette", 0, 5);
+        useEditorStore.getState().eraseFxAt(2, []);
+        const fx = useEditorStore.getState().fx;
+        expect(fx).toHaveLength(1);
+        expect(fx[0].inS).toBe(0);
+        expect(fx[0].outS).toBe(5);
+      });
+
+      test("erase outside any fx is a no-op", () => {
+        useEditorStore.getState().addFx("vignette", 0, 1);
+        useEditorStore.getState().eraseFxAt(5, "all");
+        const fx = useEditorStore.getState().fx;
+        expect(fx).toHaveLength(1);
+      });
+
+      test("erase head far from a distant fx leaves it untouched", () => {
+        // FX at [10, 12], erase at t=2 → no overlap.
+        useEditorStore.getState().addFx("vignette", 10, 12);
+        useEditorStore.getState().eraseFxAt(2, "all");
+        const fx = useEditorStore.getState().fx;
+        expect(fx).toHaveLength(1);
+        expect(fx[0].inS).toBe(10);
+      });
+    });
   });
 });

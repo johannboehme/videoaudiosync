@@ -12,6 +12,7 @@ import { TrimPanel } from "../editor/components/TrimPanel";
 import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { FxHardwarePanel } from "../editor/components/FxHardwarePanel";
 import { useEditorStore } from "../editor/store";
+import type { FxKind } from "../editor/fx/types";
 import {
   jobEvents,
   jobsDb,
@@ -227,12 +228,16 @@ export default function Editor() {
   useAutoPersist(id);
 
   // F-hotkey: hold to live-record a punch-in FX (vignette in V1).
+  // X-hotkey: hold to erase under the playhead. X alone wipes every kind;
+  // X + an FX-hotkey (e.g. X+F) restricts the wipe to those kinds only.
+  // While X is held, FX-hotkeys are filter modifiers, not record triggers.
+  //
   // Polyphony-friendly — multiple fx hotkeys can be added later (G, H ...)
   // and held simultaneously; the store models holds as a Map keyed by
-  // slotKey. Esc cancels every active hold.
+  // slotKey. Esc cancels every active hold + erase.
   //
-  // RAF tick lives in the same effect: while holds are non-empty, we
-  // extend each held fx's outS to the snapped currentTime each frame.
+  // RAF tick lives in the same effect: while holds OR erase are active,
+  // we extend each held fx's outS and apply the erase head each frame.
   useEffect(() => {
     function isTypingTarget(t: EventTarget | null): boolean {
       const el = t as HTMLElement | null;
@@ -241,23 +246,32 @@ export default function Editor() {
       return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
     }
 
-    const FX_HOTKEYS: Record<string, "vignette"> = {
+    const FX_HOTKEYS: Record<string, FxKind> = {
       f: "vignette",
       F: "vignette",
     };
+
+    // Local modifier state so the two key-handlers can talk to each other.
+    let eraseHeld = false;
+    /** FX kinds whose hotkey is currently held while X is also held. */
+    const eraseKindFilter = new Set<FxKind>();
 
     let raf: number | null = null;
     function tick() {
       raf = null;
       const s = useEditorStore.getState();
-      const slots = Object.keys(s.fxHolds);
-      if (slots.length === 0) return;
-      // Pass RAW currentTime (unsnapped) — the capsule grows continuously
-      // during the hold. Snap is applied at edit-time (Q) or on next user
-      // drag, not during the live hold.
       const tNow = s.playback.currentTime;
+      // Extend live-recording fx.
+      const slots = Object.keys(s.fxHolds);
       for (const slot of slots) s.tickFxHold(slot, tNow);
-      raf = requestAnimationFrame(tick);
+      // Punch erase head through fx under playhead, if X is held.
+      if (eraseHeld) {
+        const kinds: FxKind[] | "all" =
+          eraseKindFilter.size > 0 ? [...eraseKindFilter] : "all";
+        s.eraseFxAt(s.snapMasterTime(tNow), kinds);
+      }
+      const stillBusy = slots.length > 0 || eraseHeld;
+      if (stillBusy) raf = requestAnimationFrame(tick);
     }
     function ensureTick() {
       if (raf === null) raf = requestAnimationFrame(tick);
@@ -268,9 +282,28 @@ export default function Editor() {
       if (isTypingTarget(e.target)) return;
       const s = useEditorStore.getState();
 
-      if (e.key === "Escape" && Object.keys(s.fxHolds).length > 0) {
+      if (e.key === "Escape") {
+        if (Object.keys(s.fxHolds).length > 0) {
+          e.preventDefault();
+          s.cancelAllFxHolds();
+        }
+        if (eraseHeld) {
+          e.preventDefault();
+          eraseHeld = false;
+          eraseKindFilter.clear();
+        }
+        return;
+      }
+
+      // X-hotkey — erase modifier.
+      if (e.key === "x" || e.key === "X") {
+        if (e.repeat) {
+          e.preventDefault();
+          return;
+        }
         e.preventDefault();
-        s.cancelAllFxHolds();
+        eraseHeld = true;
+        ensureTick();
         return;
       }
 
@@ -280,20 +313,35 @@ export default function Editor() {
         e.preventDefault();
         return;
       }
-      const slotKey = `key:${e.key.toUpperCase()}`;
-      if (s.fxHolds[slotKey]) {
-        e.preventDefault();
+      e.preventDefault();
+      // While X is held, FX-hotkeys narrow the erase scope rather than
+      // starting a recording.
+      if (eraseHeld) {
+        eraseKindFilter.add(kind);
         return;
       }
-      e.preventDefault();
+      const slotKey = `key:${e.key.toUpperCase()}`;
+      if (s.fxHolds[slotKey]) return;
       const t = s.snapMasterTime(s.playback.currentTime);
       s.beginFxHold(slotKey, kind, t);
       ensureTick();
     }
 
     function onKeyUp(e: KeyboardEvent) {
+      if (e.key === "x" || e.key === "X") {
+        eraseHeld = false;
+        eraseKindFilter.clear();
+        return;
+      }
       const kind = FX_HOTKEYS[e.key];
       if (!kind) return;
+      // If we were using this kind as an erase filter, drop it from the
+      // filter — but never treat the up-stroke as a fx-hold release for a
+      // hold that was never started.
+      if (eraseKindFilter.has(kind)) {
+        eraseKindFilter.delete(kind);
+        return;
+      }
       const slotKey = `key:${e.key.toUpperCase()}`;
       useEditorStore.getState().endFxHold(slotKey);
     }

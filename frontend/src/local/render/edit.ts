@@ -570,16 +570,22 @@ export async function editRenderMulti(
   // handles arbitrary source rates including the 30-vs-120 case the
   // demo files exhibit.
   const fps = Math.max(1, Math.round(input.outputFps ?? 30));
-  // Output dimensions follow cam-1's *displayed* (post-rotation) size, so
-  // a portrait phone recording with rotation=90 stored as 1920×1080
-  // outputs as 1080×1920 — matching what the browser shows in preview.
-  const cam1Info = demuxResults[0].info;
-  const cam1Rot = cam1Info.rotationDeg;
-  const cam1Swap = cam1Rot === 90 || cam1Rot === 270;
-  const cam1DispW = cam1Swap ? cam1Info.height : cam1Info.width;
-  const cam1DispH = cam1Swap ? cam1Info.width : cam1Info.height;
-  const outputWidth = input.outputWidth ?? cam1DispW;
-  const outputHeight = input.outputHeight ?? cam1DispH;
+  // Output dimensions = the bounding-box `(max W_disp, max H_disp)` over
+  // all cams' displayed (post-rotation) sizes. That way no cam ever gets
+  // cropped — cams smaller in either dimension are letterboxed/pillar-
+  // boxed inside the box. Each cam still decides its own per-frame fit
+  // via `compositeImage` below.
+  let bboxW = 0;
+  let bboxH = 0;
+  for (const d of demuxResults) {
+    const swap = d.info.rotationDeg === 90 || d.info.rotationDeg === 270;
+    const w = swap ? d.info.height : d.info.width;
+    const h = swap ? d.info.width : d.info.height;
+    if (w > bboxW) bboxW = w;
+    if (h > bboxH) bboxH = h;
+  }
+  const outputWidth = input.outputWidth ?? bboxW;
+  const outputHeight = input.outputHeight ?? bboxH;
   const videoCodec: VideoEncodeCodec = input.videoCodec ?? "h264";
 
   if (videoCodec === "h265") {

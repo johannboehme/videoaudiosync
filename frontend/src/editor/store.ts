@@ -234,6 +234,11 @@ interface EditorState {
   /** Remove a clip and any cuts that referenced it. Clears the
    *  selectedClipId if it pointed at this cam. No-op for unknown camId. */
   removeClip(camId: string): void;
+  /** Record a clip's display (post-rotation) pixel size. Called by the
+   *  preview's video / image elements once their natural dims become
+   *  available. Feeds the output-frame bounding-box resolver — which
+   *  is why we need this in the store, not just per-DOM-element. */
+  setClipDisplayDims(camId: string, w: number, h: number): void;
 
   setCurrentTime(t: number): void;
   setPlaying(playing: boolean): void;
@@ -369,6 +374,13 @@ interface EditorState {
   /** Esc: revert every active hold. Iterates in insertion-order, each
    *  revert applied on top of the prior (so the very first priorFx wins). */
   cancelAllFxHolds(): void;
+  /** Punch a small "erase head" through any non-live fx whose range
+   *  contains `t` (inS <= t < outS). `kinds` filters which kinds to
+   *  affect: "all" hits every kind; an array hits only listed kinds.
+   *  Splits / trims / drops as needed. Live (currently-held) fx are
+   *  never touched here — call endFxHold first if you want to abort
+   *  a live recording. */
+  eraseFxAt(t: number, kinds: FxKind[] | "all"): void;
 
   setProgramStripMode(mode: UiSlice["programStripMode"]): void;
   setFxPanelOpen(open: boolean): void;
@@ -406,6 +418,66 @@ const FX_MIN_WINDOW_S = 0.05;
 /** Buffer pushed past the playhead during a live hold. Keeps `t < outS`
  *  true across RAF jitter and snap-quantization gaps. ~3 frames at 60Hz. */
 const FX_HOLD_OVERSHOOT_S = 0.05;
+/** Width of the "erase head" punch-through. ~150 ms so a brief X-tap
+ *  leaves a clearly visible gap, and consecutive frames of an X-hold at
+ *  the same paused playhead don't collapse to a no-op (a 1-frame head
+ *  trims the fx by 1 frame on first tick, then the snapped t falls
+ *  outside the trimmed fx and nothing else happens). 150 ms is wide
+ *  enough to read on the tape strip without obliterating neighbours. */
+const FX_ERASE_DELTA_S = 0.15;
+
+/** Apply the tape-overwrite pre-filter to `fx` for a write into
+ *  `[rangeStartS, rangeEndS)` of kind `kind`. Live fx (ids in
+ *  `liveIds`) are protected and pass through untouched. Any other fx of
+ *  the same kind that overlaps the range is trimmed to the part(s)
+ *  outside the range; if degenerate (< FX_MIN_WINDOW_S) it's dropped.
+ *
+ *  Pure helper so we can call it from both beginFxHold (range starts at
+ *  startS, end is the default-tap commit) and tickFxHold (range grows
+ *  with the playhead). */
+function clobberSameKindOverlapping(
+  fx: readonly PunchFx[],
+  kind: FxKind,
+  rangeStartS: number,
+  rangeEndS: number,
+  liveIds: ReadonlySet<string>,
+): PunchFx[] {
+  if (rangeEndS <= rangeStartS) return [...fx];
+  const out: PunchFx[] = [];
+  for (const f of fx) {
+    if (f.kind !== kind || liveIds.has(f.id)) {
+      out.push(f);
+      continue;
+    }
+    // No overlap → keep.
+    if (f.outS <= rangeStartS || f.inS >= rangeEndS) {
+      out.push(f);
+      continue;
+    }
+    // Fully inside → drop.
+    if (f.inS >= rangeStartS && f.outS <= rangeEndS) {
+      continue;
+    }
+    // Overlaps the front edge: trim back end.
+    if (f.inS < rangeStartS && f.outS <= rangeEndS) {
+      const trimmed: PunchFx = { ...f, outS: rangeStartS };
+      if (trimmed.outS - trimmed.inS >= FX_MIN_WINDOW_S) out.push(trimmed);
+      continue;
+    }
+    // Overlaps the back edge: trim front start.
+    if (f.inS >= rangeStartS && f.outS > rangeEndS) {
+      const trimmed: PunchFx = { ...f, inS: rangeEndS };
+      if (trimmed.outS - trimmed.inS >= FX_MIN_WINDOW_S) out.push(trimmed);
+      continue;
+    }
+    // Range strictly inside f → split into two pieces.
+    const left: PunchFx = { ...f, outS: rangeStartS };
+    const right: PunchFx = { ...f, id: makeFxId(), inS: rangeEndS };
+    if (left.outS - left.inS >= FX_MIN_WINDOW_S) out.push(left);
+    if (right.outS - right.inS >= FX_MIN_WINDOW_S) out.push(right);
+  }
+  return out;
+}
 
 function makeFxId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -612,6 +684,18 @@ export const useEditorStore = create<EditorState>()(
         selectedClipId:
           state.selectedClipId === camId ? null : state.selectedClipId,
       });
+    },
+
+    setClipDisplayDims(camId, w, h) {
+      if (w <= 0 || h <= 0) return;
+      const clips = get().clips;
+      const idx = clips.findIndex((c) => c.id === camId);
+      if (idx < 0) return;
+      const cur = clips[idx];
+      if (cur.displayW === w && cur.displayH === h) return;
+      const next = clips.slice();
+      next[idx] = { ...cur, displayW: w, displayH: h };
+      set({ clips: next });
     },
 
     setCurrentTime(t) {
@@ -1221,6 +1305,22 @@ export const useEditorStore = create<EditorState>()(
       const bpm = get().jobMeta?.bpm?.value ?? null;
       const lengthS = defaultTapLengthS(kind, bpm);
       const priorFx = get().fx.slice();
+      // Tape-overwrite: clobber non-live same-kind fx that overlap the
+      // default-tap window we're about to commit. As the hold extends
+      // past the default-tap (via tickFxHold), more fx in the path will
+      // be clobbered then. Anything strictly to the right of the live
+      // range stays untouched — recording does not erase the future.
+      const liveIds = new Set(
+        Object.values(get().fxHolds).map((h) => h.fxId),
+      );
+      const clobbered = clobberSameKindOverlapping(
+        get().fx,
+        kind,
+        startS,
+        startS + lengthS,
+        liveIds,
+      );
+      set({ fx: clobbered });
       const id = get().addFx(kind, startS, startS + lengthS);
       const nextHolds: Record<string, FxHoldEntry> = {
         ...get().fxHolds,
@@ -1242,11 +1342,48 @@ export const useEditorStore = create<EditorState>()(
       // under your fingertip).
       const target = currentS + FX_HOLD_OVERSHOOT_S;
       if (target <= fx.outS) return;
+      // Tape-overwrite: as the live range grows, eat any non-live
+      // same-kind fx in its path. Skip the live fx itself.
+      const liveIds = new Set(
+        Object.values(get().fxHolds).map((h) => h.fxId),
+      );
+      const clobbered = clobberSameKindOverlapping(
+        get().fx,
+        fx.kind,
+        hold.startS,
+        target,
+        liveIds,
+      );
+      set({ fx: clobbered });
       get().setFxOut(hold.fxId, target);
     },
     endFxHold(slotKey) {
       const cur = get().fxHolds;
-      if (!cur[slotKey]) return;
+      const hold = cur[slotKey];
+      if (!hold) return;
+      // Snap the committed out-edge to the active grid. The in-edge was
+      // snapped at beginFxHold; mirroring that on release means tap and
+      // hold both produce on-grid ranges. Falls back to the live outS
+      // (with overshoot) if the snap would shrink below in + min-window
+      // — recording never collapses a fx under the user's fingertips.
+      const fx = get().fx.find((f) => f.id === hold.fxId);
+      if (fx) {
+        // The live tick keeps outS at currentS + overshoot, so
+        // `outS - overshoot` is the latest playhead position we know about.
+        // We use that as the release time instead of reading playback.
+        // currentTime again — the latter may have advanced past our last
+        // observation, and during tests there's often no playback at all.
+        const releaseS = Math.max(fx.inS, fx.outS - FX_HOLD_OVERSHOOT_S);
+        const snapped = get().snapMasterTime(releaseS);
+        const finalOut = Math.max(fx.inS + FX_MIN_WINDOW_S, snapped);
+        if (Math.abs(finalOut - fx.outS) > 1e-6) {
+          set({
+            fx: get().fx.map((f) =>
+              f.id === hold.fxId ? { ...f, outS: finalOut } : f,
+            ),
+          });
+        }
+      }
       const next = { ...cur };
       delete next[slotKey];
       set({ fxHolds: next });
@@ -1267,6 +1404,37 @@ export const useEditorStore = create<EditorState>()(
       const liveIds = new Set(Object.values(holds).map((h) => h.fxId));
       const fxNext = get().fx.filter((f) => !liveIds.has(f.id));
       set({ fx: fxNext, fxHolds: {} });
+    },
+    eraseFxAt(t, kinds) {
+      const liveIds = new Set(
+        Object.values(get().fxHolds).map((h) => h.fxId),
+      );
+      const matchKind = (k: FxKind): boolean =>
+        kinds === "all" ? true : kinds.includes(k);
+      // Erase head is a range (~150ms wide) centered on t. Any matching
+      // fx that touches the head gets deleted outright — no trimming,
+      // no splitting. This matches the OP-Z "erase = wipe whatever
+      // passes under the head" feel and avoids the edge case where
+      // trimming makes the new fx.inS land exactly on the next head's
+      // cutHigh, locking the user out of further deletion.
+      const cutLow = t - FX_ERASE_DELTA_S / 2;
+      const cutHigh = t + FX_ERASE_DELTA_S / 2;
+      // 1 ms slop so a head whose edge lands exactly on f.inS / f.outS
+      // (typical when fx in/out were already snapped) still counts as
+      // touching — otherwise float-perfect alignment locks the user out.
+      const TOUCH_EPS = 1e-3;
+      const next: PunchFx[] = [];
+      for (const f of get().fx) {
+        if (!matchKind(f.kind) || liveIds.has(f.id)) {
+          next.push(f);
+          continue;
+        }
+        const overlaps =
+          cutHigh > f.inS - TOUCH_EPS && cutLow < f.outS + TOUCH_EPS;
+        if (!overlaps) next.push(f);
+        // else: drop entirely
+      }
+      set({ fx: next });
     },
 
     setProgramStripMode(mode) {

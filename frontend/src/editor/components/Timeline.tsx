@@ -202,9 +202,8 @@ export function Timeline({
   const fxHolds = useEditorStore((s) => s.fxHolds);
   const programStripMode = useEditorStore((s) => s.ui.programStripMode);
   const setProgramStripMode = useEditorStore((s) => s.setProgramStripMode);
-  const setFxIn = useEditorStore((s) => s.setFxIn);
-  const setFxOut = useEditorStore((s) => s.setFxOut);
-  const removeFx = useEditorStore((s) => s.removeFx);
+  // FX edits via timeline are gone — the lane is read-only now. All
+  // mutation goes through the live-hold + erase API in the store.
   const liveFxIds = useMemo(() => {
     const set = new Set<string>();
     for (const k in fxHolds) set.add(fxHolds[k].fxId);
@@ -1126,33 +1125,6 @@ export function Timeline({
               mode={programStripMode}
               fx={fx}
               liveFxIds={liveFxIds}
-              onFxIn={(id, rawT, ev) => {
-                const t = ev.shiftKey
-                  ? rawT
-                  : useEditorStore.getState().snapMasterTime(rawT);
-                setFxIn(id, t);
-                return t;
-              }}
-              onFxOut={(id, rawT, ev) => {
-                const t = ev.shiftKey
-                  ? rawT
-                  : useEditorStore.getState().snapMasterTime(rawT);
-                setFxOut(id, t);
-                return t;
-              }}
-              onFxMove={(id, rawT, ev) => {
-                const target = useEditorStore.getState().fx.find((f) => f.id === id);
-                if (!target) return rawT;
-                const t = ev.shiftKey
-                  ? rawT
-                  : useEditorStore.getState().snapMasterTime(rawT);
-                const delta = t - target.inS;
-                // Move both edges so duration is preserved.
-                setFxIn(id, t);
-                setFxOut(id, target.outS + delta);
-                return t;
-              }}
-              onRemoveFx={(id) => removeFx(id)}
             />
           </div>
         </div>

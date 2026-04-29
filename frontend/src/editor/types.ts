@@ -114,6 +114,13 @@ export interface VideoClip {
   /** Per-clip trim end (seconds, in source-time). Undefined = full
    *  source through the end. */
   trimOutS?: number;
+  /** Post-rotation displayed width/height (CSS-pixel scale, browser-
+   *  decoded). Filled in lazily when the underlying `<video>` reports
+   *  loadedmetadata. Used by the output-frame resolver to compute the
+   *  bounding-box (max W, max H) over all clips so the preview + render
+   *  always covers every cam regardless of which is currently active. */
+  displayW?: number;
+  displayH?: number;
 }
 
 /**
@@ -133,6 +140,10 @@ export interface ImageClip {
   /** Master-timeline placement offset (seconds). The clip occupies
    *  [startOffsetS, startOffsetS + durationS). */
   startOffsetS: number;
+  /** Natural pixel size of the image. Same role as VideoClip's
+   *  displayW/H — feeds the output-frame bounding-box resolver. */
+  displayW?: number;
+  displayH?: number;
 }
 
 export type Clip = VideoClip | ImageClip;

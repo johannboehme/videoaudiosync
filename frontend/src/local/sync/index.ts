@@ -161,15 +161,21 @@ function runMatchInWorker(
       cleanup();
     });
 
+    // Defensive copy: callers may reuse the same input array across calls
+    // (e.g. the studio/master PCM is sent once per cam during a multi-cam
+    // job). Transferring the original buffer detaches it on the main
+    // thread, so the second call would throw "ArrayBuffer is already
+    // detached". Slicing gives the worker its own buffer to consume while
+    // leaving the caller's array intact.
+    const refSlice = refPcm.slice();
+    const querySlice = queryPcm.slice();
     const req: SyncWorkerRequest = {
       type: "match",
-      refPcm,
-      queryPcm,
+      refPcm: refSlice,
+      queryPcm: querySlice,
       sampleRate,
     };
-    // Transfer the underlying buffers — main thread loses access to them
-    // after this, which is fine since we don't reuse PCMs past the call.
-    worker.postMessage(req, [refPcm.buffer, queryPcm.buffer]);
+    worker.postMessage(req, [refSlice.buffer, querySlice.buffer]);
   });
 }
 

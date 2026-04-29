@@ -75,21 +75,14 @@ interface Props {
   }>;
   /** Display mode — what the strip shows. Default "cuts" preserves the
    *  legacy single-purpose look. "fx" replaces cam-color program-segments
-   *  with FX-capsules (full strip height). "both" stacks: cuts on top,
-   *  fx on bottom, with delete-X popping in opposite directions. */
+   *  with the FX-tape (full strip height). "both" splits: cuts on top,
+   *  fx on bottom, divided by a 1px etched line. */
   mode?: "cuts" | "fx" | "both";
   fx?: readonly PunchFx[];
   /** FX IDs currently being live-extended via a hold gesture. Drives the
-   *  capsule's leading-edge pulse animation. */
+   *  fx-tape's leading-edge pulse animation. */
   liveFxIds?: ReadonlySet<string>;
-  /** Snap-aware in-edge drag callback. */
-  onFxIn?: (id: string, rawT: number, e: { shiftKey: boolean }) => number;
-  onFxOut?: (id: string, rawT: number, e: { shiftKey: boolean }) => number;
-  onFxMove?: (id: string, rawT: number, e: { shiftKey: boolean }) => number;
-  onRemoveFx?: (id: string) => void;
 }
-
-const SPROCKET_PITCH = 14;
 
 const EMPTY_LIVE_FX_IDS: ReadonlySet<string> = new Set();
 
@@ -108,22 +101,19 @@ export function ProgramStrip({
   mode = "cuts",
   fx,
   liveFxIds = EMPTY_LIVE_FX_IDS,
-  onFxIn,
-  onFxOut,
-  onFxMove,
-  onRemoveFx,
 }: Props) {
   // Default height is mode-dependent so FX-only and both layouts get
   // chunkier strips without the caller having to pass it through.
   const stripHeight = height ?? tapeHeightForMode(mode);
   const showCuts = mode === "cuts" || mode === "both";
   const showFx = mode === "fx" || mode === "both";
-  // Vertical layout (in CSS px from the strip's content area, which sits
-  // between sprocket-row top:10 and bottom:3):
-  //   cuts mode: cuts fill 10..(height-3)
-  //   fx mode:   fx fills 10..(height-3)
+  // Vertical layout (in CSS px from the strip's content area):
+  //   cuts mode: cuts fill 3..(height-3)
+  //   fx mode:   fx fills 3..(height-3)
   //   both mode: cuts top half, fx bottom half (with 1px etched divider)
-  const contentTop = 10;
+  // Slim 3-px top/bottom rims keep the embossed inner highlight visible
+  // without stealing height from the tape itself.
+  const contentTop = 3;
   const contentBottom = 3;
   const contentHeight = Math.max(0, stripHeight - contentTop - contentBottom);
   const splitMidY = mode === "both" ? contentTop + Math.floor(contentHeight / 2) : 0;
@@ -193,9 +183,6 @@ export function ProgramStrip({
   const visibleSpan = Math.max(1e-6, viewEndS - viewStartS);
   const tToX = (t: number) => ((t - viewStartS) / visibleSpan) * width;
 
-  // Sprocket dots scale with width.
-  const dotCount = Math.max(0, Math.floor(width / SPROCKET_PITCH));
-
   const tapeStyle: CSSProperties = {
     background: `
       repeating-linear-gradient(90deg, transparent 0, transparent 1.5px, rgba(0,0,0,0.05) 1.6px, transparent 2.2px),
@@ -212,20 +199,6 @@ export function ProgramStrip({
       className="relative w-full border-y border-[#9F9170] select-none"
       style={tapeStyle}
     >
-      {/* Sprocket-hole row along the top edge */}
-      <div className="absolute top-0 left-0 right-0 h-[8px] flex items-center justify-around pointer-events-none">
-        {Array.from({ length: dotCount }).map((_, i) => (
-          <span
-            key={i}
-            className="block w-[3px] h-[3px] rounded-full"
-            style={{
-              background: "#3A352E",
-              boxShadow: "0 1px 0 rgba(255,255,255,0.45), inset 0 0 1px rgba(0,0,0,0.4)",
-            }}
-          />
-        ))}
-      </div>
-
       {/* Cam-color program segments — inset like painted leader tape.
         * In `both` mode the segments are clipped to the top half so the FX
         * lane fills the bottom half. In `fx` mode they're skipped entirely. */}
@@ -483,12 +456,7 @@ export function ProgramStrip({
             viewEndS={viewEndS}
             width={width}
             height={fxLayerHeight}
-            xDirection="down"
             liveFxIds={liveFxIds}
-            onFxIn={onFxIn}
-            onFxOut={onFxOut}
-            onFxMove={onFxMove}
-            onRemoveFx={onRemoveFx}
           />
         </div>
       )}
