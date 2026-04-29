@@ -3,6 +3,7 @@ name = "sync-core"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license = "MIT"
 description = "Audio-sync algorithm (chroma cross-correlation + DTW + drift refinement) compiled to WASM."
 
 [lib]

@@ -11,18 +11,18 @@ import {
 } from "../local/jobs";
 
 const STAGE_LABELS: Record<string, string> = {
-  "render-prep": "Vorbereiten",
-  "audio-decode": "Audio dekodieren",
-  "audio-encode": "Audio kodieren",
-  "energy-curves": "Audio-Energie analysieren",
-  "extracting-frames": "Vorschaubilder extrahieren",
-  encoding: "Video kodieren",
-  "encoder-flush": "Letzte Frames flushen",
-  muxing: "Audio + Video zusammenführen",
-  finalizing: "Datei finalisieren",
-  writing: "MP4 schreiben",
-  rendered: "Fertig",
-  cancelled: "Abgebrochen",
+  "render-prep": "Preparing",
+  "audio-decode": "Decoding audio",
+  "audio-encode": "Encoding audio",
+  "energy-curves": "Analyzing audio energy",
+  "extracting-frames": "Extracting preview frames",
+  encoding: "Encoding video",
+  "encoder-flush": "Flushing last frames",
+  muxing: "Muxing audio + video",
+  finalizing: "Finalizing file",
+  writing: "Writing MP4",
+  rendered: "Done",
+  cancelled: "Cancelled",
 };
 
 function stageLabel(stage: string): string {
@@ -89,7 +89,7 @@ export default function RenderScreen() {
   }, [job?.progress.pct, job?.progress.stage, job]);
 
   // Auto-navigate when the render finishes. We give the success path a
-  // brief moment so the user sees "Fertig" before the page swaps.
+  // brief moment so the user sees "Done" before the page swaps.
   useEffect(() => {
     if (!job) return;
     if (job.status === "rendered") {
@@ -117,10 +117,10 @@ export default function RenderScreen() {
   const isCancelled = isFailed && job?.error === "cancelled";
 
   const headline = useMemo(() => {
-    if (isDone) return "Render fertig";
-    if (isCancelled) return "Abgebrochen";
-    if (isFailed) return "Render fehlgeschlagen";
-    return "Wird gerendert…";
+    if (isDone) return "Render done";
+    if (isCancelled) return "Cancelled";
+    if (isFailed) return "Render failed";
+    return "Rendering…";
   }, [isDone, isFailed, isCancelled]);
 
   return (
@@ -180,7 +180,7 @@ export default function RenderScreen() {
 
         {isFailed && (
           <section className="border-l-2 border-danger pl-3 py-2 font-mono text-sm text-danger">
-            {isCancelled ? "Render wurde abgebrochen." : (job?.error ?? "Unbekannter Fehler.")}
+            {isCancelled ? "Render was cancelled." : (job?.error ?? "Unknown error.")}
           </section>
         )}
 
@@ -192,7 +192,7 @@ export default function RenderScreen() {
               onClick={onCancel}
               disabled={cancelling}
             >
-              {cancelling ? "Abbrechen…" : "Render abbrechen"}
+              {cancelling ? "Cancelling…" : "Cancel render"}
             </ChunkyButton>
           )}
           {isFailed && (
@@ -201,7 +201,7 @@ export default function RenderScreen() {
               size="lg"
               onClick={() => navigate(`/job/${id}/edit`)}
             >
-              Zurück zum Editor
+              Back to editor
             </ChunkyButton>
           )}
         </div>
