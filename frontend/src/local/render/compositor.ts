@@ -18,6 +18,9 @@ import type { TextOverlay, EnergyCurves } from "./ass-builder";
 import { buildAss } from "./ass-builder";
 import { renderOverlays } from "./ass-renderer";
 import type { Visualizer } from "./visualizer/types";
+import type { PunchFx } from "../../editor/fx/types";
+import { activeFxAt } from "../../editor/fx/active";
+import { fxCatalog } from "../../editor/fx/catalog";
 
 export interface CompositorOptions {
   /** Output canvas dimensions — what's encoded. Overlays + visualizers are
@@ -32,6 +35,11 @@ export interface CompositorOptions {
   overlays: TextOverlay[];
   energy?: EnergyCurves | null;
   visualizers?: Visualizer[];
+  /** Punch-in FX with in/out spans on the master timeline. Active fx at
+   *  the current frame's timestamp paint over the source frame BEFORE
+   *  visualizers and text overlays. Same `drawCanvas2D` impl as the
+   *  live-preview's Canvas2D fallback — single source of truth per kind. */
+  fx?: readonly PunchFx[];
 }
 
 function computeFitRect(
@@ -158,6 +166,20 @@ export class Compositor {
     }
 
     const t = timestampUs / 1_000_000;
+
+    // Punch-in FX paint OVER the source frame, but BEFORE visualizers /
+    // text overlays — that way overlays remain readable even when a fx
+    // (e.g. vignette) darkens the periphery.
+    if (this.opts.fx && this.opts.fx.length > 0) {
+      const active = activeFxAt(this.opts.fx, t);
+      for (const fx of active) {
+        const def = fxCatalog[fx.kind];
+        if (!def) continue;
+        this.ctx.save();
+        def.drawCanvas2D(this.ctx, fx, this.opts.width, this.opts.height);
+        this.ctx.restore();
+      }
+    }
 
     if (this.opts.visualizers && this.opts.visualizers.length > 0) {
       for (const v of this.opts.visualizers) {

@@ -24,6 +24,7 @@ import { clipRangeS, isVideoClip, type Clip } from "../types";
 import { LaneHeader, type CamStatus } from "./timeline/LaneHeader";
 import { AddMediaButton } from "./AddMediaButton";
 import { ProgramStrip } from "./timeline/ProgramStrip";
+import { SegmentedControl } from "./SegmentedControl";
 import { BeatRuler } from "./timeline/BeatRuler";
 import { BpmReadout } from "./BpmReadout";
 import { SnapModeButtons } from "./SnapModeButtons";
@@ -196,6 +197,18 @@ export function Timeline({
   const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
   const beatPhase = useEditorStore((s) => s.jobMeta?.bpm?.phase ?? 0);
   const quantizePreview = useEditorStore((s) => s.quantizePreview);
+  const fx = useEditorStore((s) => s.fx);
+  const fxHolds = useEditorStore((s) => s.fxHolds);
+  const programStripMode = useEditorStore((s) => s.ui.programStripMode);
+  const setProgramStripMode = useEditorStore((s) => s.setProgramStripMode);
+  const setFxIn = useEditorStore((s) => s.setFxIn);
+  const setFxOut = useEditorStore((s) => s.setFxOut);
+  const removeFx = useEditorStore((s) => s.removeFx);
+  const liveFxIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const k in fxHolds) set.add(fxHolds[k].fxId);
+    return set;
+  }, [fxHolds]);
   const takePromoteTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const duration = jobMeta?.duration || audioDuration || 0;
@@ -990,6 +1003,16 @@ export function Timeline({
       <div className="flex items-center gap-4 px-1 mb-2">
         <BpmReadout />
         <SnapModeButtons />
+        <SegmentedControl
+          size="sm"
+          value={programStripMode}
+          onChange={(v) => setProgramStripMode(v)}
+          options={[
+            { value: "cuts", label: "CUTS" },
+            { value: "fx", label: "FX" },
+            { value: "both", label: "BOTH" },
+          ]}
+        />
         <ActiveMatchReadout
           camId={activeClipMoveDragId}
           snapMode={snapMode}
@@ -1097,6 +1120,36 @@ export function Timeline({
                     };
                   });
               })()}
+              mode={programStripMode}
+              fx={fx}
+              liveFxIds={liveFxIds}
+              onFxIn={(id, rawT, ev) => {
+                const t = ev.shiftKey
+                  ? rawT
+                  : useEditorStore.getState().snapMasterTime(rawT);
+                setFxIn(id, t);
+                return t;
+              }}
+              onFxOut={(id, rawT, ev) => {
+                const t = ev.shiftKey
+                  ? rawT
+                  : useEditorStore.getState().snapMasterTime(rawT);
+                setFxOut(id, t);
+                return t;
+              }}
+              onFxMove={(id, rawT, ev) => {
+                const target = useEditorStore.getState().fx.find((f) => f.id === id);
+                if (!target) return rawT;
+                const t = ev.shiftKey
+                  ? rawT
+                  : useEditorStore.getState().snapMasterTime(rawT);
+                const delta = t - target.inS;
+                // Move both edges so duration is preserved.
+                setFxIn(id, t);
+                setFxOut(id, target.outS + delta);
+                return t;
+              }}
+              onRemoveFx={(id) => removeFx(id)}
             />
           </div>
         </div>

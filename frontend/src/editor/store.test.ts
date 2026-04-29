@@ -592,4 +592,146 @@ describe("useEditorStore", () => {
       expect(useEditorStore.getState().notice).toBeNull();
     });
   });
+
+  describe("punch-in fx", () => {
+    beforeEach(() => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+    });
+
+    test("initial state has empty fx, no holds, default ui flags", () => {
+      const s = useEditorStore.getState();
+      expect(s.fx).toEqual([]);
+      expect(s.fxHolds).toEqual({});
+      expect(s.ui.programStripMode).toBe("cuts");
+      expect(s.ui.fxPanelOpen).toBe(false);
+    });
+
+    test("addFx returns id and appends to fx[]", () => {
+      const id = useEditorStore.getState().addFx("vignette", 1, 2);
+      expect(typeof id).toBe("string");
+      expect(useEditorStore.getState().fx).toHaveLength(1);
+      expect(useEditorStore.getState().fx[0]).toMatchObject({
+        id,
+        kind: "vignette",
+        inS: 1,
+        outS: 2,
+      });
+    });
+
+    test("setFxIn / setFxOut respect min-window 0.05s", () => {
+      const id = useEditorStore.getState().addFx("vignette", 1, 2);
+      // Pushing in past out collapses to (out-eps, out)
+      useEditorStore.getState().setFxIn(id, 5);
+      const fx = useEditorStore.getState().fx[0];
+      expect(fx.outS - fx.inS).toBeGreaterThanOrEqual(0.04999);
+      // Pulling out below in respects min-window
+      useEditorStore.getState().setFxOut(id, 0);
+      const fx2 = useEditorStore.getState().fx[0];
+      expect(fx2.outS - fx2.inS).toBeGreaterThanOrEqual(0.04999);
+    });
+
+    test("removeFx drops by id", () => {
+      const a = useEditorStore.getState().addFx("vignette", 0, 1);
+      const b = useEditorStore.getState().addFx("vignette", 1, 2);
+      useEditorStore.getState().removeFx(a);
+      expect(useEditorStore.getState().fx.map((f) => f.id)).toEqual([b]);
+    });
+
+    test("beginFxHold creates fx with default-tap length and records hold", () => {
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+      const s = useEditorStore.getState();
+      expect(s.fx).toHaveLength(1);
+      expect(s.fx[0].inS).toBe(3);
+      // Default = 1 beat at no-bpm fallback (0.5 s)
+      expect(s.fx[0].outS).toBeCloseTo(3.5, 6);
+      expect(s.fxHolds["key:F"]).toBeDefined();
+      expect(s.fxHolds["key:F"].fxId).toBe(s.fx[0].id);
+      expect(s.fxHolds["key:F"].priorFx).toEqual([]);
+    });
+
+    test("tickFxHold extends outS but never shrinks below default-tap", () => {
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+      const initialOut = useEditorStore.getState().fx[0].outS;
+      // Holding longer than default → out grows
+      useEditorStore.getState().tickFxHold("key:F", 5);
+      expect(useEditorStore.getState().fx[0].outS).toBeCloseTo(5, 6);
+      // Going BACKWARD (release earlier than current out) → out stays
+      useEditorStore.getState().tickFxHold("key:F", 4);
+      expect(useEditorStore.getState().fx[0].outS).toBeCloseTo(5, 6);
+      // Going further → grows again
+      useEditorStore.getState().tickFxHold("key:F", 7);
+      expect(useEditorStore.getState().fx[0].outS).toBeCloseTo(7, 6);
+      // Initial-out was the default-tap length floor
+      expect(initialOut).toBeCloseTo(3.5, 6);
+    });
+
+    test("endFxHold removes the hold but keeps the fx", () => {
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+      useEditorStore.getState().tickFxHold("key:F", 4);
+      useEditorStore.getState().endFxHold("key:F");
+      expect(useEditorStore.getState().fxHolds).toEqual({});
+      expect(useEditorStore.getState().fx).toHaveLength(1);
+    });
+
+    test("cancelFxHold reverts to priorFx (drops the just-played fx)", () => {
+      // Pre-existing fx → snapshot for hold revert
+      const preId = useEditorStore.getState().addFx("vignette", 0, 1);
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+      useEditorStore.getState().tickFxHold("key:F", 4);
+      useEditorStore.getState().cancelFxHold("key:F");
+      const s = useEditorStore.getState();
+      expect(s.fx.map((f) => f.id)).toEqual([preId]);
+      expect(s.fxHolds).toEqual({});
+    });
+
+    test("polyphony: multiple simultaneous holds, each isolated", () => {
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 1);
+      useEditorStore.getState().beginFxHold("key:G", "vignette", 2);
+      useEditorStore.getState().tickFxHold("key:F", 3);
+      useEditorStore.getState().tickFxHold("key:G", 4);
+      const s = useEditorStore.getState();
+      expect(s.fx).toHaveLength(2);
+      expect(Object.keys(s.fxHolds).sort()).toEqual(["key:F", "key:G"]);
+      // Cancel one → only that one disappears
+      useEditorStore.getState().cancelFxHold("key:F");
+      const s2 = useEditorStore.getState();
+      expect(s2.fx).toHaveLength(1);
+      expect(s2.fxHolds["key:G"]).toBeDefined();
+      expect(s2.fxHolds["key:F"]).toBeUndefined();
+    });
+
+    test("cancelAllFxHolds reverts every active hold", () => {
+      const preId = useEditorStore.getState().addFx("vignette", 0, 1);
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 1);
+      useEditorStore.getState().beginFxHold("key:G", "vignette", 2);
+      useEditorStore.getState().cancelAllFxHolds();
+      const s = useEditorStore.getState();
+      expect(s.fx.map((f) => f.id)).toEqual([preId]);
+      expect(s.fxHolds).toEqual({});
+    });
+
+    test("setProgramStripMode and setFxPanelOpen update ui slice", () => {
+      useEditorStore.getState().setProgramStripMode("both");
+      expect(useEditorStore.getState().ui.programStripMode).toBe("both");
+      useEditorStore.getState().setFxPanelOpen(true);
+      expect(useEditorStore.getState().ui.fxPanelOpen).toBe(true);
+    });
+
+    test("loadJob accepts opts.fx and clears fxHolds", () => {
+      // First insert some hold + fx state...
+      useEditorStore.getState().addFx("vignette", 0, 1);
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 2);
+      // ...then a fresh load should reset both.
+      useEditorStore
+        .getState()
+        .loadJob(baseJobMeta, {
+          fx: [{ id: "preexisting", kind: "vignette", inS: 5, outS: 6 }],
+        });
+      const s = useEditorStore.getState();
+      expect(s.fx).toEqual([
+        { id: "preexisting", kind: "vignette", inS: 5, outS: 6 },
+      ]);
+      expect(s.fxHolds).toEqual({});
+    });
+  });
 });

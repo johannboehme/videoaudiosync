@@ -69,6 +69,7 @@ export function buildPersistPatch(
     bpm,
     ui: { snapMode: s.ui.snapMode, lanesLocked: s.ui.lanesLocked },
     trim: { in: s.trim.in, out: s.trim.out },
+    fx: s.fx,
   };
 }
 
@@ -118,7 +119,8 @@ export function useAutoPersist(jobId: string | null): void {
         state.trim !== prev.trim ||
         state.ui.snapMode !== prev.ui.snapMode ||
         state.ui.lanesLocked !== prev.ui.lanesLocked ||
-        state.jobMeta.bpm !== prev.jobMeta?.bpm
+        state.jobMeta.bpm !== prev.jobMeta?.bpm ||
+        state.fx !== prev.fx
       ) {
         schedule();
       }

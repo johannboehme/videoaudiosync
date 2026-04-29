@@ -17,6 +17,7 @@ import { clipRangeS, isVideoClip, type VideoClip } from "../types";
 import { camSourceTimeS } from "../../local/timing/cam-time";
 import { TestPattern } from "./TestPattern";
 import { VideoCanvas } from "./VideoCanvas";
+import { FxOverlay } from "./FxOverlay";
 
 interface CamUrlMap {
   [camId: string]: { videoUrl: string };
@@ -92,6 +93,12 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
           <TestPattern />
         </div>
       )}
+
+      {/* P-FX overlay — sits above the entire <video>-stack so fx render
+       *  over whichever cam (or test pattern) is active. The browser
+       *  GPU-composit's the overlay; the <video>-decoder pipeline is
+       *  unaffected. */}
+      <FxOverlay />
     </div>
   );
 }

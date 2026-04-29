@@ -20,6 +20,8 @@ import {
 } from "react";
 import type { Cut } from "../../../storage/jobs-db";
 import { activeCamAt } from "../../cuts";
+import type { PunchFx } from "../../fx/types";
+import { FxStripLayer } from "./FxStripLayer";
 
 interface CamLookup {
   id: string;
@@ -70,10 +72,26 @@ interface Props {
     /** Whether this is the currently selected candidate (highlight). */
     isPrimary: boolean;
   }>;
+  /** Display mode — what the strip shows. Default "cuts" preserves the
+   *  legacy single-purpose look. "fx" replaces cam-color program-segments
+   *  with FX-capsules (full strip height). "both" stacks: cuts on top,
+   *  fx on bottom, with delete-X popping in opposite directions. */
+  mode?: "cuts" | "fx" | "both";
+  fx?: readonly PunchFx[];
+  /** FX IDs currently being live-extended via a hold gesture. Drives the
+   *  capsule's leading-edge pulse animation. */
+  liveFxIds?: ReadonlySet<string>;
+  /** Snap-aware in-edge drag callback. */
+  onFxIn?: (id: string, rawT: number, e: { shiftKey: boolean }) => number;
+  onFxOut?: (id: string, rawT: number, e: { shiftKey: boolean }) => number;
+  onFxMove?: (id: string, rawT: number, e: { shiftKey: boolean }) => number;
+  onRemoveFx?: (id: string) => void;
 }
 
 const TAPE_HEIGHT = 32;
 const SPROCKET_PITCH = 14;
+
+const EMPTY_LIVE_FX_IDS: ReadonlySet<string> = new Set();
 
 export function ProgramStrip({
   cuts,
@@ -87,7 +105,30 @@ export function ProgramStrip({
   onCutDrag,
   paintPreview,
   matchMarkers,
+  mode = "cuts",
+  fx,
+  liveFxIds = EMPTY_LIVE_FX_IDS,
+  onFxIn,
+  onFxOut,
+  onFxMove,
+  onRemoveFx,
 }: Props) {
+  const showCuts = mode === "cuts" || mode === "both";
+  const showFx = mode === "fx" || mode === "both";
+  // Vertical layout (in CSS px from the strip's content area, which sits
+  // between sprocket-row top:10 and bottom:3):
+  //   cuts mode: cuts fill 10..(height-3)
+  //   fx mode:   fx fills 10..(height-3)
+  //   both mode: cuts top half, fx bottom half (with 1px etched divider)
+  const contentTop = 10;
+  const contentBottom = 3;
+  const contentHeight = Math.max(0, height - contentTop - contentBottom);
+  const splitMidY = mode === "both" ? contentTop + Math.floor(contentHeight / 2) : 0;
+  const fxLayerTop = mode === "both" ? splitMidY + 1 : contentTop;
+  const fxLayerHeight =
+    mode === "both"
+      ? contentTop + contentHeight - fxLayerTop - contentBottom
+      : contentHeight;
   const containerRef = useRef<HTMLDivElement | null>(null);
   /** Drag state for moving an existing cut. Tracks the cut's *current*
    *  master-time (which evolves on every pointer-move tick) plus the
@@ -182,8 +223,18 @@ export function ProgramStrip({
         ))}
       </div>
 
-      {/* Cam-color program segments — inset like painted leader tape */}
-      <div className="absolute left-0 right-0 top-[10px] bottom-[3px] overflow-hidden">
+      {/* Cam-color program segments — inset like painted leader tape.
+        * In `both` mode the segments are clipped to the top half so the FX
+        * lane fills the bottom half. In `fx` mode they're skipped entirely. */}
+      {showCuts && (
+      <div
+        className="absolute left-0 right-0 overflow-hidden"
+        style={{
+          top: contentTop,
+          // In "both" mode, leave room for the FX layer + 1 px etched divider.
+          bottom: mode === "both" ? height - splitMidY : contentBottom,
+        }}
+      >
         {segments.map((seg, i) => {
           const x1 = tToX(seg.startS);
           const x2 = tToX(seg.endS);
@@ -211,12 +262,13 @@ export function ProgramStrip({
           );
         })}
       </div>
+      )}
 
       {/* Live paint preview — translucent wash from press start to current
         * playhead, plus a pulsing "head" at the leading edge. Sits above
         * the cam-color program segments so the user sees what their hold
         * gesture will commit on release. */}
-      {paintPreview && (() => {
+      {showCuts && paintPreview && (() => {
         const lo = Math.min(paintPreview.fromS, paintPreview.toS);
         const hi = Math.max(paintPreview.fromS, paintPreview.toS);
         const x1 = tToX(lo);
@@ -276,7 +328,7 @@ export function ProgramStrip({
        * cam attribution is irrelevant here. Numeric badges show the
        * percentage; if two markers are too close, the lower-confidence
        * label is hidden so they never overlap. */}
-      {matchMarkers && matchMarkers.length > 0 &&
+      {showCuts && matchMarkers && matchMarkers.length > 0 &&
         (() => {
           // Pre-compute screen positions and sort by x so we can do a
           // single-pass collision check on the percent labels.
@@ -370,19 +422,22 @@ export function ProgramStrip({
       {/* Brass splice tabs at every cut. Hover lifts the tab + reveals an
         * × button for delete. Pointer-down on the tab body starts a
         * drag — pointermove pulls the cut along with the cursor (snap-
-        * aware via the parent's onCutDrag callback). */}
-      {cuts.map((cut, i) => {
+        * aware via the parent's onCutDrag callback). In "both" mode the
+        * tab height is halved so it fits the top half of the strip. */}
+      {showCuts && cuts.map((cut, i) => {
         const x = tToX(cut.atTimeS);
         if (x < -8 || x > width + 8) return null;
         const isHovered =
           hoveredCut !== null &&
           hoveredCut.atTimeS === cut.atTimeS &&
           hoveredCut.camId === cut.camId;
+        const tabHeight =
+          mode === "both" ? Math.max(12, splitMidY - contentTop + 9) : height;
         return (
           <SpliceTab
             key={`${cut.atTimeS}-${cut.camId}-${i}`}
             x={x}
-            height={height}
+            height={tabHeight}
             hovered={isHovered}
             onEnter={() => setHoveredCut({ atTimeS: cut.atTimeS, camId: cut.camId })}
             onLeave={() => setHoveredCut(null)}
@@ -397,6 +452,43 @@ export function ProgramStrip({
           />
         );
       })}
+
+      {/* Etched divider between the cuts (top) and fx (bottom) halves. */}
+      {mode === "both" && (
+        <div
+          aria-hidden
+          className="absolute left-0 right-0 pointer-events-none"
+          style={{
+            top: splitMidY,
+            height: 1,
+            background:
+              "linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.18) 50%, rgba(0,0,0,0.45) 100%)",
+            boxShadow: "0 1px 0 rgba(255,255,255,0.45)",
+          }}
+        />
+      )}
+
+      {/* FX-Capsule-Lane — full strip in "fx" mode, bottom half in "both". */}
+      {showFx && fx && (
+        <div
+          className="absolute left-0 right-0"
+          style={{ top: fxLayerTop, height: fxLayerHeight }}
+        >
+          <FxStripLayer
+            fx={fx}
+            viewStartS={viewStartS}
+            viewEndS={viewEndS}
+            width={width}
+            height={fxLayerHeight}
+            xDirection="down"
+            liveFxIds={liveFxIds}
+            onFxIn={onFxIn}
+            onFxOut={onFxOut}
+            onFxMove={onFxMove}
+            onRemoveFx={onRemoveFx}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -10,8 +10,17 @@
 import { snapTime, type SnapMode, type SnapCtx } from "./snap";
 import { clipRangeS, type VideoClip } from "./types";
 import type { Cut } from "../storage/jobs-db";
+import type { PunchFx } from "./fx/types";
 
 const ON_GRID_TOLERANCE_S = 0.001;
+
+export interface FxQuantizeChange {
+  id: string;
+  /** Present only when the in-point moved off-grid. */
+  in?: { from: number; to: number };
+  /** Present only when the out-point moved off-grid. */
+  out?: { from: number; to: number };
+}
 
 export interface QuantizePreview {
   cuts: { from: number; to: number; camId: string }[];
@@ -19,12 +28,17 @@ export interface QuantizePreview {
   trim:
     | { from: { in: number; out: number }; to: { in: number; out: number } }
     | null;
+  /** Per-fx in/out snap deltas. Empty when no fx in the snapshot or all
+   *  on-grid. Only the side(s) that moved are populated. */
+  fxs: FxQuantizeChange[];
 }
 
 export interface QuantizeStateSnapshot {
   cuts: Cut[];
   clips: VideoClip[];
   trim: { in: number; out: number };
+  /** Optional — older callers (and tests) may omit. Treated as empty. */
+  fx?: PunchFx[];
 }
 
 export function buildQuantizePreview(
@@ -83,17 +97,35 @@ export function buildQuantizePreview(
     };
   }
 
-  return { cuts, clipStartOffsets, trim };
+  // Quantize fx in/out independently — same grid as cuts/clips/trim. P-FX
+  // overlap freely so we don't dedupe; if two end up colliding on the
+  // same beat, both stay (greedy lane packing in the UI surfaces them as
+  // sub-rows).
+  const fxs: FxQuantizeChange[] = [];
+  for (const f of state.fx ?? []) {
+    const inSnapped = snapTime(f.inS, mode, ctx);
+    const outSnapped = snapTime(f.outS, mode, ctx);
+    const inOff = Math.abs(inSnapped - f.inS) > ON_GRID_TOLERANCE_S;
+    const outOff = Math.abs(outSnapped - f.outS) > ON_GRID_TOLERANCE_S;
+    if (!inOff && !outOff) continue;
+    const change: FxQuantizeChange = { id: f.id };
+    if (inOff) change.in = { from: f.inS, to: inSnapped };
+    if (outOff) change.out = { from: f.outS, to: outSnapped };
+    fxs.push(change);
+  }
+
+  return { cuts, clipStartOffsets, trim, fxs };
 }
 
 export function isPreviewEmpty(p: QuantizePreview): boolean {
   return (
     p.cuts.length === 0 &&
     p.clipStartOffsets.length === 0 &&
-    p.trim === null
+    p.trim === null &&
+    p.fxs.length === 0
   );
 }
 
 function emptyPreview(): QuantizePreview {
-  return { cuts: [], clipStartOffsets: [], trim: null };
+  return { cuts: [], clipStartOffsets: [], trim: null, fxs: [] };
 }

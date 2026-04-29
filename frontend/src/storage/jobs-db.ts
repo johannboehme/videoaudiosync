@@ -196,6 +196,22 @@ export interface LocalJob {
   /** Trim region (seconds). Mirrors editSpec.segments[0] but persisted on
    *  every drag, not only at render time. */
   trim?: { in: number; out: number };
+
+  /** Punch-in FX (P-FX) — visual effects with in/out spans, freely
+   *  overlapping. Optional; absent on legacy jobs that pre-date the
+   *  feature. The renderer reads this verbatim. */
+  fx?: PunchFxRecord[];
+}
+
+/** Storage shape for a single Punch-in FX. Mirrors `PunchFx` from the
+ *  editor module — kept duplicated here to avoid cross-module type
+ *  dependency at the storage layer. */
+export interface PunchFxRecord {
+  id: string;
+  kind: "vignette";
+  inS: number;
+  outS: number;
+  params?: Record<string, number>;
 }
 
 const DB_NAME = "videoaudiosync";

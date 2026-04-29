@@ -31,6 +31,7 @@ import { ShowfreqsVisualizer } from "./visualizer/showfreqs";
 import type { Visualizer } from "./visualizer/types";
 import type { TextOverlay, EnergyCurves } from "./ass-builder";
 import type { Cut } from "../../storage/jobs-db";
+import type { PunchFx } from "../../editor/fx/types";
 
 export type VisualizerWorkerDescriptor =
   | { type: "showwaves"; pcm: Float32Array; sampleRate: number }
@@ -74,6 +75,9 @@ export interface EditWorkerInput {
   overlays: TextOverlay[];
   visualizers: VisualizerWorkerDescriptor[];
   energy: EnergyCurves | null;
+  /** Punch-in FX (visual effects with in/out spans). Same shape the
+   *  editor store holds; passed through verbatim to the compositor. */
+  fx?: PunchFx[];
   offsetMs: number;
   driftRatio: number;
   /** Output codec/dimension/bitrate overrides. Optional — the renderer
@@ -152,6 +156,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
         overlays: input.overlays,
         energy: input.energy,
         visualizers,
+        fx: input.fx,
         offsetMs: input.offsetMs,
         driftRatio: input.driftRatio,
         outputFps: input.outputFps,
@@ -177,6 +182,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
         overlays: input.overlays,
         energy: input.energy,
         visualizers,
+        fx: input.fx,
         offsetMs: input.offsetMs,
         driftRatio: input.driftRatio,
         outputWidth: input.outputWidth,

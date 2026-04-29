@@ -10,6 +10,7 @@ import { Timeline } from "../editor/components/Timeline";
 import { TransportBar } from "../editor/components/TransportBar";
 import { TrimPanel } from "../editor/components/TrimPanel";
 import { MultiCamPreview } from "../editor/components/MultiCamPreview";
+import { FxHardwarePanel } from "../editor/components/FxHardwarePanel";
 import { useEditorStore } from "../editor/store";
 import {
   jobEvents,
@@ -225,6 +226,96 @@ export default function Editor() {
   // refreshes — see useAutoPersist for the full field list.
   useAutoPersist(id);
 
+  // F-hotkey: hold to live-record a punch-in FX (vignette in V1).
+  // Polyphony-friendly — multiple fx hotkeys can be added later (G, H ...)
+  // and held simultaneously; the store models holds as a Map keyed by
+  // slotKey. Esc cancels every active hold.
+  //
+  // RAF tick lives in the same effect: while holds are non-empty, we
+  // extend each held fx's outS to the snapped currentTime each frame.
+  useEffect(() => {
+    function isTypingTarget(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+    }
+
+    const FX_HOTKEYS: Record<string, "vignette"> = {
+      f: "vignette",
+      F: "vignette",
+    };
+
+    let raf: number | null = null;
+    function tick() {
+      raf = null;
+      const s = useEditorStore.getState();
+      const slots = Object.keys(s.fxHolds);
+      if (slots.length === 0) return;
+      const tNow = s.snapMasterTime(s.playback.currentTime);
+      for (const slot of slots) s.tickFxHold(slot, tNow);
+      raf = requestAnimationFrame(tick);
+    }
+    function ensureTick() {
+      if (raf === null) raf = requestAnimationFrame(tick);
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingTarget(e.target)) return;
+      const s = useEditorStore.getState();
+
+      if (e.key === "Escape" && Object.keys(s.fxHolds).length > 0) {
+        e.preventDefault();
+        s.cancelAllFxHolds();
+        return;
+      }
+
+      const kind = FX_HOTKEYS[e.key];
+      if (!kind) return;
+      if (e.repeat) {
+        e.preventDefault();
+        return;
+      }
+      const slotKey = `key:${e.key.toUpperCase()}`;
+      if (s.fxHolds[slotKey]) {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      const t = s.snapMasterTime(s.playback.currentTime);
+      s.beginFxHold(slotKey, kind, t);
+      ensureTick();
+    }
+
+    function onKeyUp(e: KeyboardEvent) {
+      const kind = FX_HOTKEYS[e.key];
+      if (!kind) return;
+      const slotKey = `key:${e.key.toUpperCase()}`;
+      useEditorStore.getState().endFxHold(slotKey);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+
+    // The pad-row triggers `beginFxHold` directly (without a keydown event),
+    // so the RAF tick must also start when the holds-state transitions
+    // from empty → non-empty via store subscriber.
+    const unsub = useEditorStore.subscribe(
+      (s) => s.fxHolds,
+      (holds) => {
+        if (Object.keys(holds).length > 0) ensureTick();
+      },
+    );
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      unsub();
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
+  }, []);
+
   // Q-hold-to-quantize: hold Q → ghost-preview off-grid markers snapped
   // to the active grid. Release Q → commit. Esc during hold → cancel.
   // The preview lives in the store as `quantizePreview` and the timeline
@@ -417,6 +508,7 @@ export default function Editor() {
           lastSyncOverrideMs: null,
           clips: clipInits,
           cuts: j.cuts ?? [],
+          fx: j.fx ?? [],
         },
       );
 
@@ -652,6 +744,7 @@ export default function Editor() {
             audioUrl={assets.audioUrl}
           />
         }
+        fxPanel={<FxHardwarePanel />}
         transport={<TransportBar />}
         timeline={
           assets.wave ? (

@@ -72,6 +72,14 @@ body,
   50% { opacity: 1; }
 }
 
+/* P-FX capsule live-recording pulse — leading edge of a fx that's being
+ * live-extended via a held pad/hotkey. Subtler than the cam-paint head:
+ * P-FX is "playing", not "recording". */
+@keyframes vas-fx-live-pulse {
+  0%, 100% { opacity: 0.55; transform: scaleY(0.85); }
+  50% { opacity: 1; transform: scaleY(1); }
+}
+
 /* Hide native scrollbar but keep scrolling functional. Used by the
  * timeline lane stack: native scroll handles wheel/touch/keyboard,
  * a custom fader-style thumb is rendered as an overlay. */

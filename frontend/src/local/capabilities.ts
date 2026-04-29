@@ -24,6 +24,11 @@ export interface Capabilities {
   videoEncoder: boolean;
   /** showSaveFilePicker. Falls fehlend, fallen wir auf `<a download>` zurück. */
   fileSystemAccess: boolean;
+  /** WebGL2 für den FxOverlay-GPU-Pfad. Fehlt → Canvas2D-Fallback. */
+  webgl2: boolean;
+  /** WebGPU — V1 noch nicht genutzt, aber Detection ist da, damit der
+   *  Renderer-Picker später ohne Logik-Änderung darauf umsteigen kann. */
+  webgpu: boolean;
 }
 
 export interface MinRequirementsResult {
@@ -71,7 +76,25 @@ export function detectCapabilities(): Capabilities {
     audioEncoder: typeof w.AudioEncoder !== "undefined",
     videoEncoder: typeof w.VideoEncoder !== "undefined",
     fileSystemAccess: typeof w.showSaveFilePicker === "function",
+    webgl2: detectWebGL2(),
+    webgpu:
+      typeof navigator !== "undefined" &&
+      "gpu" in (navigator as unknown as Record<string, unknown>),
   };
+}
+
+/** Probe a throwaway canvas for a WebGL2 context. The canvas is
+ *  immediately discarded — DOM cost is one allocation. Returns false in
+ *  jsdom (no `document` or `getContext('webgl2')`). */
+function detectWebGL2(): boolean {
+  try {
+    if (typeof document === "undefined") return false;
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl2");
+    return gl !== null;
+  } catch {
+    return false;
+  }
 }
 
 export function meetsMinRequirements(caps: Capabilities): MinRequirementsResult {
@@ -106,5 +129,9 @@ export function describeCapability(key: keyof Capabilities): string {
       return "WebCodecs VideoEncoder";
     case "fileSystemAccess":
       return "File System Access API";
+    case "webgl2":
+      return "WebGL 2.0";
+    case "webgpu":
+      return "WebGPU";
   }
 }

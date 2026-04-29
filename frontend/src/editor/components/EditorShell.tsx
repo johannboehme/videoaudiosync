@@ -17,6 +17,10 @@ interface Props {
   jobTitle: string;
   jobId: string;
   videoArea: ReactNode;
+  /** Optional FX hardware-pad panel between video and transport. Slides
+   *  out on click on desktop; always-open on mobile. Caller (`Editor.tsx`)
+   *  is the source of truth for what to mount. */
+  fxPanel?: ReactNode;
   transport: ReactNode;
   timeline: ReactNode;
   sidePanel: ReactNode;
@@ -28,6 +32,7 @@ export function EditorShell({
   jobTitle,
   jobId,
   videoArea,
+  fxPanel,
   transport,
   timeline,
   sidePanel,
@@ -69,6 +74,11 @@ export function EditorShell({
           <div className="relative flex-1 min-h-0 rounded-lg border border-rule shadow-panel bg-sunken overflow-hidden">
             <div className="absolute inset-0">{videoArea}</div>
           </div>
+          {fxPanel && (
+            <div className="shrink-0 rounded-lg overflow-hidden border border-rule shadow-panel">
+              {fxPanel}
+            </div>
+          )}
           <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
             {transport}
           </div>
@@ -107,6 +117,11 @@ export function EditorShell({
         <div className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden">
           <div className="absolute inset-0">{videoArea}</div>
         </div>
+        {fxPanel && (
+          <div className="shrink-0 rounded-lg overflow-hidden border border-rule shadow-panel">
+            {fxPanel}
+          </div>
+        )}
         <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
           {transport}
         </div>

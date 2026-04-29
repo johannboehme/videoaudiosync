@@ -23,6 +23,8 @@ import { activeCamAt, type CamRange } from "./cuts";
 import { snapTime, type SnapMode } from "./snap";
 import { buildQuantizePreview, type QuantizePreview } from "./quantize";
 import type { Cut } from "../storage/jobs-db";
+import type { FxKind, PunchFx } from "./fx/types";
+import { defaultTapLengthS } from "./fx/catalog";
 
 export interface BpmInfo {
   /** BPM (detected or user-overridden). */
@@ -90,6 +92,26 @@ export interface UiSlice {
   /** When true, cam-clip horizontal drag is disabled — only the playhead
    *  moves. Avoids the "playhead trapped behind dense clips" problem. */
   lanesLocked: boolean;
+  /** What the ProgramStrip displays. "cuts" = today's cam-color tape +
+   *  brass splice tabs (default). "fx" = punch-in FX capsules only.
+   *  "both" = vertical split (cuts top, fx bottom). */
+  programStripMode: "cuts" | "fx" | "both";
+  /** Whether the FX hardware-pad panel is slid out (desktop). On mobile
+   *  the panel ignores this and stays always-open. */
+  fxPanelOpen: boolean;
+}
+
+/** One live punch-in hold per slot key. The slotKey identifies the trigger
+ *  source ("key:F" for hotkey F, "pad:0" for the first hardware pad).
+ *  Multiple holds may exist simultaneously — polyphony is intentional and
+ *  what makes P-FX feel like a step-sequencer / synth, not a switch. */
+export interface FxHoldEntry {
+  /** ID of the FX whose outS is currently being live-extended. */
+  fxId: string;
+  /** Master-time when this hold started (already snapped by the caller). */
+  startS: number;
+  /** Snapshot of fx[] at hold-start; used by cancel to revert. */
+  priorFx: PunchFx[];
 }
 
 const DEFAULT_EXPORT: ExportSpec = {
@@ -179,6 +201,14 @@ interface EditorState {
    *  header renders a small "PREP" badge while the cam is in this set. */
   preparingCamIds: ReadonlySet<string>;
 
+  /** Punch-in FX (visual effects with in/out spans, freely overlapping). */
+  fx: PunchFx[];
+
+  /** Live punch-in holds keyed by slotKey (e.g. "key:F", "pad:0"). Multiple
+   *  may be active simultaneously. Plain object so zustand reference-equality
+   *  selectors work cleanly (a Map would mutate-in-place under naive use). */
+  fxHolds: Record<string, FxHoldEntry>;
+
   // actions
   reset(): void;
   loadJob(
@@ -187,6 +217,7 @@ interface EditorState {
       lastSyncOverrideMs?: number | null;
       clips?: ClipInit[];
       cuts?: Cut[];
+      fx?: PunchFx[];
     },
   ): void;
 
@@ -314,6 +345,33 @@ interface EditorState {
    *  job-update handler calls this on every event so the badge tracks
    *  the underlying asset state without leaks. */
   setPreparingCamIds(ids: Iterable<string>): void;
+
+  // ---- Punch-in FX actions ----
+  /** Insert a fx and return its id. The caller is responsible for snapping
+   *  inS/outS — like every other time-mutating action in this store. */
+  addFx(kind: FxKind, inS: number, outS: number, params?: Record<string, number>): string;
+  /** Move a fx's in-point. Min-window 0.05 s preserved relative to outS. */
+  setFxIn(id: string, inS: number): void;
+  /** Move a fx's out-point. Min-window 0.05 s preserved relative to inS. */
+  setFxOut(id: string, outS: number): void;
+  removeFx(id: string): void;
+  /** Begin a live punch-in. Creates a fx with default-tap-length and
+   *  records a hold under `slotKey`. `startS` should already be snapped. */
+  beginFxHold(slotKey: string, kind: FxKind, startS: number): void;
+  /** Live-extend the held fx's out-point. Out only grows — going backward
+   *  from a previously-extended position keeps the larger value, so a quick
+   *  release after a long hold doesn't shrink the capsule. */
+  tickFxHold(slotKey: string, currentS: number): void;
+  /** Finalise the hold — leaves the fx in place, drops the hold record. */
+  endFxHold(slotKey: string): void;
+  /** Revert this slot's hold using its priorFx snapshot. */
+  cancelFxHold(slotKey: string): void;
+  /** Esc: revert every active hold. Iterates in insertion-order, each
+   *  revert applied on top of the prior (so the very first priorFx wins). */
+  cancelAllFxHolds(): void;
+
+  setProgramStripMode(mode: UiSlice["programStripMode"]): void;
+  setFxPanelOpen(open: boolean): void;
 }
 
 const TRIM_EPS = 0.05; // seconds — minimum trim window length
@@ -340,7 +398,18 @@ const initialUi: UiSlice = {
   // dense lanes by default. Pressing the (unlock) button = lanes locked
   // becomes false.
   lanesLocked: true,
+  programStripMode: "cuts",
+  fxPanelOpen: false,
 };
+
+const FX_MIN_WINDOW_S = 0.05;
+
+function makeFxId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `fx-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+}
 
 /** True if `camId` has material at master-timeline time `t`. */
 function camHasMaterialAt(
@@ -414,6 +483,8 @@ export const useEditorStore = create<EditorState>()(
     quantizePreview: null,
     notice: null,
     preparingCamIds: new Set<string>(),
+    fx: [],
+    fxHolds: {},
 
     reset() {
       set({
@@ -432,6 +503,8 @@ export const useEditorStore = create<EditorState>()(
         quantizePreview: null,
         notice: null,
         preparingCamIds: new Set<string>(),
+        fx: [],
+        fxHolds: {},
       });
     },
 
@@ -482,6 +555,8 @@ export const useEditorStore = create<EditorState>()(
         clips,
         cuts: opts?.cuts ?? [],
         selectedClipId,
+        fx: opts?.fx ?? [],
+        fxHolds: {},
       });
     },
 
@@ -924,7 +999,7 @@ export const useEditorStore = create<EditorState>()(
       // clips don't participate — feed only video clips to the helper.
       const videoClips = s.clips.filter(isVideoClip);
       const preview = buildQuantizePreview(
-        { cuts: s.cuts, clips: videoClips, trim: s.trim },
+        { cuts: s.cuts, clips: videoClips, trim: s.trim, fx: s.fx },
         s.ui.snapMode,
         {
           bpm: s.jobMeta?.bpm?.value ?? null,
@@ -979,10 +1054,27 @@ export const useEditorStore = create<EditorState>()(
       // Apply trim.
       const nextTrim = preview.trim ? preview.trim.to : get().trim;
 
+      // Apply fx in/out snaps.
+      let nextFx = get().fx;
+      if (preview.fxs.length > 0) {
+        nextFx = nextFx.map((f) => {
+          const change = preview.fxs.find((c) => c.id === f.id);
+          if (!change) return f;
+          let inS = f.inS;
+          let outS = f.outS;
+          if (change.in) inS = change.in.to;
+          if (change.out) outS = change.out.to;
+          // Same min-window guard as setFxIn / setFxOut.
+          if (outS - inS < 0.05) outS = inS + 0.05;
+          return { ...f, inS, outS };
+        });
+      }
+
       set({
         cuts: nextCuts,
         clips: nextClips,
         trim: nextTrim,
+        fx: nextFx,
         quantizePreview: null,
       });
     },
@@ -1074,6 +1166,106 @@ export const useEditorStore = create<EditorState>()(
         if (same) return;
       }
       set({ preparingCamIds: next });
+    },
+
+    // ---- Punch-in FX ----
+    addFx(kind, inS, outS, params) {
+      const id = makeFxId();
+      // Enforce min-window so a tap or quick drag never produces a sliver
+      // capsule that the user can't grab again.
+      const safeOut = Math.max(outS, inS + FX_MIN_WINDOW_S);
+      const fx: PunchFx = params
+        ? { id, kind, inS, outS: safeOut, params }
+        : { id, kind, inS, outS: safeOut };
+      set({ fx: [...get().fx, fx] });
+      return id;
+    },
+    setFxIn(id, inS) {
+      const next = get().fx.map((f) => {
+        if (f.id !== id) return f;
+        // Clamp so inS stays at most outS - min-window. If the user pushes
+        // past that, the fx collapses to its minimum width anchored at outS.
+        const clampedIn = Math.min(inS, f.outS - FX_MIN_WINDOW_S);
+        return { ...f, inS: clampedIn };
+      });
+      set({ fx: next });
+    },
+    setFxOut(id, outS) {
+      const next = get().fx.map((f) => {
+        if (f.id !== id) return f;
+        // Symmetric clamp: outS at least inS + min-window.
+        const clampedOut = Math.max(outS, f.inS + FX_MIN_WINDOW_S);
+        return { ...f, outS: clampedOut };
+      });
+      set({ fx: next });
+    },
+    removeFx(id) {
+      set({ fx: get().fx.filter((f) => f.id !== id) });
+    },
+    beginFxHold(slotKey, kind, startS) {
+      const s = get();
+      // Cancel any prior hold on the same slot — defensive (the UI should
+      // already have endFxHold'd before re-entering, but this avoids a leak
+      // if a keydown fires twice without a keyup, which Safari sometimes
+      // does on inactive-window resume).
+      if (s.fxHolds[slotKey]) {
+        const cur = s.fxHolds[slotKey];
+        const reverted = cur.priorFx;
+        const nextHolds = { ...s.fxHolds };
+        delete nextHolds[slotKey];
+        set({ fx: reverted, fxHolds: nextHolds });
+      }
+      const bpm = get().jobMeta?.bpm?.value ?? null;
+      const lengthS = defaultTapLengthS(kind, bpm);
+      const priorFx = get().fx.slice();
+      const id = get().addFx(kind, startS, startS + lengthS);
+      const nextHolds: Record<string, FxHoldEntry> = {
+        ...get().fxHolds,
+        [slotKey]: { fxId: id, startS, priorFx },
+      };
+      set({ fxHolds: nextHolds });
+    },
+    tickFxHold(slotKey, currentS) {
+      const hold = get().fxHolds[slotKey];
+      if (!hold) return;
+      const fx = get().fx.find((f) => f.id === hold.fxId);
+      if (!fx) return;
+      // Only grow — releases earlier than the current outS keep the larger
+      // value. Matches the live-performance feel: hold longer ↔ longer
+      // capsule, but never shrinks under your fingertip.
+      if (currentS <= fx.outS) return;
+      get().setFxOut(hold.fxId, currentS);
+    },
+    endFxHold(slotKey) {
+      const cur = get().fxHolds;
+      if (!cur[slotKey]) return;
+      const next = { ...cur };
+      delete next[slotKey];
+      set({ fxHolds: next });
+    },
+    cancelFxHold(slotKey) {
+      const hold = get().fxHolds[slotKey];
+      if (!hold) return;
+      const next = { ...get().fxHolds };
+      delete next[slotKey];
+      // Revert: drop only the fx this hold introduced. Other live holds
+      // keep their fx (we don't full-revert to priorFx, that would clobber
+      // simultaneously-held FX from other slots).
+      const fxNext = get().fx.filter((f) => f.id !== hold.fxId);
+      set({ fx: fxNext, fxHolds: next });
+    },
+    cancelAllFxHolds() {
+      const holds = get().fxHolds;
+      const liveIds = new Set(Object.values(holds).map((h) => h.fxId));
+      const fxNext = get().fx.filter((f) => !liveIds.has(f.id));
+      set({ fx: fxNext, fxHolds: {} });
+    },
+
+    setProgramStripMode(mode) {
+      set({ ui: { ...get().ui, programStripMode: mode } });
+    },
+    setFxPanelOpen(open) {
+      set({ ui: { ...get().ui, fxPanelOpen: open } });
     },
   })),
 );

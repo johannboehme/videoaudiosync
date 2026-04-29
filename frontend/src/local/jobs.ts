@@ -816,6 +816,7 @@ export async function runEditRender(
       overlays: spec.overlays,
       visualizers: visualizerDescs,
       energy,
+      fx: job.fx,
       offsetMs: totalOffsetMs,
       driftRatio: job.sync.driftRatio,
       outputWidth: spec.exportOpts?.width,

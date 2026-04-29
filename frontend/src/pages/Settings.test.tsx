@@ -13,6 +13,8 @@ const ALL_PRESENT: Capabilities = {
   audioEncoder: true,
   videoEncoder: true,
   fileSystemAccess: true,
+  webgl2: true,
+  webgpu: true,
 };
 
 const NO_WEBCODECS_ENCODE: Capabilities = {

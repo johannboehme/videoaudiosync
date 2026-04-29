@@ -54,6 +54,8 @@ describe("detectCapabilities", () => {
       audioEncoder: false,
       videoEncoder: false,
       fileSystemAccess: false,
+      webgl2: false,
+      webgpu: false,
     });
   });
 
@@ -84,6 +86,8 @@ describe("meetsMinRequirements", () => {
       audioEncoder: false,
       videoEncoder: false,
       fileSystemAccess: false,
+      webgl2: false,
+      webgpu: false,
     });
     expect(result.ok).toBe(false);
     expect(result.missing).toContain("webAssembly");
@@ -100,6 +104,8 @@ describe("meetsMinRequirements", () => {
       audioEncoder: false,
       videoEncoder: false,
       fileSystemAccess: false,
+      webgl2: false,
+      webgpu: false,
     });
     expect(result.ok).toBe(false);
     expect(result.missing).toContain("sharedArrayBuffer");
@@ -116,6 +122,8 @@ describe("meetsMinRequirements", () => {
       audioEncoder: false,
       videoEncoder: false,
       fileSystemAccess: false,
+      webgl2: false,
+      webgpu: false,
     });
     expect(result.ok).toBe(false);
     expect(result.missing).toContain("crossOriginIsolated");
@@ -132,6 +140,8 @@ describe("meetsMinRequirements", () => {
       audioEncoder: false,
       videoEncoder: false,
       fileSystemAccess: false,
+      webgl2: false,
+      webgpu: false,
     });
     expect(result.ok).toBe(false);
     expect(result.missing).toContain("opfs");
@@ -148,6 +158,8 @@ describe("meetsMinRequirements", () => {
       audioEncoder: false,
       videoEncoder: false,
       fileSystemAccess: false,
+      webgl2: false,
+      webgpu: false,
     });
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
@@ -164,7 +176,22 @@ describe("meetsMinRequirements", () => {
       audioEncoder: true,
       videoEncoder: true,
       fileSystemAccess: true,
+      webgl2: true,
+      webgpu: true,
     });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("detectCapabilities — gpu-related fields", () => {
+  it("reports webgpu=false when navigator has no .gpu", () => {
+    // Default jsdom navigator has no .gpu — assertion is for documentation.
+    const caps = detectCapabilities();
+    expect(caps.webgpu).toBe(false);
+  });
+
+  it("webgl2 is false in jsdom (no WebGL2 implementation)", () => {
+    const caps = detectCapabilities();
+    expect(caps.webgl2).toBe(false);
   });
 });

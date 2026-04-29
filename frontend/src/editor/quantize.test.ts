@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildQuantizePreview } from "./quantize";
 import type { VideoClip } from "./types";
 import type { Cut } from "../storage/jobs-db";
+import type { PunchFx } from "./fx/types";
 
 const BPM = 120;
 const PHASE = 0;
@@ -94,6 +95,76 @@ describe("buildQuantizePreview — quantizes clip startOffsetS", () => {
       { bpm: BPM, beatPhase: PHASE },
     );
     expect(preview.clipStartOffsets).toEqual([]);
+  });
+});
+
+describe("buildQuantizePreview — quantizes fx in/out", () => {
+  const fx = (id: string, inS: number, outS: number): PunchFx => ({
+    id,
+    kind: "vignette",
+    inS,
+    outS,
+  });
+
+  it("snaps fx.inS and fx.outS independently when off-grid", () => {
+    const preview = buildQuantizePreview(
+      {
+        cuts: [],
+        clips: [],
+        trim: { in: 0, out: 30 },
+        fx: [fx("a", 0.21, 1.27)], // both off-grid (beat = 0.5 at 120 BPM)
+      },
+      "1/4",
+      { bpm: BPM, beatPhase: PHASE },
+    );
+    expect(preview.fxs).toBeDefined();
+    expect(preview.fxs).toHaveLength(1);
+    const ch = preview.fxs![0];
+    expect(ch.id).toBe("a");
+    expect(ch.in!.from).toBeCloseTo(0.21, 6);
+    expect(ch.in!.to).toBeCloseTo(0, 6);
+    expect(ch.out!.from).toBeCloseTo(1.27, 6);
+    expect(ch.out!.to).toBeCloseTo(1.5, 6);
+  });
+
+  it("on-grid fx are skipped entirely", () => {
+    const preview = buildQuantizePreview(
+      {
+        cuts: [],
+        clips: [],
+        trim: { in: 0, out: 30 },
+        fx: [fx("a", 0.5, 1.0)], // on-grid (1/4 at 120 BPM)
+      },
+      "1/4",
+      { bpm: BPM, beatPhase: PHASE },
+    );
+    expect(preview.fxs).toEqual([]);
+  });
+
+  it("emits only the side that's off-grid", () => {
+    const preview = buildQuantizePreview(
+      {
+        cuts: [],
+        clips: [],
+        trim: { in: 0, out: 30 },
+        fx: [fx("a", 0.5, 1.27)], // in on-grid, out off-grid
+      },
+      "1/4",
+      { bpm: BPM, beatPhase: PHASE },
+    );
+    expect(preview.fxs).toHaveLength(1);
+    expect(preview.fxs![0].in).toBeUndefined();
+    expect(preview.fxs![0].out!.to).toBeCloseTo(1.5, 6);
+  });
+
+  it("returns empty fxs when state.fx omitted (back-compat)", () => {
+    const preview = buildQuantizePreview(
+      { cuts: [], clips: [], trim: { in: 0, out: 30 } },
+      "1/4",
+      { bpm: BPM, beatPhase: PHASE },
+    );
+    // fxs may be undefined or [] — test for both shapes.
+    expect(preview.fxs ?? []).toEqual([]);
   });
 });
 

@@ -47,6 +47,7 @@ import { CamFrameStream } from "./cam-frame-stream";
 import { makeTestPatternCanvas } from "./test-pattern";
 import { activeCamAt } from "../../editor/cuts";
 import type { Cut } from "../../storage/jobs-db";
+import type { PunchFx } from "../../editor/fx/types";
 import type { TextOverlay, EnergyCurves } from "./ass-builder";
 import type { Visualizer } from "./visualizer/types";
 import { camSourceTimeUs } from "../timing/cam-time";
@@ -76,6 +77,9 @@ export interface EditRenderInput {
   overlays: TextOverlay[];
   energy?: EnergyCurves | null;
   visualizers?: Visualizer[];
+  /** Punch-in FX (visual effects with in/out spans). Same data the live
+   *  preview reads — passed through to the compositor verbatim. */
+  fx?: PunchFx[];
   offsetMs: number;
   driftRatio: number;
   videoBitrateBps?: number;
@@ -249,6 +253,7 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     overlays: input.overlays,
     energy: input.energy ?? null,
     visualizers: input.visualizers ?? [],
+    fx: input.fx ?? [],
   });
   await compositor.ensureSubtitleEngine();
 
@@ -654,7 +659,7 @@ export async function editRenderMulti(
     Math.max(...camRanges.map((r) => r.endS), 0);
   const testPattern = makeTestPatternCanvas(outputWidth, outputHeight);
 
-  // Compositor (overlays + visualizers shared across cams).
+  // Compositor (overlays + visualizers + fx shared across cams).
   const compositor = new Compositor({
     width: outputWidth,
     height: outputHeight,
@@ -663,6 +668,7 @@ export async function editRenderMulti(
     overlays: input.overlays,
     energy: input.energy ?? null,
     visualizers: input.visualizers ?? [],
+    fx: input.fx ?? [],
   });
   await compositor.ensureSubtitleEngine();
 
