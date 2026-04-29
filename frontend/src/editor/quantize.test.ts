@@ -96,6 +96,28 @@ describe("buildQuantizePreview — quantizes clip startOffsetS", () => {
     );
     expect(preview.clipStartOffsets).toEqual([]);
   });
+
+  // Regression: when trimInS > 0, the visible startS = anchorS + trimInS.
+  // The back-solved newStartOffsetS must subtract trimInS so the visible
+  // edge actually lands on the snapped grid position. Pre-fix, quantize
+  // landed `trimInS` seconds off-target.
+  it("respects trimInS when back-solving startOffsetS", () => {
+    const trimmed: VideoClip = {
+      ...clip,
+      startOffsetS: 0,
+      trimInS: 0.7,
+    };
+    // range.startS = 0 + 0.7 = 0.7 → snaps to 0.5 (1/4 @ BPM 120, beat 0.5 s).
+    // newStartOffsetS must satisfy: newStartOffsetS + trimInS = 0.5 → -0.2
+    const preview = buildQuantizePreview(
+      { cuts: [], clips: [trimmed], trim: { in: 0, out: 30 } },
+      "1/4",
+      { bpm: BPM, beatPhase: PHASE },
+    );
+    expect(preview.clipStartOffsets.length).toBe(1);
+    expect(preview.clipStartOffsets[0].from).toBeCloseTo(0, 6);
+    expect(preview.clipStartOffsets[0].to).toBeCloseTo(-0.2, 6);
+  });
 });
 
 describe("buildQuantizePreview — quantizes fx in/out", () => {

@@ -898,10 +898,12 @@ export function Timeline({
       // shared `camSourceTimeS` computation, so the master-audio playhead
       // doesn't visually jump.
       const targetSnapped = snapped(targetStartS, e);
-      // startS = -(syncOffsetMs + syncOverrideMs)/1000 + startOffsetS
-      // → syncOverrideMs = -1000*(startS - startOffsetS) - syncOffsetMs
+      // startS = -(syncOffsetMs + syncOverrideMs)/1000 + startOffsetS + trimInS
+      // → syncOverrideMs = -1000*(startS - startOffsetS - trimInS) - syncOffsetMs
+      const trimInS = c.trimInS ?? 0;
       const newSyncOverrideMs =
-        -1000 * (targetSnapped - drag.origStartOffsetS) - c.syncOffsetMs;
+        -1000 * (targetSnapped - drag.origStartOffsetS - trimInS) -
+        c.syncOffsetMs;
       setClipSyncOverride(drag.camId, newSyncOverrideMs);
     }
   };

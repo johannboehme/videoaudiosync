@@ -63,15 +63,18 @@ export function buildQuantizePreview(
     }
   }
 
-  // Quantize cam start positions: snap the clip's masterStartS, then
-  // back-solve startOffsetS.
+  // Quantize cam start positions: snap the clip's visible startS, then
+  // back-solve startOffsetS while preserving sync and trim.
+  // range.startS = -totalSyncS + startOffsetS + trimInS  →
+  // startOffsetS = snappedStart + totalSyncS − trimInS.
   const clipStartOffsets: QuantizePreview["clipStartOffsets"] = [];
   for (const clip of state.clips) {
     const range = clipRangeS(clip);
     const snappedStart = snapTime(range.startS, mode, ctx);
     if (Math.abs(snappedStart - range.startS) > ON_GRID_TOLERANCE_S) {
       const algoSyncS = (clip.syncOffsetMs + clip.syncOverrideMs) / 1000;
-      const newStartOffsetS = snappedStart + algoSyncS;
+      const trimInS = clip.trimInS ?? 0;
+      const newStartOffsetS = snappedStart + algoSyncS - trimInS;
       clipStartOffsets.push({
         camId: clip.id,
         from: clip.startOffsetS,
