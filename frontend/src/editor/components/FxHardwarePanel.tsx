@@ -72,23 +72,35 @@ export function FxHardwarePanel() {
         transition: "height 200ms ease-out",
       }}
     >
-      {/* Pad body sits directly under the tab (no gap), bottom flush
-       *  with timeline-top. Rounded TOP corners (rim of the cavity),
-       *  flat bottom (merges with timeline). Inner shadows make it
-       *  read as a recessed cavity that the timeline-surface drops into. */}
-      {open && (
+      {/* Cavity clip wrapper. As the container grows, this wrapper
+       *  grows from height 0 to PAD_BODY_H. The PadBody inside is
+       *  anchored to the BOTTOM of the wrapper at fixed height, so as
+       *  the cavity opens the contents are progressively revealed
+       *  from bottom-up — like a drawer being pulled out of the
+       *  timeline. Always rendered so the close animation reverses
+       *  cleanly (contents hide top-down as the cavity shrinks). */}
+      <div
+        className="absolute"
+        style={{
+          top: TAB_H,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          overflow: "hidden",
+        }}
+      >
         <div
           className="absolute"
           style={{
-            top: TAB_H,
+            bottom: 0,
             left: 0,
             right: 0,
-            bottom: 0,
+            height: PAD_BODY_H,
           }}
         >
           <PadBody />
         </div>
-      )}
+      </div>
       {/* Tab anchored at TOP of container, embedded in pad body's top-
        *  center in expanded state. Stays put as the container grows. */}
       <Tab
