@@ -41,17 +41,20 @@ const EXPANDED_H = TAB_H + PAD_BODY_H;
 const TAB_WIDTH = 110;
 
 /**
- * Layout strategy — analogous to the right-side PanelHandle:
- *   - Tab is **always pinned to the timeline-top edge**, sitting in the
- *     existing 12 px gap-3 between transport and timeline.
- *   - In **collapsed** state the panel container has height = TAB_H and
- *     uses mt:-12, mb:-12 → it absorbs both the gap-3 above AND below,
- *     so the layout footprint is exactly 12 px (the tab itself, replacing
- *     the gap). The original transport→timeline distance is preserved.
- *   - In **expanded** state the container grows to PADS+TAB. mt:0
- *     restores the gap-3 above (so pads have breathing room from
- *     transport), mb:-12 keeps the tab flush against timeline-top.
- *     Click anywhere on the tab toggles the state.
+ * Layout strategy:
+ *   - The tab is **always at the top** of the container, anchored to
+ *     transport-bottom via mt:-12 (which absorbs the gap-3 above).
+ *     The tab's y-position therefore stays identical between collapsed
+ *     and expanded states — only what's underneath it changes.
+ *   - **Collapsed**: container is just the tab (h = TAB_H), mb:-12
+ *     absorbs the gap-3 below as well so the tab fills the original
+ *     12 px gap exactly. Transport→timeline distance is unchanged.
+ *   - **Expanded**: container grows to TAB + PADS, mb:0 restores the
+ *     gap-3 below so the pad body has breathing room from the timeline
+ *     (and its rounded bottom corners don't collide with the timeline's
+ *     rounded top corners). The pad body is rendered below the tab and
+ *     looks like a "compartment that has been pulled out from below
+ *     the tab" — its own self-contained four-rounded-corner frame.
  */
 export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
@@ -64,35 +67,42 @@ export function FxHardwarePanel() {
       className="relative shrink-0 w-full select-none"
       style={{
         height: open ? EXPANDED_H : TAB_H,
-        marginTop: open ? 0 : -12,
-        marginBottom: -12, // always — keeps the tab flush against timeline-top
+        marginTop: -12, // always — tab top is flush with transport-bottom
+        marginBottom: open ? 0 : -12,
         overflow: "visible",
-        transition: "height 200ms ease-out, margin-top 200ms ease-out",
+        transition: "height 200ms ease-out, margin-bottom 200ms ease-out",
       }}
     >
-      {open && (
-        <div className="absolute inset-0">
-          <PadBody />
-        </div>
-      )}
-      {/* Tab is anchored to the BOTTOM of the container, which always
-       *  coincides with the timeline-top (mb:-12 absorbs the gap-3
-       *  below). It pokes up into the gap above. The tab overlays the
-       *  bottom-center of the pads-body so there's no empty corner
-       *  area at the sides of the tab in expanded state. */}
+      {/* Tab is at the TOP. Stays put as the container grows; the pads
+       *  unfold downward from below it, pushing the timeline away. */}
       <Tab
         open={open}
         onClick={() => setFxPanelOpen(!fxPanelOpen)}
         toggleable={!isMobile}
       />
+      {open && (
+        <div
+          className="absolute"
+          style={{
+            top: TAB_H,
+            left: 0,
+            right: 0,
+            bottom: 0,
+          }}
+        >
+          <PadBody />
+        </div>
+      )}
     </div>
   );
 }
 
 /** Anodized-aluminum pull-tab — analogue to the right-side PanelHandle.
- *  Sits at the BOTTOM of the panel container so it's always flush with
- *  timeline-top. Top corners rounded, bottom corners flat (the tab
- *  visually emerges UP from timeline into the gap above). */
+ *  Sits at the TOP of the panel container, flush against transport-bottom
+ *  in both states. Top corners rounded, bottom corners flat (the tab
+ *  visually emerges DOWNWARD into the gap when collapsed; in the
+ *  expanded state its flat bottom merges with the pad body's flat top
+ *  edge — together they form one "drawer with a handle"). */
 function Tab({
   open,
   onClick,
@@ -112,17 +122,17 @@ function Tab({
       }
       className="absolute focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
       style={{
-        bottom: 0,
+        top: 0,
         left: "50%",
         transform: "translateX(-50%)",
         width: TAB_WIDTH,
         height: TAB_H,
-        borderRadius: "6px 6px 0 0",
+        // Rounded only on the BOTTOM — the tab pokes DOWN out of the
+        // transport bar / pad body's top edge.
+        borderRadius: "0 0 6px 6px",
         cursor: toggleable ? "pointer" : "default",
         ...ALUMINUM_BODY,
-        // The bottom edge merges with the timeline; suppress the bottom
-        // border of the aluminum body so there's no double line.
-        borderBottom: "none",
+        borderTop: "none",
       }}
     >
       <span
@@ -142,7 +152,7 @@ function Tab({
         className="absolute right-2 top-1/2 -translate-y-1/2 leading-none"
         style={{ fontSize: 9, ...ALUMINUM_LABEL }}
       >
-        {open ? "▾" : "▴"}
+        {open ? "▴" : "▾"}
       </span>
     </button>
   );
@@ -357,13 +367,14 @@ const KNURLED_GRIP: CSSProperties = {
 
 const MECHANISM_BODY: CSSProperties = {
   background: "linear-gradient(180deg, #2A2722 0%, #1A1816 100%)",
+  // Pad body is a self-contained "drawer compartment" with all four
+  // rounded corners. The 12 px gap-3 to the timeline below keeps its
+  // bottom-rounded corners from colliding with the timeline's top-
+  // rounded corners.
   border: "1px solid rgba(0,0,0,0.5)",
-  // Pads body sits above the tab — rounded on top (gap to transport),
-  // flat on bottom (touches tab).
-  borderBottom: "none",
-  borderRadius: "8px 8px 0 0",
+  borderRadius: 8,
   boxShadow:
-    "inset 0 1px 1px rgba(255,255,255,0.04), inset 0 -1px 1px rgba(0,0,0,0.4)",
+    "inset 0 1px 1px rgba(255,255,255,0.04), inset 0 -1px 1px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.25)",
 };
 
 const BRUSHED_GRAIN: CSSProperties = {
