@@ -73,6 +73,9 @@ export function VideoCanvas({ videoUrl, audioUrl }: Props) {
         preload="auto"
         className="max-h-full max-w-full"
         style={{ display: "block" }}
+        // Tagged so OutputFrameBox can locate this element to read its
+        // post-rotation natural dimensions (videoWidth/videoHeight).
+        data-cam-master
       />
       {!handle.isReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-sunken/90 text-paper-hi">

@@ -37,8 +37,11 @@ export interface FxDefinition {
 }
 
 const VIGNETTE_DEFAULTS = {
-  intensity: 0.7,
-  falloff: 0.6,
+  /** 0..1 — alpha of the darkest corner pixel. Higher = more cinematic. */
+  intensity: 0.92,
+  /** 0..1 — fraction of the radius over which the falloff happens.
+   *  Higher = darkening starts closer to center → more dramatic. */
+  falloff: 0.85,
 } as const;
 
 function vignetteParams(fx: PunchFx): { intensity: number; falloff: number } {

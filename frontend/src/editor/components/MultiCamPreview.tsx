@@ -18,6 +18,7 @@ import { camSourceTimeS } from "../../local/timing/cam-time";
 import { TestPattern } from "./TestPattern";
 import { VideoCanvas } from "./VideoCanvas";
 import { FxOverlay } from "./FxOverlay";
+import { OutputFrameBox } from "./OutputFrameBox";
 
 interface CamUrlMap {
   [camId: string]: { videoUrl: string };
@@ -94,11 +95,13 @@ export function MultiCamPreview({ cams, audioUrl }: Props) {
         </div>
       )}
 
-      {/* P-FX overlay — sits above the entire <video>-stack so fx render
-       *  over whichever cam (or test pattern) is active. The browser
-       *  GPU-composit's the overlay; the <video>-decoder pipeline is
-       *  unaffected. */}
-      <FxOverlay />
+      {/* Output-frame indicator + FX overlay — both constrained to the
+       *  rectangle that will actually be rendered. Without this, a
+       *  21:9 editor pane around a 9:16 cam-1 would let FX paint over
+       *  the side letterboxes (which the renderer never writes). */}
+      <OutputFrameBox>
+        <FxOverlay />
+      </OutputFrameBox>
     </div>
   );
 }

@@ -22,6 +22,7 @@ import type { Cut } from "../../../storage/jobs-db";
 import { activeCamAt } from "../../cuts";
 import type { PunchFx } from "../../fx/types";
 import { FxStripLayer } from "./FxStripLayer";
+import { tapeHeightForMode } from "./tape-height";
 
 interface CamLookup {
   id: string;
@@ -88,7 +89,6 @@ interface Props {
   onRemoveFx?: (id: string) => void;
 }
 
-const TAPE_HEIGHT = 32;
 const SPROCKET_PITCH = 14;
 
 const EMPTY_LIVE_FX_IDS: ReadonlySet<string> = new Set();
@@ -100,7 +100,7 @@ export function ProgramStrip({
   viewStartS,
   viewEndS,
   width,
-  height = TAPE_HEIGHT,
+  height,
   onRemoveCut,
   onCutDrag,
   paintPreview,
@@ -113,6 +113,9 @@ export function ProgramStrip({
   onFxMove,
   onRemoveFx,
 }: Props) {
+  // Default height is mode-dependent so FX-only and both layouts get
+  // chunkier strips without the caller having to pass it through.
+  const stripHeight = height ?? tapeHeightForMode(mode);
   const showCuts = mode === "cuts" || mode === "both";
   const showFx = mode === "fx" || mode === "both";
   // Vertical layout (in CSS px from the strip's content area, which sits
@@ -122,7 +125,7 @@ export function ProgramStrip({
   //   both mode: cuts top half, fx bottom half (with 1px etched divider)
   const contentTop = 10;
   const contentBottom = 3;
-  const contentHeight = Math.max(0, height - contentTop - contentBottom);
+  const contentHeight = Math.max(0, stripHeight - contentTop - contentBottom);
   const splitMidY = mode === "both" ? contentTop + Math.floor(contentHeight / 2) : 0;
   const fxLayerTop = mode === "both" ? splitMidY + 1 : contentTop;
   const fxLayerHeight =
@@ -200,13 +203,13 @@ export function ProgramStrip({
     `,
     boxShadow:
       "inset 0 1px 0 rgba(255,255,255,0.5), inset 0 -1px 0 rgba(0,0,0,0.25), 0 1px 1px rgba(0,0,0,0.08)",
-    height,
+    height: stripHeight,
   };
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full overflow-hidden border-y border-[#9F9170] select-none"
+      className="relative w-full border-y border-[#9F9170] select-none"
       style={tapeStyle}
     >
       {/* Sprocket-hole row along the top edge */}
@@ -232,7 +235,7 @@ export function ProgramStrip({
         style={{
           top: contentTop,
           // In "both" mode, leave room for the FX layer + 1 px etched divider.
-          bottom: mode === "both" ? height - splitMidY : contentBottom,
+          bottom: mode === "both" ? stripHeight - splitMidY : contentBottom,
         }}
       >
         {segments.map((seg, i) => {
@@ -432,7 +435,7 @@ export function ProgramStrip({
           hoveredCut.atTimeS === cut.atTimeS &&
           hoveredCut.camId === cut.camId;
         const tabHeight =
-          mode === "both" ? Math.max(12, splitMidY - contentTop + 9) : height;
+          mode === "both" ? Math.max(12, splitMidY - contentTop + 9) : stripHeight;
         return (
           <SpliceTab
             key={`${cut.atTimeS}-${cut.camId}-${i}`}

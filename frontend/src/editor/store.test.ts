@@ -649,20 +649,31 @@ describe("useEditorStore", () => {
       expect(s.fxHolds["key:F"].priorFx).toEqual([]);
     });
 
-    test("tickFxHold extends outS but never shrinks below default-tap", () => {
+    test("tickFxHold extends outS past playhead and never shrinks", () => {
       useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
       const initialOut = useEditorStore.getState().fx[0].outS;
-      // Holding longer than default → out grows
-      useEditorStore.getState().tickFxHold("key:F", 5);
-      expect(useEditorStore.getState().fx[0].outS).toBeCloseTo(5, 6);
-      // Going BACKWARD (release earlier than current out) → out stays
-      useEditorStore.getState().tickFxHold("key:F", 4);
-      expect(useEditorStore.getState().fx[0].outS).toBeCloseTo(5, 6);
-      // Going further → grows again
-      useEditorStore.getState().tickFxHold("key:F", 7);
-      expect(useEditorStore.getState().fx[0].outS).toBeCloseTo(7, 6);
-      // Initial-out was the default-tap length floor
+      // Initial = startS + default-tap (1 beat = 0.5s fallback when no BPM).
       expect(initialOut).toBeCloseTo(3.5, 6);
+      // Hold ticks at currentS=5 → outS pushed past 5 by overshoot buffer.
+      useEditorStore.getState().tickFxHold("key:F", 5);
+      expect(useEditorStore.getState().fx[0].outS).toBeGreaterThan(5);
+      const afterFirstTick = useEditorStore.getState().fx[0].outS;
+      // Going BACKWARD (release earlier than current out) → out stays.
+      useEditorStore.getState().tickFxHold("key:F", 4);
+      expect(useEditorStore.getState().fx[0].outS).toBe(afterFirstTick);
+      // Going further → grows again, still past playhead.
+      useEditorStore.getState().tickFxHold("key:F", 7);
+      expect(useEditorStore.getState().fx[0].outS).toBeGreaterThan(7);
+    });
+
+    test("tickFxHold ensures fx remains active at currentS while held", () => {
+      // Regression: outS used to equal currentS exactly, which made the
+      // active-resolver flip the FX inactive at the tick boundary
+      // (`t < outS` is exclusive). The overshoot buffer prevents this.
+      useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
+      useEditorStore.getState().tickFxHold("key:F", 10);
+      const fx = useEditorStore.getState().fx[0];
+      expect(fx.outS).toBeGreaterThan(10);
     });
 
     test("endFxHold removes the hold but keeps the fx", () => {

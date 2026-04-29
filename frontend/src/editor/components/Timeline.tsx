@@ -24,6 +24,7 @@ import { clipRangeS, isVideoClip, type Clip } from "../types";
 import { LaneHeader, type CamStatus } from "./timeline/LaneHeader";
 import { AddMediaButton } from "./AddMediaButton";
 import { ProgramStrip } from "./timeline/ProgramStrip";
+import { tapeHeightForMode } from "./timeline/tape-height";
 import { SegmentedControl } from "./SegmentedControl";
 import { BeatRuler } from "./timeline/BeatRuler";
 import { BpmReadout } from "./BpmReadout";
@@ -1050,11 +1051,13 @@ export function Timeline({
         </div>
 
         {/* PROGRAM-Strip row — header cell hosts the "+ Add" entry so
-         *  there's no separate strip pushing the timeline taller. */}
+         *  there's no separate strip pushing the timeline taller. The
+         *  row height tracks the strip mode so FX/both layouts get
+         *  chunkier capsules. */}
         <div className="flex">
           <div
             className="shrink-0 flex items-center justify-end border-r border-b border-rule bg-paper-hi"
-            style={{ width: HEADER_W, height: 32 }}
+            style={{ width: HEADER_W, height: tapeHeightForMode(programStripMode) }}
           >
             {jobMeta?.id && <AddMediaButton jobId={jobMeta.id} />}
           </div>

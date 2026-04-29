@@ -74,11 +74,7 @@ export function EditorShell({
           <div className="relative flex-1 min-h-0 rounded-lg border border-rule shadow-panel bg-sunken overflow-hidden">
             <div className="absolute inset-0">{videoArea}</div>
           </div>
-          {fxPanel && (
-            <div className="shrink-0 rounded-lg overflow-hidden border border-rule shadow-panel">
-              {fxPanel}
-            </div>
-          )}
+          {fxPanel && <div className="shrink-0">{fxPanel}</div>}
           <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
             {transport}
           </div>

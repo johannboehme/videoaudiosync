@@ -252,7 +252,10 @@ export default function Editor() {
       const s = useEditorStore.getState();
       const slots = Object.keys(s.fxHolds);
       if (slots.length === 0) return;
-      const tNow = s.snapMasterTime(s.playback.currentTime);
+      // Pass RAW currentTime (unsnapped) — the capsule grows continuously
+      // during the hold. Snap is applied at edit-time (Q) or on next user
+      // drag, not during the live hold.
+      const tNow = s.playback.currentTime;
       for (const slot of slots) s.tickFxHold(slot, tNow);
       raf = requestAnimationFrame(tick);
     }

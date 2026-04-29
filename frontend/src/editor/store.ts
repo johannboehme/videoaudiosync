@@ -403,6 +403,9 @@ const initialUi: UiSlice = {
 };
 
 const FX_MIN_WINDOW_S = 0.05;
+/** Buffer pushed past the playhead during a live hold. Keeps `t < outS`
+ *  true across RAF jitter and snap-quantization gaps. ~3 frames at 60Hz. */
+const FX_HOLD_OVERSHOOT_S = 0.05;
 
 function makeFxId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -1230,11 +1233,16 @@ export const useEditorStore = create<EditorState>()(
       if (!hold) return;
       const fx = get().fx.find((f) => f.id === hold.fxId);
       if (!fx) return;
-      // Only grow — releases earlier than the current outS keep the larger
-      // value. Matches the live-performance feel: hold longer ↔ longer
-      // capsule, but never shrinks under your fingertip.
-      if (currentS <= fx.outS) return;
-      get().setFxOut(hold.fxId, currentS);
+      // Push outS *past* the playhead by HOLD_OVERSHOOT_S so the FX stays
+      // active across RAF tick boundaries. Without the buffer, the moment
+      // currentTime catches up to outS the active-resolver (`t < outS`)
+      // marks the FX inactive — the vignette flickers off mid-hold.
+      // Only grow: backwards moves keep the larger value (matches live-
+      // performance feel — hold longer ↔ longer capsule, never shrinks
+      // under your fingertip).
+      const target = currentS + FX_HOLD_OVERSHOOT_S;
+      if (target <= fx.outS) return;
+      get().setFxOut(hold.fxId, target);
     },
     endFxHold(slotKey) {
       const cur = get().fxHolds;
