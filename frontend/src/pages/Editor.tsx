@@ -262,10 +262,15 @@ export default function Editor() {
       const slots = Object.keys(s.fxHolds);
       for (const slot of slots) s.tickFxHold(slot, tNow);
       // Punch erase head through fx under playhead, if X is held.
+      // Pass the *raw* playhead — the head is a fixed 150 ms physical
+      // window that must move continuously with the playhead. Snapping
+      // the position to the active grid (e.g. snap="1" → whole bar)
+      // would make the head jump in bar-sized steps while staying only
+      // 150 ms wide, leaving most of each bar un-erased between jumps.
       if (eraseHeld) {
         const kinds: FxKind[] | "all" =
           eraseKindFilter.size > 0 ? [...eraseKindFilter] : "all";
-        s.eraseFxAt(s.snapMasterTime(tNow), kinds);
+        s.eraseFxAt(tNow, kinds);
       }
       const stillBusy = slots.length > 0 || eraseHeld;
       if (stillBusy) raf = requestAnimationFrame(tick);

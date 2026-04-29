@@ -122,7 +122,12 @@ export function LaneHeader({
       }}
       onClick={onSelectClip}
     >
-      {/* Delete affordance — shows only on hover, top-right corner. */}
+      {/* Delete affordance — pinned to the top-left corner of the
+       *  whole header (over the cam-color stripe edge), styled like
+       *  the transport's secondary ChunkyButton: paper-hi face,
+       *  embossed shadow, ink text. Always-visible so the affordance
+       *  is discoverable without hover. Click → window.confirm
+       *  before firing. */}
       {onDelete && (
         <button
           type="button"
@@ -134,7 +139,7 @@ export function LaneHeader({
               onDelete();
             }
           }}
-          className="absolute top-0.5 right-0.5 z-10 w-4 h-4 flex items-center justify-center rounded-sm font-mono text-[11px] leading-none text-ink-3 hover:text-danger hover:bg-danger/10 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="absolute top-0 left-0 z-20 w-[14px] h-[14px] flex items-center justify-center rounded-br-md border-r border-b border-rule/60 bg-hot text-paper-hi shadow-emboss hover:bg-hot-pressed active:shadow-pressed font-mono text-[10px] leading-none opacity-0 group-hover:opacity-100 transition-opacity"
         >
           ×
         </button>
