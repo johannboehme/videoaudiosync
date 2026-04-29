@@ -35,58 +35,64 @@ interface PadDef {
 
 const PADS: readonly PadDef[] = [{ slotKey: "pad:0", kind: "vignette" }];
 
-const COLLAPSED_H = 12; // container height when tab-only
 const TAB_H = 12;
 const PAD_BODY_H = 76;
 const EXPANDED_H = TAB_H + PAD_BODY_H;
-const TAB_WIDTH = 100;
+const TAB_WIDTH = 110;
 
+/**
+ * Layout strategy — analogous to the right-side PanelHandle:
+ *   - Tab is **always pinned to the timeline-top edge**, sitting in the
+ *     existing 12 px gap-3 between transport and timeline.
+ *   - In **collapsed** state the panel container has height = TAB_H and
+ *     uses mt:-12, mb:-12 → it absorbs both the gap-3 above AND below,
+ *     so the layout footprint is exactly 12 px (the tab itself, replacing
+ *     the gap). The original transport→timeline distance is preserved.
+ *   - In **expanded** state the container grows to PADS+TAB. mt:0
+ *     restores the gap-3 above (so pads have breathing room from
+ *     transport), mb:-12 keeps the tab flush against timeline-top.
+ *     Click anywhere on the tab toggles the state.
+ */
 export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
   const setFxPanelOpen = useEditorStore((s) => s.setFxPanelOpen);
   const isMobile = useIsCoarsePointer();
   const open = isMobile || fxPanelOpen;
 
-  // Negative margins absorb gap-3 (12 px) above + below in collapsed
-  // state so the tab fits exactly into the existing gap with 6 px
-  // breathing room. In expanded mode it returns to normal flow.
-  const marginTopBottom = open ? 0 : -6;
-
   return (
     <div
       className="relative shrink-0 w-full select-none"
       style={{
-        height: open ? EXPANDED_H : COLLAPSED_H,
-        marginTop: marginTopBottom,
-        marginBottom: marginTopBottom,
-        transition:
-          "height 200ms ease-out, margin-top 200ms ease-out, margin-bottom 200ms ease-out",
+        height: open ? EXPANDED_H : TAB_H,
+        marginTop: open ? 0 : -12,
+        marginBottom: -12, // always — keeps the tab flush against timeline-top
+        overflow: "visible",
+        transition: "height 200ms ease-out, margin-top 200ms ease-out",
       }}
     >
+      {open && (
+        <div className="absolute inset-0">
+          <PadBody />
+        </div>
+      )}
+      {/* Tab is anchored to the BOTTOM of the container, which always
+       *  coincides with the timeline-top (mb:-12 absorbs the gap-3
+       *  below). It pokes up into the gap above. The tab overlays the
+       *  bottom-center of the pads-body so there's no empty corner
+       *  area at the sides of the tab in expanded state. */}
       <Tab
         open={open}
         onClick={() => setFxPanelOpen(!fxPanelOpen)}
         toggleable={!isMobile}
       />
-      {open && (
-        <div
-          className="absolute"
-          style={{
-            top: TAB_H,
-            left: 0,
-            right: 0,
-            bottom: 0,
-          }}
-        >
-          <PadBody />
-        </div>
-      )}
     </div>
   );
 }
 
-/** Anodized-aluminum pull-tab. Small pill shape, centered horizontally,
- *  visually inspired by the right-side PanelHandle. */
+/** Anodized-aluminum pull-tab — analogue to the right-side PanelHandle.
+ *  Sits at the BOTTOM of the panel container so it's always flush with
+ *  timeline-top. Top corners rounded, bottom corners flat (the tab
+ *  visually emerges UP from timeline into the gap above). */
 function Tab({
   open,
   onClick,
@@ -106,33 +112,28 @@ function Tab({
       }
       className="absolute focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
       style={{
-        top: 0,
+        bottom: 0,
         left: "50%",
         transform: "translateX(-50%)",
         width: TAB_WIDTH,
         height: TAB_H,
-        borderRadius: 6,
+        borderRadius: "6px 6px 0 0",
         cursor: toggleable ? "pointer" : "default",
         ...ALUMINUM_BODY,
+        // The bottom edge merges with the timeline; suppress the bottom
+        // border of the aluminum body so there's no double line.
+        borderBottom: "none",
       }}
     >
-      {/* Knurled grip — wide enough to be recognisable as a drag handle.
-       *  Centered, doesn't touch the side edges. */}
       <span
         aria-hidden
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
         style={{ ...KNURLED_GRIP, height: 6, width: 40, borderRadius: 1 }}
       />
-      {/* Chevron + FX label — clear visual cue for the toggle direction.
-       *  Bigger than the previous "▴" dot so users actually see it. */}
       <span
         aria-hidden
         className="absolute left-2 top-1/2 -translate-y-1/2 font-display leading-none"
-        style={{
-          fontSize: 8,
-          letterSpacing: 0.5,
-          ...ALUMINUM_LABEL,
-        }}
+        style={{ fontSize: 8, letterSpacing: 0.5, ...ALUMINUM_LABEL }}
       >
         FX
       </span>
@@ -357,8 +358,10 @@ const KNURLED_GRIP: CSSProperties = {
 const MECHANISM_BODY: CSSProperties = {
   background: "linear-gradient(180deg, #2A2722 0%, #1A1816 100%)",
   border: "1px solid rgba(0,0,0,0.5)",
-  borderTop: "none",
-  borderRadius: "0 0 8px 8px",
+  // Pads body sits above the tab — rounded on top (gap to transport),
+  // flat on bottom (touches tab).
+  borderBottom: "none",
+  borderRadius: "8px 8px 0 0",
   boxShadow:
     "inset 0 1px 1px rgba(255,255,255,0.04), inset 0 -1px 1px rgba(0,0,0,0.4)",
 };
