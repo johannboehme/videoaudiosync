@@ -1104,10 +1104,18 @@ export function Timeline({
         {/* Lanes row: HTML headers on the left, single canvas on the right.
          *  Wrapped in a max-height + overflow-y container so adding more
          *  cams doesn't push the timeline section into the preview area —
-         *  past ~5 cam lanes a vertical scrollbar appears on the right. */}
+         *  past ~5 cam lanes a vertical scrollbar appears on the right.
+         *
+         *  The relative wrapper sits OUTSIDE the scroll container so the
+         *  vertical fader-thumb (rendered as its sibling below) is pinned
+         *  to the viewport edge instead of scrolling out of view with the
+         *  content — without this, scrolling down to reveal the audio
+         *  lane would also scroll the track upward and leave the audio
+         *  lane uncovered on the right. */}
+        <div className="relative">
         <div
           ref={laneStackRef}
-          className="flex no-native-scrollbar relative"
+          className="flex no-native-scrollbar"
           style={{
             maxHeight: 5 * videoLaneHeight + audioLaneHeight,
             overflowY: "auto",
@@ -1192,7 +1200,7 @@ export function Timeline({
               </span>
             </div>
           </div>
-          <div className="flex-1 relative" style={{ width: canvasWidth }}>
+          <div className="flex-1" style={{ width: canvasWidth }}>
             <canvas
               ref={canvasRef}
               onPointerDown={onPointerDown}
@@ -1205,19 +1213,20 @@ export function Timeline({
               onWheel={onWheel}
               style={{ cursor: hoverCursor, touchAction: "none", display: "block" }}
             />
-            {/* Custom vertical fader-thumb — overlay on the right edge of
-             *  the canvas column, mirrors scrollTop of the lane stack.
-             *  Native scrollbar is hidden via .no-native-scrollbar; the
-             *  underlying overflow-y: auto still handles wheel/touch. */}
-            <VerticalFaderThumb
-              scrollTop={laneScroll.top}
-              scrollHeight={laneScroll.height}
-              viewport={laneScroll.viewport}
-              onScrollTo={(t) => {
-                if (laneStackRef.current) laneStackRef.current.scrollTop = t;
-              }}
-            />
           </div>
+        </div>
+        {/* Vertical fader-thumb sits OUTSIDE the scroll container so it
+         *  stays pinned to the viewport edge regardless of scrollTop —
+         *  inside the scroll container it would scroll up with the
+         *  content and uncover the audio lane on the right. */}
+        <VerticalFaderThumb
+          scrollTop={laneScroll.top}
+          scrollHeight={laneScroll.height}
+          viewport={laneScroll.viewport}
+          onScrollTo={(t) => {
+            if (laneStackRef.current) laneStackRef.current.scrollTop = t;
+          }}
+        />
         </div>
 
         {/* Custom scrollbar — hardware mixer fader feel */}
