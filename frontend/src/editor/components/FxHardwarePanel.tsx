@@ -36,25 +36,24 @@ interface PadDef {
 const PADS: readonly PadDef[] = [{ slotKey: "pad:0", kind: "vignette" }];
 
 const TAB_H = 12;
+const COMPARTMENT_GAP = 12; // breathing room between tab and compartment-top
 const PAD_BODY_H = 76;
-const EXPANDED_H = TAB_H + PAD_BODY_H;
+const EXPANDED_H = TAB_H + COMPARTMENT_GAP + PAD_BODY_H; // 100
 const TAB_WIDTH = 110;
 
 /**
  * Layout strategy:
- *   - The tab is **always at the top** of the container, anchored to
- *     transport-bottom via mt:-12 (which absorbs the gap-3 above).
- *     The tab's y-position therefore stays identical between collapsed
- *     and expanded states — only what's underneath it changes.
- *   - **Collapsed**: container is just the tab (h = TAB_H), mb:-12
- *     absorbs the gap-3 below as well so the tab fills the original
- *     12 px gap exactly. Transport→timeline distance is unchanged.
- *   - **Expanded**: container grows to TAB + PADS, mb:0 restores the
- *     gap-3 below so the pad body has breathing room from the timeline
- *     (and its rounded bottom corners don't collide with the timeline's
- *     rounded top corners). The pad body is rendered below the tab and
- *     looks like a "compartment that has been pulled out from below
- *     the tab" — its own self-contained four-rounded-corner frame.
+ *   - The tab is always at the TOP of the container (y stays put across
+ *     states). mt:-12 always, so tab-top is flush with transport-bottom.
+ *   - **Collapsed** (h = TAB_H, mb:-12): the tab fills the existing 12 px
+ *     gap-3 between transport and timeline. Zero net layout impact.
+ *   - **Expanded** (h = TAB_H + COMPARTMENT_GAP + PAD_BODY_H, mb:-12):
+ *     the tab stays at top, then a 12 px breathing-room gap, then the
+ *     compartment (rectangular pad body with inner-shadow depth, flush
+ *     against timeline-top thanks to mb:-12). The compartment looks like
+ *     a drawer pulled out from below the player buttons — separated by
+ *     the gap above, sitting in a recessed cavity directly above the
+ *     timeline.
  */
 export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
@@ -73,12 +72,20 @@ export function FxHardwarePanel() {
         transition: "height 200ms ease-out",
       }}
     >
-      {/* Pad body fills the FULL container so its rounded corners are
-       *  flush with the timeline (no gap), and its left/right top
-       *  corners are visible at the panel edges while the tab embeds
-       *  in the top-center. Renders only when expanded. */}
+      {/* Pad body sits BELOW the tab with a breathing-room gap. Bottom
+       *  flush with timeline-top. Rectangular with depth (inner shadows
+       *  + drop shadow) — looks like a drawer pulled out, not a tab
+       *  attached to a panel. */}
       {open && (
-        <div className="absolute inset-0">
+        <div
+          className="absolute"
+          style={{
+            top: TAB_H + COMPARTMENT_GAP,
+            left: 0,
+            right: 0,
+            bottom: 0,
+          }}
+        >
           <PadBody />
         </div>
       )}
@@ -363,15 +370,22 @@ const KNURLED_GRIP: CSSProperties = {
 };
 
 const MECHANISM_BODY: CSSProperties = {
-  background: "linear-gradient(180deg, #2A2722 0%, #1A1816 100%)",
-  // Pad body is a self-contained "drawer compartment" with all four
-  // rounded corners. The 12 px gap-3 to the timeline below keeps its
-  // bottom-rounded corners from colliding with the timeline's top-
-  // rounded corners.
-  border: "1px solid rgba(0,0,0,0.5)",
-  borderRadius: 8,
-  boxShadow:
-    "inset 0 1px 1px rgba(255,255,255,0.04), inset 0 -1px 1px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.25)",
+  // Drawer-pulled-out look: rectangular, no rounded corners, with inner
+  // shadows on all four sides for cavity-depth and a soft drop shadow
+  // at the bottom for grounding. The flat bottom corners sit cleanly
+  // against the timeline because the timeline is full-width too — its
+  // own top-rounded corners are at the editor edges, not where they'd
+  // collide with the compartment's bottom edge.
+  background: "linear-gradient(180deg, #1F1D1A 0%, #15130F 100%)",
+  border: "1px solid rgba(0,0,0,0.75)",
+  borderRadius: 0,
+  boxShadow: [
+    "inset 0 6px 10px -2px rgba(0,0,0,0.7)", // strong top inner — recessed
+    "inset 0 -3px 6px -2px rgba(0,0,0,0.4)", // subtle bottom inner
+    "inset 4px 0 8px -3px rgba(0,0,0,0.45)", // left inner
+    "inset -4px 0 8px -3px rgba(0,0,0,0.45)", // right inner
+    "0 2px 3px rgba(0,0,0,0.3)", // outer drop shadow
+  ].join(", "),
 };
 
 const BRUSHED_GRAIN: CSSProperties = {
