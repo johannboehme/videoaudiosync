@@ -98,13 +98,10 @@ export interface CamAssets {
 }
 
 interface EditorAssets {
-  /** cam-1's video URL — kept for the existing single-source preview path. */
-  videoUrl: string;
   audioUrl: string;
   wave: WaveformData | null;
-  framesUrl: string | null;
-  /** All cams' assets, keyed by camId, for the multi-lane timeline + future
-   *  multi-cam preview. cam-1's videoUrl here equals the top-level videoUrl. */
+  /** All cams' assets, keyed by camId, for the multi-lane timeline +
+   *  multi-cam preview. May be empty — the editor opens audio-only. */
   cams: Record<string, CamAssets>;
 }
 
@@ -436,8 +433,10 @@ export default function Editor() {
       audioUrl = await resolveJobAssetUrl(id, "audio");
       if (cancelled || !audioUrl) return;
 
-      // Resolve every cam's video + frames URL up front. The timeline needs
-      // each cam's frames; the preview will switch between videos in Schritt 8.
+      // Resolve every cam's video + frames URL up front. Cams are
+      // optional — the editor opens audio-only when there are none, and
+      // also when cams haven't finished prep yet (live-job-update will
+      // inject them later via jobEvents).
       const videos = j.videos ?? [];
       for (const cam of videos) {
         const videoUrl = await resolveCamAssetUrl(id, cam.id, "video");
@@ -447,9 +446,7 @@ export default function Editor() {
           camUrls[cam.id] = { videoUrl, framesUrl };
         }
       }
-      const cam1Url = camUrls[videos[0]?.id]?.videoUrl;
-      const cam1Frames = camUrls[videos[0]?.id]?.framesUrl ?? null;
-      if (cancelled || !cam1Url) return;
+      if (cancelled) return;
 
       // Compute waveform peaks locally from the studio audio. Cache the
       // decoded PCM so the audio-analysis fallback below can reuse it
@@ -478,10 +475,8 @@ export default function Editor() {
       if (cancelled) return;
 
       setAssets({
-        videoUrl: cam1Url,
         audioUrl,
         wave,
-        framesUrl: cam1Frames,
         cams: camUrls,
       });
 
