@@ -178,3 +178,44 @@ export const VideoClipIcon = (p: SVGProps<SVGSVGElement>) => (
     <line x1="16" y1="2" x2="19" y2="6" />
   </svg>
 );
+/** Stylised SLR-camera silhouette — cam-switch hotkey row (1-9). */
+export const CameraIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <path d="M3 8h3l2-3h8l2 3h3v11H3z" />
+    <circle cx="12" cy="13" r="3.5" />
+  </svg>
+);
+/** Vignette: outer frame with a soft round centre — F-hotkey FX. */
+export const VignetteIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <rect x="3" y="5" width="18" height="14" rx="1.5" />
+    <circle cx="12" cy="12" r="4" />
+  </svg>
+);
+/** Horseshoe magnet — Q-hotkey quantize / snap-to-grid. */
+export const MagnetIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <path d="M6 4v8a6 6 0 0 0 12 0V4" />
+    <line x1="6" y1="4" x2="10" y2="4" />
+    <line x1="14" y1="4" x2="18" y2="4" />
+    <line x1="6" y1="12" x2="10" y2="12" />
+    <line x1="14" y1="12" x2="18" y2="12" />
+  </svg>
+);
+/** Question mark in a ring — toggle for the help overlay. */
+export const HelpIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 2-2.5 4" />
+    <line x1="12" y1="17" x2="12" y2="17.01" />
+  </svg>
+);
+/** Horizontal arrow keys — frame-step shortcut (←/→). */
+export const ArrowKeysIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...baseProps} {...p}>
+    <polyline points="8 7 4 12 8 17" />
+    <line x1="4" y1="12" x2="11" y2="12" />
+    <polyline points="16 7 20 12 16 17" />
+    <line x1="13" y1="12" x2="20" y2="12" />
+  </svg>
+);

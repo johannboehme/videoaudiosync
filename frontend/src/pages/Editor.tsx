@@ -11,8 +11,15 @@ import { TransportBar } from "../editor/components/TransportBar";
 import { OptionsPanel } from "../editor/components/OptionsPanel";
 import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { FxHardwarePanel } from "../editor/components/FxHardwarePanel";
+import {
+  CameraIcon,
+  MagnetIcon,
+  VignetteIcon,
+  XIcon,
+} from "../editor/components/icons";
 import { useEditorStore } from "../editor/store";
 import type { FxKind } from "../editor/fx/types";
+import { useRegisterShortcut } from "../editor/shortcuts/useRegisterShortcut";
 import {
   jobEvents,
   jobsDb,
@@ -777,6 +784,38 @@ export default function Editor() {
     void runEditRender(id, local);
     navigate(`/job/${id}/render`);
   }
+
+  useRegisterShortcut({
+    id: "editor.cam-switch",
+    keys: ["1", "…", "9"],
+    description:
+      "Switch active camera (tap = cut, hold = paint over the lane)",
+    group: "Cameras",
+    icon: <CameraIcon />,
+  });
+  useRegisterShortcut({
+    id: "editor.fx-vignette",
+    keys: ["F"],
+    description: "Hold to record a vignette FX under the playhead",
+    group: "FX",
+    icon: <VignetteIcon />,
+  });
+  useRegisterShortcut({
+    id: "editor.erase-fx",
+    keys: ["X"],
+    description:
+      "Hold to erase FX under the playhead. Combine with an FX key (e.g. X+F) to limit the wipe to that kind",
+    group: "FX",
+    icon: <XIcon />,
+  });
+  useRegisterShortcut({
+    id: "editor.quantize",
+    keys: ["Q"],
+    description:
+      "Hold to preview-snap every cut to the active grid; release commits, Esc cancels",
+    group: "Edit",
+    icon: <MagnetIcon />,
+  });
 
   if (err) {
     return (

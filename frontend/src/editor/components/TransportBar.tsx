@@ -2,9 +2,11 @@
 import { useEffect } from "react";
 import { useEditorStore } from "../store";
 import { effectiveAudioStartS } from "../selectors/timing";
+import { useRegisterShortcut } from "../shortcuts/useRegisterShortcut";
 import { ChunkyButton } from "./ChunkyButton";
 import { TransportClock } from "./TransportClock";
 import {
+  ArrowKeysIcon,
   AudioStartIcon,
   InIcon,
   LoopIcon,
@@ -94,6 +96,49 @@ export function TransportBar() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [currentTime, fps, isPlaying, setPlaying, setTrim, trim.in, trim.out, step]);
+
+  useRegisterShortcut({
+    id: "transport.playpause",
+    keys: ["Space", "K"],
+    description: "Play / pause",
+    group: "Transport",
+    icon: <PlayIcon />,
+  });
+  useRegisterShortcut({
+    id: "transport.skipback",
+    keys: ["J"],
+    description: "Skip back 1 second",
+    group: "Transport",
+    icon: <SkipBackIcon />,
+  });
+  useRegisterShortcut({
+    id: "transport.skipfwd",
+    keys: ["L"],
+    description: "Skip forward 1 second",
+    group: "Transport",
+    icon: <SkipFwdIcon />,
+  });
+  useRegisterShortcut({
+    id: "transport.framestep",
+    keys: ["←", "→"],
+    description: "Step one frame (hold Shift for ±1 second)",
+    group: "Transport",
+    icon: <ArrowKeysIcon />,
+  });
+  useRegisterShortcut({
+    id: "transport.in",
+    keys: ["I"],
+    description: "Set IN-point at the playhead",
+    group: "Transport",
+    icon: <InIcon />,
+  });
+  useRegisterShortcut({
+    id: "transport.out",
+    keys: ["O"],
+    description: "Set OUT-point at the playhead",
+    group: "Transport",
+    icon: <OutIcon />,
+  });
 
   return (
     <div className="flex items-center gap-3 flex-wrap">

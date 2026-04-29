@@ -2,6 +2,7 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { detectCapabilities, meetsMinRequirements } from "./local/capabilities";
 import { markInterruptedJobsOnLoad } from "./local/lifecycle";
+import { HelpOverlay } from "./editor/components/HelpOverlay";
 import { RegistrationMark } from "./editor/components/RuleStrip";
 import { Footer } from "./components/Footer";
 import { Datenschutz } from "./pages/Datenschutz";
@@ -50,7 +51,12 @@ export default function App() {
   }
 
   if (!min.ok) {
-    return <BrowserTooOld missing={min.missing} />;
+    return (
+      <>
+        <BrowserTooOld missing={min.missing} />
+        <HelpOverlay />
+      </>
+    );
   }
 
   return (
@@ -68,6 +74,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Footer overlay={isFullBleed} />
+      <HelpOverlay />
     </div>
   );
 }
