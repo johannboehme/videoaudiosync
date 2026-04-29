@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { useEditorStore } from "../store";
 import { effectiveAudioStartS } from "../selectors/timing";
 import { ChunkyButton } from "./ChunkyButton";
-import { MonoReadout, formatTime } from "./MonoReadout";
+import { TransportClock } from "./TransportClock";
 import {
   AudioStartIcon,
   InIcon,
@@ -180,11 +180,7 @@ export function TransportBar() {
         </ChunkyButton>
       </div>
 
-      <div className="ml-auto flex items-center gap-3">
-        <MonoReadout label="TIME" size="md" tone="hot" value={formatTime(currentTime)} />
-        <span className="text-ink-3 font-mono text-xs">/</span>
-        <MonoReadout label="DURATION" size="md" tone="muted" value={formatTime(duration)} />
-      </div>
+      <TransportClock className="ml-auto" />
     </div>
   );
 }
