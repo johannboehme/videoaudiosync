@@ -39,14 +39,16 @@ const MIN_PEAK_SPACING_S: f32 = 0.25;
 
 /// Onset-envelope contribution weight in `align_with_onset`. The
 /// per-lag onset-cross-correlation (Pearson, ~[0,1]) is scaled by this
-/// and by the chroma peak before being added into `ncc_combined`. Onset
-/// carries more weight than chroma because chroma rewards every beat-
-/// grid-aligned position equally on repetitive material — onset is the
-/// only feature that knows where the unique transients sit.
+/// and by the chroma peak before being added into `ncc_combined` to
+/// pick the winning peak. Onset carries more weight than chroma because
+/// chroma rewards every beat-grid-aligned position equally on
+/// repetitive material — onset is the only feature that knows where the
+/// unique transients sit.
 ///
-/// Both `align_with_onset` (the boost loop) and the conf_norm
-/// normalization downstream reference this constant — they MUST agree
-/// or peaks saturate at 1.0 / under-report.
+/// Onset only influences peak SELECTION; the confidence value reported
+/// for each candidate is the chroma-only NCC at the chosen lag, so the
+/// user-facing scale stays in chroma-only units regardless of how
+/// strongly onset tilted the pick.
 const ONSET_WEIGHT: f32 = 0.85;
 
 /// Alternate candidates with NCC below `top_ncc * REL_THRESHOLD` are
@@ -225,13 +227,13 @@ pub fn align_with_onset(
     }
 
     // Optional onset-envelope NCC pass. Same correlate_full + sqrt-overlap
-    // normalization, then summed with chroma NCC element-wise. We weight
-    // onset lower than chroma — chroma is the primary signal, onset
-    // breaks ties between similar-looking chroma regions.
-    // Decide up-front whether the onset boost will fire — the same
-    // predicate gates both the boost loop AND the downstream conf_norm
-    // scaling, so they can never disagree (a mismatch saturated alts at
-    // 1.0 in the snap-match UI).
+    // normalization, then summed into ncc_combined element-wise. Onset
+    // is folded in only as a peak-PICKER tiebreaker — it shifts which
+    // lag wins among self-similar chroma regions but doesn't affect the
+    // reported confidence (which stays chroma-only, see conf_norm
+    // below). Real-music bench on 30 s pop chunks @ 64–128 BPM needs
+    // onset ≥ chroma here to consistently pick the true alignment over
+    // a beat-shifted impostor.
     let onset_denom = if !onset_r.is_empty()
         && !onset_q.is_empty()
         && onset_r.len() + onset_q.len() - 1 == ncc_chroma.len()
@@ -243,14 +245,9 @@ pub fn align_with_onset(
     } else {
         None
     };
-    let onset_active = onset_denom.is_some();
 
     let mut ncc_combined = ncc_chroma.clone();
     if let Some(denom) = onset_denom {
-        // Real-music bench on 30 s pop chunks @ 64–128 BPM needs onset ≥
-        // chroma to consistently pick the true alignment over a beat-
-        // shifted impostor — chroma alone rewards every beat-grid-aligned
-        // position on repetitive material.
         let onset_corr = correlate_full(onset_q, onset_r);
         // Find peak chroma value to scale onset to comparable units.
         let chroma_peak = ncc_chroma.iter().cloned().fold(0.0_f32, f32::max).max(1e-6);
@@ -276,15 +273,14 @@ pub fn align_with_onset(
         return None;
     }
 
-    // Normalize NCC into [0, 1] for stable confidence reporting. With our
-    // sqrt(o) denominator the chroma-only theoretical max is
-    // sqrt(min_active); when the onset boost fired upstream, the per-lag
-    // value can reach `(1 + ONSET_WEIGHT) × chroma_peak` — so conf_norm
-    // must scale by the same factor or every onset-augmented peak clamps
-    // to 1.0 and alternates lose their relative ranking.
-    let conf_norm = (min_active as f32).sqrt().max(1.0)
-        * if onset_active { 1.0 + ONSET_WEIGHT } else { 1.0 };
-    let primary_ncc_norm = (primary_val / conf_norm).clamp(0.0, 1.0);
+    // Normalize NCC into [0, 1] for stable confidence reporting. The
+    // reported NCC is strictly the chroma-only Pearson at the chosen
+    // lag, normalised by the chroma-only theoretical max sqrt(min_active).
+    // This keeps the user-facing scale stable across onset-active and
+    // onset-empty paths (~0.85 for solid matches, ~0.5 for shaky ones)
+    // — onset is a peak-picker, not a confidence multiplier.
+    let conf_norm = (min_active as f32).sqrt().max(1.0);
+    let primary_ncc_norm = (ncc_chroma[primary_idx] / conf_norm).clamp(0.0, 1.0);
 
     let primary = MatchCandidate {
         offset_samples: idx_to_offset_samples(primary_idx, cr.n_frames, HOP),
@@ -293,6 +289,9 @@ pub fn align_with_onset(
     };
 
     // Alternate candidates — local maxima with the spacing constraint.
+    // Peaks are picked from the boosted `ncc` (onset breaks chroma ties)
+    // but their reported confidence is again the chroma-only value at
+    // that lag, same normalization as primary.
     let min_spacing_frames = (MIN_PEAK_SPACING_S * sample_rate as f32 / HOP as f32) as usize;
     let cutoff = primary_val * REL_THRESHOLD;
 
@@ -307,7 +306,7 @@ pub fn align_with_onset(
     peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut alternates: Vec<MatchCandidate> = Vec::new();
-    for (idx, val) in peaks.into_iter() {
+    for (idx, _val) in peaks.into_iter() {
         if idx == primary_idx {
             continue;
         }
@@ -325,7 +324,7 @@ pub fn align_with_onset(
         }
         alternates.push(MatchCandidate {
             offset_samples: idx_to_offset_samples(idx, cr.n_frames, HOP),
-            ncc: (val / conf_norm).clamp(0.0, 1.0),
+            ncc: (ncc_chroma[idx] / conf_norm).clamp(0.0, 1.0),
             overlap_frames: overlaps[idx].round() as u32,
         });
         if alternates.len() >= max_alternates {
