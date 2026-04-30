@@ -25,6 +25,7 @@ import { MasterAudio } from "./MasterAudio";
 import { TestPattern } from "./TestPattern";
 import { OutputFrameBox } from "./OutputFrameBox";
 import { PreviewRuntime, type ClipUrlMap } from "../render/preview-runtime";
+import { COMPOSITOR_INITIAL_SCALE } from "../render/feature-flag";
 
 interface Props {
   cams: ClipUrlMap;
@@ -78,7 +79,12 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
       cssW,
       cssH,
       dpr,
+      initialScale: COMPOSITOR_INITIAL_SCALE,
     });
+    // Expose the runtime so devs can tweak `setScale(0.75)` from the
+    // console without a reload. Read-only by external code — owned by
+    // this component and disposed on unmount.
+    (window as unknown as { __vasCompositor?: PreviewRuntime }).__vasCompositor = runtime;
 
     let cancelled = false;
     void runtime
@@ -101,6 +107,8 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
       cancelled = true;
       runtimeRef.current = null;
       runtime.dispose();
+      const w = window as unknown as { __vasCompositor?: PreviewRuntime };
+      if (w.__vasCompositor === runtime) delete w.__vasCompositor;
     };
     // We deliberately do NOT depend on `cams` here — the runtime
     // reconciles its pool on every tick via `setCams(...)`, so adding
