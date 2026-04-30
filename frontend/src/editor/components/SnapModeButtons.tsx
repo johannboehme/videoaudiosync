@@ -80,6 +80,7 @@ interface KeyProps {
   testId?: string;
   title?: string;
   ariaLabel?: string;
+  extraCls?: string;
   onClick: () => void;
   children: React.ReactNode;
 }
@@ -90,6 +91,7 @@ function CassetteKey({
   testId,
   title,
   ariaLabel,
+  extraCls,
   onClick,
   children,
 }: KeyProps) {
@@ -101,7 +103,7 @@ function CassetteKey({
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
-      className={KEY_BASE_CLS}
+      className={extraCls ? `${KEY_BASE_CLS} ${extraCls}` : KEY_BASE_CLS}
       style={active ? KEY_ACTIVE : KEY_REST}
       title={title}
     >
@@ -163,6 +165,7 @@ export function SnapModeButtons() {
                 ? "Match: this cam has no audio-match candidates"
                 : `Snap: ${label}`
             }
+            extraCls={needsBpm ? "w-10" : undefined}
             onClick={() => setSnapMode(mode)}
           >
             {label}
