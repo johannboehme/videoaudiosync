@@ -701,12 +701,80 @@ export function Timeline({
     return snapTime(t, snapMode, buildSnapCtx(candPositions));
   }
 
+  // ─── Multi-touch pinch-zoom + 2-finger pan ─────────────────────────
+  //
+  // Pinch and 2-finger pan are the only practical zoom/pan affordances
+  // on a phone; trackpad ctrl-wheel doesn't help touch users. We track
+  // every active pointer; when ≥ 2 are down we cancel any single-finger
+  // drag (so seek/playhead doesn't fight the gesture) and:
+  //   - zoom anchored at the gesture centroid by the ratio of current
+  //     finger-distance to start-distance
+  //   - pan by however much the centroid has translated since the
+  //     previous frame (frame-relative so the math stays stable)
+  // The single-finger path falls through unchanged so tap-to-seek and
+  // clip drags still work with a stylus or one finger.
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(
+    new Map(),
+  );
+  const gestureRef = useRef<
+    | {
+        startDist: number;
+        startZoom: number;
+        startScroll: number;
+        startCentroidX: number;
+        startTAtCentroid: number;
+        lastCentroidX: number;
+      }
+    | null
+  >(null);
+
+  function pointersCentroid(): { x: number; y: number } {
+    const pts = Array.from(activePointersRef.current.values());
+    const n = pts.length || 1;
+    let sx = 0;
+    let sy = 0;
+    for (const p of pts) {
+      sx += p.x;
+      sy += p.y;
+    }
+    return { x: sx / n, y: sy / n };
+  }
+  function pointersDistance(): number {
+    const pts = Array.from(activePointersRef.current.values());
+    if (pts.length < 2) return 0;
+    const dx = pts[0].x - pts[1].x;
+    const dy = pts[0].y - pts[1].y;
+    return Math.hypot(dx, dy);
+  }
+
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const canvas = e.currentTarget;
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+
+    // Track this pointer for multi-touch detection.
+    activePointersRef.current.set(e.pointerId, { x, y });
+
+    // 2nd finger lands → enter pinch/pan mode. Tear down any single-
+    // finger drag started by the first finger so it doesn't keep
+    // seeking while the user is pinching.
+    if (activePointersRef.current.size >= 2) {
+      dragRef.current = null;
+      setActiveClipMoveDragId(null);
+      const centroid = pointersCentroid();
+      gestureRef.current = {
+        startDist: pointersDistance() || 1,
+        startZoom: zoom,
+        startScroll: clampedScroll,
+        startCentroidX: centroid.x,
+        startTAtCentroid: xToT(centroid.x),
+        lastCentroidX: centroid.x,
+      };
+      return;
+    }
+
     const tRaw = xToT(x);
 
     // Audio lane → existing trim/loop/playhead/seek behavior.
@@ -797,9 +865,40 @@ export function Timeline({
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!dragRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Update tracked pointer position whenever the pointer is captured
+    // here. The map only contains pointers that went through the
+    // canvas's onPointerDown, so plain hover events are skipped.
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x, y });
+    }
+
+    // ── Multi-touch zoom + pan ───────────────────────────────────
+    if (gestureRef.current && activePointersRef.current.size >= 2) {
+      const g = gestureRef.current;
+      const centroid = pointersCentroid();
+      const dist = pointersDistance();
+      const scale = Math.max(0.0001, dist / g.startDist);
+      // Anchor zoom on the time the centroid was over when the gesture
+      // started, then pan so that point follows the centroid (gives a
+      // "pin the timeline under your fingers" feel).
+      const newZoom = Math.max(1, Math.min(64, g.startZoom * scale));
+      const newVisible = timelineSpan / newZoom;
+      const desiredViewStart = g.startTAtCentroid - (centroid.x / canvasWidth) * newVisible;
+      const newScroll = Math.max(
+        0,
+        Math.min(timelineSpan - newVisible, desiredViewStart - timelineStartS),
+      );
+      if (newZoom !== zoom) setZoom(newZoom);
+      setScrollX(newScroll);
+      g.lastCentroidX = centroid.x;
+      return;
+    }
+
+    if (!dragRef.current) return;
     const tRaw = Math.max(0, Math.min(duration, xToT(x)));
     const drag = dragRef.current;
     if (drag.kind === "playhead") {
@@ -910,7 +1009,26 @@ export function Timeline({
     }
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e?: ReactPointerEvent<HTMLCanvasElement>) => {
+    // Drop the pointer from the multi-touch tracker. If we were in a
+    // pinch gesture and we just dropped below 2 fingers, exit gesture
+    // mode (the remaining finger should not start a new seek-drag —
+    // user lifted only one of two, so wait for them to lift the other
+    // before re-arming single-touch interactions).
+    if (e?.pointerId !== undefined) {
+      activePointersRef.current.delete(e.pointerId);
+    }
+    if (gestureRef.current) {
+      if (activePointersRef.current.size < 2) {
+        gestureRef.current = null;
+        // Suppress the lingering single-finger drag — user is winding
+        // down a pinch, not starting a scrub.
+        dragRef.current = null;
+        setActiveClipMoveDragId(null);
+        frozenTimelineRangeRef.current = null;
+      }
+      return;
+    }
     dragRef.current = null;
     setActiveClipMoveDragId(null);
     frozenTimelineRangeRef.current = null;
@@ -1055,11 +1173,17 @@ export function Timeline({
   return (
     <div ref={wrapRef} className="w-full select-none">
       {/* Top header row: BPM-LCD + cassette snap-buttons on the left,
-          view-range readout on the right. The BPM column and the button
-          plate are vertically centered to the row's content height. */}
-      <div className="flex items-center gap-4 px-1 mb-2">
+          view-range readout on the right. On narrow phones the row wraps
+          and the zoom readout drops to its own line so nothing has to
+          truncate or overflow. */}
+      <div className="flex items-center gap-x-4 gap-y-2 px-1 mb-2 flex-wrap">
         <BpmReadout />
-        <SnapModeButtons />
+        {/* SnapModeButtons can scroll horizontally inside its own plate;
+            we hand it a min-w-0 wrapper here so it doesn't blow out the
+            timeline-header row width. */}
+        <div className="min-w-0 flex-shrink">
+          <SnapModeButtons />
+        </div>
         <SegmentedControl
           size="sm"
           value={programStripMode}
@@ -1075,7 +1199,7 @@ export function Timeline({
           snapMode={snapMode}
           clips={clips}
         />
-        <div className="ml-auto flex items-center gap-3">
+        <div className="sm:ml-auto flex items-center gap-3">
           <span className="text-[10px] tabular text-ink-3 font-mono">
             {zoomPercent}%
           </span>

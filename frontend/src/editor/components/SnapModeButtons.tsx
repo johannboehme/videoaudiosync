@@ -66,7 +66,7 @@ const KEY_ACTIVE: React.CSSProperties = {
 };
 
 const KEY_BASE_CLS = [
-  "relative",
+  "relative shrink-0",
   "h-7 min-w-[30px] px-2 text-[10px] font-display tracking-label",
   "rounded-[3px] border border-black/40",
   "select-none transition-transform duration-75",
@@ -145,7 +145,11 @@ export function SnapModeButtons() {
 
   return (
     <div
-      className="inline-flex items-center gap-1.5 self-center"
+      // On narrow phones the 8 cassette keys won't fit on a single row.
+      // We let the plate take full width and the keys overflow-x-scroll
+      // inside it (no scrollbar — the row is short enough that swipe is
+      // intuitive). Above sm we go back to the natural inline-flex.
+      className="flex items-center gap-1.5 self-center max-w-full overflow-x-auto no-native-scrollbar sm:inline-flex sm:overflow-visible sm:max-w-none"
       style={PLATE_STYLE}
       role="group"
       aria-label="Snap mode"

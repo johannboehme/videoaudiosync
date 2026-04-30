@@ -48,7 +48,9 @@ export function SidePanel({ sync, options, overlays, exportTab }: Props) {
               aria-selected={active}
               onClick={() => setActive(t.value)}
               className={[
-                "h-11 font-display tracking-label uppercase text-[11px] relative",
+                // h-12 + slightly tighter label spacing on narrow widths so
+                // "OVERLAYS" stops bleeding into "EXPORT" on Galaxy-Fold sizes.
+                "h-12 font-display uppercase text-[10px] sm:text-[11px] tracking-[0.08em] sm:tracking-label relative",
                 active ? "bg-paper-hi text-ink" : "text-ink-2 hover:text-ink",
               ].join(" ")}
             >

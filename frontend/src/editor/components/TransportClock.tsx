@@ -58,9 +58,11 @@ export function TransportClock({ className = "" }: { className?: string }) {
   };
 
   const lcdClass = [
-    "font-mono tabular tracking-[0.05em] text-2xl",
-    "px-3 rounded-[3px] w-[130px]",
-    "border border-black/40",
+    "font-mono tabular tracking-[0.05em]",
+    // Compact on mobile so two LCDs + bezel fit in <300 px viewports;
+    // expand back to the original beefy readout from sm: upward.
+    "text-base w-[78px] px-1.5 sm:text-2xl sm:w-[130px] sm:px-3",
+    "rounded-[3px] border border-black/40",
     "inline-flex items-center justify-center leading-none",
   ].join(" ");
 

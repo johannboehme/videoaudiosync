@@ -82,19 +82,20 @@ export default function App() {
 function TopBar() {
   return (
     <header className="border-b border-rule bg-paper-hi shadow-panel">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
-        <Link to="/" className="flex items-center gap-2.5 group">
-          <RegistrationMark className="text-hot" />
-          <div className="leading-none">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4">
+        <Link to="/" className="flex items-center gap-2 sm:gap-2.5 group min-w-0 shrink">
+          <RegistrationMark className="text-hot shrink-0" />
+          <div className="leading-none min-w-0">
             <span className="font-display tracking-label uppercase text-[11px] text-ink-2 block">
               VAS
             </span>
-            <span className="font-display text-[15px] font-semibold text-ink leading-none block">
-              Video / Audio Sync
+            <span className="font-display text-[13px] sm:text-[15px] font-semibold text-ink leading-none block truncate">
+              <span className="hidden sm:inline">Video / Audio Sync</span>
+              <span className="sm:hidden">Video Sync</span>
             </span>
           </div>
         </Link>
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           <NavTab to="/" end>
             New
           </NavTab>
@@ -121,7 +122,7 @@ function NavTab({
       end={end}
       className={({ isActive }) =>
         [
-          "h-9 px-3 inline-flex items-center font-display tracking-label uppercase text-[11px] rounded-md",
+          "h-9 px-2 sm:px-3 inline-flex items-center font-display tracking-label uppercase text-[11px] rounded-md",
           isActive ? "bg-ink text-paper-hi" : "text-ink-2 hover:text-ink",
         ].join(" ")
       }
