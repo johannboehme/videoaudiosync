@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Datenschutz } from "./Datenschutz";
@@ -10,6 +10,10 @@ function renderPage() {
     </MemoryRouter>,
   );
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("Datenschutz page", () => {
   it("links back to the Impressum for the responsible-party details", () => {
@@ -55,5 +59,41 @@ describe("Datenschutz page", () => {
     const text = document.body.textContent ?? "";
     expect(text).toMatch(/DSGVO/);
     expect(text).toMatch(/Aufsichtsbehörde/);
+  });
+});
+
+describe("Datenschutz page — supervisory authority", () => {
+  describe("when configured via env", () => {
+    beforeEach(() => {
+      vi.stubEnv(
+        "VITE_DSGVO_AUTHORITY_NAME",
+        "Test-Datenschutzbehörde (TDB)",
+      );
+      vi.stubEnv(
+        "VITE_DSGVO_AUTHORITY_ADDRESS",
+        "Teststraße 5, 12345 Testhausen",
+      );
+    });
+
+    it("names the configured authority and its address", () => {
+      renderPage();
+      const text = document.body.textContent ?? "";
+      expect(text).toContain("Test-Datenschutzbehörde (TDB)");
+      expect(text).toContain("Teststraße 5, 12345 Testhausen");
+    });
+  });
+
+  describe("when not configured", () => {
+    // No env-var stubs.
+
+    it("falls back to a generic right-to-complain notice", () => {
+      renderPage();
+      const text = document.body.textContent ?? "";
+      // No leftover "Test-Datenschutzbehörde" or "BayLDA".
+      expect(text).not.toContain("Test-Datenschutzbehörde");
+      expect(text).not.toContain("BayLDA");
+      // Generic notice still mentions the right + the seat-of-controller hint.
+      expect(text).toMatch(/Aufsichtsbehörde/);
+    });
   });
 });

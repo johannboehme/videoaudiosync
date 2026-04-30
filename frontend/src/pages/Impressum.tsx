@@ -1,4 +1,12 @@
+import { getSiteConfig } from "../local/site-config";
+
 export function Impressum() {
+  const { imprint } = getSiteConfig();
+
+  if (!imprint) {
+    return <UnconfiguredImprint />;
+  }
+
   return (
     <main className="mx-auto max-w-2xl space-y-8 p-8 text-ink">
       <h1 className="font-display text-2xl font-semibold">Impressum</h1>
@@ -8,13 +16,17 @@ export function Impressum() {
           Angaben gemäß § 5 DDG / § 18 MStV
         </h2>
         <address className="not-italic leading-relaxed">
-          Johann Böhme
+          {imprint.name}
           <br />
-          Haibacher Straße 2A
+          {imprint.addressLine1}
           <br />
-          63768 Hösbach
-          <br />
-          Deutschland
+          {imprint.addressLine2}
+          {imprint.country && (
+            <>
+              <br />
+              {imprint.country}
+            </>
+          )}
         </address>
       </section>
 
@@ -25,10 +37,10 @@ export function Impressum() {
         <p>
           E-Mail:{" "}
           <a
-            href="mailto:johann.boehme@web.de"
+            href={`mailto:${imprint.email}`}
             className="underline hover:text-hot"
           >
-            johann.boehme@web.de
+            {imprint.email}
           </a>
         </p>
       </section>
@@ -37,7 +49,7 @@ export function Impressum() {
         <h2 className="font-display text-sm uppercase tracking-label text-ink-2">
           Verantwortlich i.S.d. § 18 Abs. 2 MStV
         </h2>
-        <p>Johann Böhme, Anschrift wie oben.</p>
+        <p>{imprint.name}, Anschrift wie oben.</p>
       </section>
 
       <section className="space-y-2">
@@ -91,6 +103,29 @@ export function Impressum() {
           Die im Browser ausgeführten FFmpeg-Bibliotheken stehen unter der
           LGPL. Der unveränderte Quellcode ist unter dem oben genannten Link
           verfügbar.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function UnconfiguredImprint() {
+  return (
+    <main className="mx-auto max-w-2xl space-y-6 p-8 text-ink">
+      <h1 className="font-display text-2xl font-semibold">Impressum</h1>
+      <section className="border-l-2 border-danger pl-3 py-2 space-y-3 text-sm font-mono leading-relaxed text-ink">
+        <p className="text-danger uppercase tracking-label text-xs">
+          ⚠ Imprint not configured
+        </p>
+        <p>
+          This deployment is missing its <code>VITE_IMPRESSUM_*</code>{" "}
+          build-time environment variables, so the legal imprint cannot be
+          rendered. The site operator must configure them before publishing
+          this instance.
+        </p>
+        <p>
+          See <code>.env.example</code> at the repository root and the{" "}
+          <em>Configuring your instance</em> section in the README.
         </p>
       </section>
     </main>

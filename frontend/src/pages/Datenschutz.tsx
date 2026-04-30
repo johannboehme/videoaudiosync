@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
+import { getSiteConfig } from "../local/site-config";
 
 export function Datenschutz() {
+  const { authority } = getSiteConfig();
   return (
     <main className="mx-auto max-w-2xl space-y-8 p-8 text-ink">
       <h1 className="font-display text-2xl font-semibold">
@@ -107,9 +109,15 @@ export function Datenschutz() {
         </p>
         <p className="leading-relaxed">
           Sie haben außerdem das Recht, sich bei einer Datenschutz-
-          Aufsichtsbehörde zu beschweren. Zuständig ist das Bayerische
-          Landesamt für Datenschutzaufsicht (BayLDA), Promenade 18, 91522
-          Ansbach.
+          Aufsichtsbehörde zu beschweren.{" "}
+          {authority ? (
+            <>
+              Zuständig ist {authority.name}
+              {authority.address ? `, ${authority.address}` : ""}.
+            </>
+          ) : (
+            <>Die zuständige Aufsichtsbehörde ergibt sich aus dem Sitz des Verantwortlichen.</>
+          )}
         </p>
       </section>
     </main>

@@ -12,6 +12,11 @@ const crossOriginIsolationHeaders = {
 };
 
 export default defineConfig({
+  // Read .env / .env.local from the repo root, not from frontend/. The
+  // root is where docker-compose.yml lives, and we want a single source of
+  // truth for both `npm run dev` (here) and the Docker build (which reads
+  // the same .env to populate VITE_* build args).
+  envDir: "..",
   plugins: [react()],
   optimizeDeps: {
     include: ["mp4box", "mp4-muxer", "idb"],

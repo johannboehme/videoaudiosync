@@ -1,3 +1,20 @@
+/// <reference types="vite/client" />
+
+// Per-instance build-time env vars (see .env.example at repo root).
+interface ImportMetaEnv {
+  readonly VITE_IMPRESSUM_NAME?: string;
+  readonly VITE_IMPRESSUM_ADDRESS_LINE_1?: string;
+  readonly VITE_IMPRESSUM_ADDRESS_LINE_2?: string;
+  readonly VITE_IMPRESSUM_COUNTRY?: string;
+  readonly VITE_IMPRESSUM_EMAIL?: string;
+  readonly VITE_DSGVO_AUTHORITY_NAME?: string;
+  readonly VITE_DSGVO_AUTHORITY_ADDRESS?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 // Vite-specific URL helpers — these aren't real npm modules, the suffixes
 // are interpreted by the Vite plugin chain at build time.
 declare module "*?worker&url" {

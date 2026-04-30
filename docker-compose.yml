@@ -7,6 +7,18 @@ services:
       # netcup VPS). Runtime networking is unaffected — the container still
       # gets its own bridge IP for the host nginx to proxy into.
       network: host
+      # Per-instance build-time config. Values come from the repo-root
+      # `.env` (auto-loaded by docker-compose). Missing vars are passed
+      # through as empty strings; the legal pages then render an "Imprint
+      # not configured" placeholder. See `.env.example` for the schema.
+      args:
+        VITE_IMPRESSUM_NAME: "${VITE_IMPRESSUM_NAME:-}"
+        VITE_IMPRESSUM_ADDRESS_LINE_1: "${VITE_IMPRESSUM_ADDRESS_LINE_1:-}"
+        VITE_IMPRESSUM_ADDRESS_LINE_2: "${VITE_IMPRESSUM_ADDRESS_LINE_2:-}"
+        VITE_IMPRESSUM_COUNTRY: "${VITE_IMPRESSUM_COUNTRY:-}"
+        VITE_IMPRESSUM_EMAIL: "${VITE_IMPRESSUM_EMAIL:-}"
+        VITE_DSGVO_AUTHORITY_NAME: "${VITE_DSGVO_AUTHORITY_NAME:-}"
+        VITE_DSGVO_AUTHORITY_ADDRESS: "${VITE_DSGVO_AUTHORITY_ADDRESS:-}"
     container_name: videoaudiosync
     restart: unless-stopped
     # The container only serves the static SPA bundle; no /data volume,

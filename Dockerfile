@@ -25,6 +25,28 @@ COPY frontend/scripts ./scripts
 RUN npm ci --no-audit --no-fund --legacy-peer-deps && \
     test -x node_modules/.bin/tsc || (echo "tsc missing after npm ci" && exit 1)
 COPY frontend/ ./
+
+# Per-instance config (legal pages: Impressum / Datenschutz). Threaded
+# in as build args by docker-compose.yml, which auto-substitutes them
+# from the repo-root `.env`. Vite picks them up via `process.env.VITE_*`
+# at build time and inlines them into the static bundle. Empty values
+# are fine — the pages render an "Imprint not configured" placeholder
+# so the operator notices before the public does.
+ARG VITE_IMPRESSUM_NAME=""
+ARG VITE_IMPRESSUM_ADDRESS_LINE_1=""
+ARG VITE_IMPRESSUM_ADDRESS_LINE_2=""
+ARG VITE_IMPRESSUM_COUNTRY=""
+ARG VITE_IMPRESSUM_EMAIL=""
+ARG VITE_DSGVO_AUTHORITY_NAME=""
+ARG VITE_DSGVO_AUTHORITY_ADDRESS=""
+ENV VITE_IMPRESSUM_NAME=$VITE_IMPRESSUM_NAME \
+    VITE_IMPRESSUM_ADDRESS_LINE_1=$VITE_IMPRESSUM_ADDRESS_LINE_1 \
+    VITE_IMPRESSUM_ADDRESS_LINE_2=$VITE_IMPRESSUM_ADDRESS_LINE_2 \
+    VITE_IMPRESSUM_COUNTRY=$VITE_IMPRESSUM_COUNTRY \
+    VITE_IMPRESSUM_EMAIL=$VITE_IMPRESSUM_EMAIL \
+    VITE_DSGVO_AUTHORITY_NAME=$VITE_DSGVO_AUTHORITY_NAME \
+    VITE_DSGVO_AUTHORITY_ADDRESS=$VITE_DSGVO_AUTHORITY_ADDRESS
+
 RUN npm run build
 
 # --- Stage 2: nginx static hosting with COOP/COEP ---
