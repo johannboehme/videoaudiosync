@@ -6,17 +6,31 @@ import type { FrameDescriptor, FrameLayer } from "./frame-descriptor";
 /** Records ctx-method calls in order so we can assert sequence (clear,
  *  setTransform, fillRect, drawImage, …). jsdom has no real Canvas2D
  *  context — this is the same mock pattern as canvas2d-renderer.test.ts. */
+interface MockCtx {
+  setTransform: ReturnType<typeof vi.fn>;
+  clearRect: ReturnType<typeof vi.fn>;
+  fillRect: ReturnType<typeof vi.fn>;
+  drawImage: ReturnType<typeof vi.fn>;
+  save: ReturnType<typeof vi.fn>;
+  restore: ReturnType<typeof vi.fn>;
+  translate: ReturnType<typeof vi.fn>;
+  rotate: ReturnType<typeof vi.fn>;
+  scale: ReturnType<typeof vi.fn>;
+  createRadialGradient: ReturnType<typeof vi.fn>;
+  fillStyle: unknown;
+}
+
 function makeMockCanvas(): {
   canvas: HTMLCanvasElement;
   calls: { name: string; args: unknown[] }[];
-  ctx: Record<string, ReturnType<typeof vi.fn>> & { fillStyle: unknown };
+  ctx: MockCtx;
 } {
   const calls: { name: string; args: unknown[] }[] = [];
   const rec = (name: string) =>
     vi.fn((...args: unknown[]) => {
       calls.push({ name, args });
     });
-  const ctx = {
+  const ctx: MockCtx = {
     setTransform: rec("setTransform"),
     clearRect: rec("clearRect"),
     fillRect: rec("fillRect"),
@@ -30,7 +44,7 @@ function makeMockCanvas(): {
     fillStyle: "" as unknown,
   };
   const canvas = document.createElement("canvas");
-  (canvas as unknown as { getContext: () => typeof ctx }).getContext = () => ctx;
+  (canvas as unknown as { getContext: () => MockCtx }).getContext = () => ctx;
   return { canvas, calls, ctx };
 }
 
