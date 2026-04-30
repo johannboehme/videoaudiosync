@@ -36,7 +36,7 @@ export interface OutputDims {
  * Wenn die ExportSpec eine explizite Resolution gesetzt hat → die.
  * Sonst: Bounding-Box `(max W, max H)` über alle Clips, die bereits
  * `displayW/displayH` reportet haben. Returns `null` solange noch kein
- * Clip seine dims gemeldet hat (caller hält die FxOverlay zurück).
+ * Clip seine dims gemeldet hat (caller hält den Compositor zurück).
  */
 export function resolveOutputDims(
   clips: readonly Clip[],

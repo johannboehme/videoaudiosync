@@ -32,7 +32,8 @@ export type PerfEvent =
       perfNow: number;
     }
   | {
-      /** Time from FX hold begin → first FX-overlay tick that drew it */
+      /** Time from FX hold begin → first compositor RAF tick that
+       *  drew the active fx. Closed by PreviewRuntime. */
       kind: "fx-first-render";
       durationMs: number;
       perfNow: number;

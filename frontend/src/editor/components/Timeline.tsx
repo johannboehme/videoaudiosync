@@ -894,7 +894,7 @@ export function Timeline({
 
       // Non-MATCH (off / grid): mutate syncOverrideMs so the drag is a
       // *true* sync change. The cam's master-timeline range slides; each
-      // CamCanvas re-anchors its video.currentTime automatically via the
+      // VideoElementPool re-anchors each video.currentTime automatically via the
       // shared `camSourceTimeS` computation, so the master-audio playhead
       // doesn't visually jump.
       const targetSnapped = snapped(targetStartS, e);

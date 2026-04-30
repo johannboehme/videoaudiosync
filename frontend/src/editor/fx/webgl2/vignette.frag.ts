@@ -6,9 +6,9 @@
  * smoothstep-Range wird über `u_falloff` gesteuert: bei falloff=1 startet
  * das Dunkeln im Zentrum, bei falloff=0 nur an der äußeren Ecke.
  *
- * Output ist *transparent über schwarz* — die FxOverlay-Canvas blendet
- * sich GPU-composited per Browser über den darunter liegenden Multi-Cam-
- * Stack. Kein Read-Pixel des Videos nötig.
+ * Output ist *transparent über schwarz* — der Compositor blendet die
+ * vignette per `gl.blendFunc(ONE, ONE_MINUS_SRC_ALPHA)` additiv über
+ * die zuvor gerenderte Source-Layer. Kein Read-Pixel des Videos nötig.
  */
 export const VIGNETTE_FRAG = `#version 300 es
 precision mediump float;

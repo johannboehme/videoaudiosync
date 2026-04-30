@@ -9,7 +9,7 @@
  *   - reports duration once `loadedmetadata` fires.
  *
  * Importantly the hook does NOT touch any cam <video> element. The cams
- * are slaves of the store's currentTime — see CamCanvas tests.
+ * are slaves of the store's currentTime — see VideoElementPool tests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";

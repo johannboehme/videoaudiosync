@@ -167,6 +167,20 @@ export class PreviewRuntime {
     const descriptor = buildPreviewFrameDescriptor(snapshot, playback.currentTime);
     const sources = this.buildSourcesMap(descriptor.layers, snapshot.clips);
 
+    // Close any pending fx-first-render perf mark on the first frame
+    // we draw with active fx. Editor.tsx stashes the handle on
+    // window.__fxFirstRenderPending when an F-hold begins; we pick it
+    // up here with no compile-time coupling to the perf module.
+    if (descriptor.fx.length > 0) {
+      const w = window as unknown as {
+        __fxFirstRenderPending?: { end: () => void };
+      };
+      if (w.__fxFirstRenderPending) {
+        w.__fxFirstRenderPending.end();
+        w.__fxFirstRenderPending = undefined;
+      }
+    }
+
     // Reconcile pool to current cam list — handles user added/removed cams.
     this.pool.setCams(collectVideoCams(snapshot.clips, this.opts.cams));
 

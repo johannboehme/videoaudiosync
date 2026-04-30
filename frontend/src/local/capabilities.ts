@@ -24,7 +24,7 @@ export interface Capabilities {
   videoEncoder: boolean;
   /** showSaveFilePicker. Falls fehlend, fallen wir auf `<a download>` zurück. */
   fileSystemAccess: boolean;
-  /** WebGL2 für den FxOverlay-GPU-Pfad. Fehlt → Canvas2D-Fallback. */
+  /** WebGL2 für den Compositor-GPU-Pfad. Fehlt → Canvas2D-Fallback. */
   webgl2: boolean;
   /** WebGPU — V1 noch nicht genutzt, aber Detection ist da, damit der
    *  Renderer-Picker später ohne Logik-Änderung darauf umsteigen kann. */

@@ -10,7 +10,7 @@
  * Settings are global to a clip (no time-range), so the panel mutates the
  * clip directly via setClipRotation / setClipFlip / resetClipTransform —
  * NOT through the FX system. They're picked up live by the preview
- * (CamCanvas / ImageOverlay CSS transform) and baked identically into the
+ * (the Compositor's WebGL2 backend applies it via uvMatrix) and baked identically into the
  * render pipeline (compositor.compositeImage).
  */
 import { useEditorStore } from "../store";

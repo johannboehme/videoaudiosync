@@ -9,9 +9,7 @@ import { SyncTuner } from "../editor/components/SyncTuner";
 import { Timeline } from "../editor/components/Timeline";
 import { TransportBar } from "../editor/components/TransportBar";
 import { OptionsPanel } from "../editor/components/OptionsPanel";
-import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { Compositor } from "../editor/components/Compositor";
-import { isCompositorV2Enabled } from "../editor/render/feature-flag";
 import { FxHardwarePanel } from "../editor/components/FxHardwarePanel";
 import {
   CameraIcon,
@@ -867,21 +865,12 @@ export default function Editor() {
         jobTitle={job.title || job.id}
         jobId={job.id}
         videoArea={
-          isCompositorV2Enabled() ? (
-            <Compositor
-              cams={Object.fromEntries(
-                Object.entries(assets.cams).map(([id, ca]) => [id, { videoUrl: ca.videoUrl }]),
-              )}
-              audioUrl={assets.audioUrl}
-            />
-          ) : (
-            <MultiCamPreview
-              cams={Object.fromEntries(
-                Object.entries(assets.cams).map(([id, ca]) => [id, { videoUrl: ca.videoUrl }]),
-              )}
-              audioUrl={assets.audioUrl}
-            />
-          )
+          <Compositor
+            cams={Object.fromEntries(
+              Object.entries(assets.cams).map(([id, ca]) => [id, { videoUrl: ca.videoUrl }]),
+            )}
+            audioUrl={assets.audioUrl}
+          />
         }
         fxPanel={<FxHardwarePanel />}
         transport={<TransportBar />}

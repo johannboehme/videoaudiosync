@@ -13,7 +13,7 @@ const FRAGMENTS: Record<string, string> = {
 };
 
 /** Names of all registered fragment shaders — exposed so callers (e.g.
- *  FxOverlay) can warm the cache eagerly at mount instead of paying the
+ *  WebGL2Backend) can warm the cache eagerly at mount instead of paying the
  *  compile cost on first activation. */
 export const REGISTERED_FRAGMENTS: readonly string[] = Object.keys(FRAGMENTS);
 

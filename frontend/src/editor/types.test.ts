@@ -49,7 +49,7 @@ describe("clipRangeS — Video", () => {
   // [startS, endS] range narrows, but anchorS — where the cam's
   // source-time 0 lives on the master timeline — must NOT move.
   // Otherwise the live preview's <video> currentTime computation
-  // (CamCanvas) plays from source frame 0 instead of frame trimInS.
+  // (VideoElementPool) plays from source frame 0 instead of frame trimInS.
   it("trimInS narrows startS but anchorS stays put", () => {
     const clip: VideoClip = {
       kind: "video",

@@ -13,9 +13,10 @@
  *     - Store -> audio: setPlaying / seek translate into
  *       audio.play / pause / currentTime writes.
  *
- *   Cams are passive. CamCanvas reads `playback.currentTime` from the
- *   store, computes its own source-time via `camSourceTimeS`, and seeks
- *   its own <video> to match. There is no master cam; cam-1 is just
+ *   Cams are passive. The compositor's `VideoElementPool` reads
+ *   `playback.currentTime` from the store, computes each cam's
+ *   source-time via `camSourceTimeS`, and seeks each `<video>` to
+ *   match. There is no master cam; cam-1 is just
  *   "the first cam" with no special clock semantics.
  */
 import { useCallback, useEffect, useRef, useState } from "react";

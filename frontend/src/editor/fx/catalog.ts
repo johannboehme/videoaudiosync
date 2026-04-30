@@ -25,10 +25,10 @@ export interface FxDefinition {
   defaultLengthS: number;
 
   /** Canvas2D / OffscreenCanvas2D renderer. Same code runs in:
-   *   - Live preview's Canvas2DFxRenderer (fallback when no WebGL2)
-   *   - Final render via `compositor.ts`
+   *   - Live preview's Canvas2DBackend (when WebGL2 unavailable)
+   *   - Final render via `compositor.ts` (also via Canvas2DBackend)
    *  Implementations should NOT touch ctx state outside save/restore;
-   *  the renderer wraps each call in save/restore for safety. */
+   *  the backend wraps each call in save/restore for safety. */
   drawCanvas2D(ctx: CanvasLikeContext, fx: PunchFx, w: number, h: number): void;
 
   /** WebGL2 renderer. Called with a configured fullscreen-quad pipeline;

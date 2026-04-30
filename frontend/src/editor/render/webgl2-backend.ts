@@ -8,10 +8,9 @@
  * paint as additive fullscreen-quad passes via the existing
  * `editor/fx/webgl2/` infrastructure.
  *
- * Why share infra with the FX renderer:
- *   - `program-cache.ts` already provides lazy compile + uniform-loc
- *     caching + warmup. Re-using it means the FX-shader cold-start
- *     numbers from Phase 1 carry over for free.
+ * Why use the existing webgl2/ helpers:
+ *   - `program-cache.ts` provides lazy compile + uniform-loc caching +
+ *     warmup. Cold-start numbers carry over without re-instrumentation.
  *   - `quad.ts` provides a fullscreen-quad VAO with `a_position` at
  *     attribute 0. We drive both the layer-blit pass and the FX passes
  *     off the same quad — one VBO bind per frame, not per pass.
@@ -130,10 +129,10 @@ export class WebGL2Backend implements CompositorBackend {
       throw new BackendError("compile", `WebGL2Backend setup failed: ${String(err)}`);
     }
 
-    // Alpha-over so stacked FX passes composite the same way as today's
-    // FxOverlay does — same `(ONE, ONE_MINUS_SRC_ALPHA)` blend. Combined
-    // with `premultipliedAlpha: true` on the context, vignette output
-    // matches Canvas2D parity within ±1 LSB per channel.
+    // Alpha-over so stacked FX passes composite additively over the
+    // source layer — `(ONE, ONE_MINUS_SRC_ALPHA)` blend. Combined with
+    // `premultipliedAlpha: true` on the context, vignette output matches
+    // Canvas2D parity within ±1 LSB per channel.
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);

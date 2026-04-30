@@ -1,22 +1,18 @@
 /**
- * Phase-2 unified compositor — replaces the V1 stack of one `<video>`
- * per cam + transparent FX overlay canvas.
+ * Live preview compositor.
  *
  * Layout (back → front):
  *   1. <MasterAudio> outside the OutputFrameBox — invisible, drives the
- *      master clock. Same as V1.
+ *      master clock. Cams are passive slaves of the store's currentTime.
  *   2. Hidden `<video>` pool (display:none) — owned by `PreviewRuntime`
  *      via `VideoElementPool`. Each cam's <video> stays mounted so its
- *      decoder stays warm.
+ *      decoder stays warm; the runtime samples whichever cam is active
+ *      as a GPU texture per RAF.
  *   3. <OutputFrameBox> wrapper that letterbox/pillarboxes a single
  *      `<canvas>` to the resolved output AR.
  *   4. <TestPattern> shown when no cam has material at currentTime
- *      (CSS DOM overlay — keeps parity-risk vs the V1 SMPTE bars zero,
- *      and the backend stays out of the test-pattern business).
- *
- * Behind feature flag `?compositor=v2` (or `localStorage.vasCompositor=v2`).
- * V1 (`MultiCamPreview`) remains the default until the parity checklist
- * passes and we've dogfooded for a release.
+ *      (CSS DOM overlay — the backend stays out of the test-pattern
+ *      business).
  */
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store";
