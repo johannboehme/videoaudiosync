@@ -60,6 +60,14 @@ const BEAT_STOPS = ["1/16", "1/8", "1/4", "1/2", "1", "2", "4"] as const;
 const TAB_H = 12;
 const PAD_BODY_H = 110;
 const EXPANDED_H = TAB_H + PAD_BODY_H; // 122 — tab and pad body touch directly
+// On narrow viewports the LCD/encoders sit on top of a wrapped pad grid.
+// Worst case is fold-folded (~280 CSS px wide) where only 3 pads of 60 px
+// fit per row, so 7 pads → 3 rows (60 × 3 + gaps 12 = 192). Plus the
+// LCD/encoders header (~50) and inner padding (~24) we need ~270. The
+// Editor's mobile shell is scrollable so growing here doesn't squeeze
+// the timeline.
+const PAD_BODY_H_NARROW = 286;
+const EXPANDED_H_NARROW = TAB_H + PAD_BODY_H_NARROW;
 const TAB_WIDTH = 110;
 
 /**
@@ -81,13 +89,16 @@ export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
   const setFxPanelOpen = useEditorStore((s) => s.setFxPanelOpen);
   const isMobile = useIsCoarsePointer();
+  const isNarrow = useIsNarrowViewport();
   const open = isMobile || fxPanelOpen;
+  const padBodyH = isNarrow ? PAD_BODY_H_NARROW : PAD_BODY_H;
+  const expandedH = isNarrow ? EXPANDED_H_NARROW : EXPANDED_H;
 
   return (
     <div
       className="relative shrink-0 w-full select-none"
       style={{
-        height: open ? EXPANDED_H : TAB_H,
+        height: open ? expandedH : TAB_H,
         marginTop: -12,
         marginBottom: -12,
         overflow: "visible",
@@ -110,10 +121,10 @@ export function FxHardwarePanel() {
             bottom: 0,
             left: 0,
             right: 0,
-            height: PAD_BODY_H,
+            height: padBodyH,
           }}
         >
-          <PadBody />
+          <PadBody narrow={isNarrow} />
         </div>
       </div>
       <Tab
@@ -184,7 +195,7 @@ function Tab({
   );
 }
 
-function PadBody() {
+function PadBody({ narrow = false }: { narrow?: boolean }) {
   const selectedFxKind = useEditorStore((s) => s.selectedFxKind);
   const def = fxCatalog[selectedFxKind];
 
@@ -201,29 +212,60 @@ function PadBody() {
         style={BRUSHED_GRAIN}
       />
 
-      <div className="relative h-full flex items-center gap-3 px-5">
-        <Lcd kind={selectedFxKind} />
-        {def.params && (
-          <div className="flex items-end gap-3 self-center">
-            <Encoder
-              kind={selectedFxKind}
-              param={def.params[0]}
-              tint={ENCODER_HOT}
-            />
-            <Encoder
-              kind={selectedFxKind}
-              param={def.params[1]}
-              tint={ENCODER_COBALT}
-            />
+      {narrow ? (
+        // Narrow phones: stack the LCD/encoders on top, then a 4-column
+        // pad grid below. Pads keep their full 60×60 hit area; the row
+        // grows the panel taller (PAD_BODY_H_NARROW) instead of squeezing
+        // the pads into unusable strips.
+        <div className="relative h-full flex flex-col gap-2 px-3 py-3">
+          <div className="flex items-center gap-3 shrink-0">
+            <Lcd kind={selectedFxKind} />
+            {def.params && (
+              <div className="flex items-end gap-3 self-center ml-auto">
+                <Encoder
+                  kind={selectedFxKind}
+                  param={def.params[0]}
+                  tint={ENCODER_HOT}
+                />
+                <Encoder
+                  kind={selectedFxKind}
+                  param={def.params[1]}
+                  tint={ENCODER_COBALT}
+                />
+              </div>
+            )}
           </div>
-        )}
-        <Divider />
-        <div className="flex items-center gap-2">
-          {PADS.map((p) => (
-            <FxPad key={p.slotKey} pad={p} />
-          ))}
+          <div className="flex flex-wrap gap-1.5 justify-center mt-auto">
+            {PADS.map((p) => (
+              <FxPad key={p.slotKey} pad={p} />
+            ))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="relative h-full flex items-center gap-3 px-5">
+          <Lcd kind={selectedFxKind} />
+          {def.params && (
+            <div className="flex items-end gap-3 self-center">
+              <Encoder
+                kind={selectedFxKind}
+                param={def.params[0]}
+                tint={ENCODER_HOT}
+              />
+              <Encoder
+                kind={selectedFxKind}
+                param={def.params[1]}
+                tint={ENCODER_COBALT}
+              />
+            </div>
+          )}
+          <Divider />
+          <div className="flex items-center gap-2">
+            {PADS.map((p) => (
+              <FxPad key={p.slotKey} pad={p} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -926,6 +968,34 @@ function Divider() {
       }}
     />
   );
+}
+
+/**
+ * True when the viewport is below the Tailwind `sm` breakpoint (640 px).
+ * Used to switch the FX panel into a stacked 2-row layout on phones —
+ * the original single-row layout needs ~720 px of horizontal room.
+ */
+function useIsNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 639px)").matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mql = window.matchMedia("(max-width: 639px)");
+    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    if (mql.addEventListener) {
+      mql.addEventListener("change", onChange);
+      return () => mql.removeEventListener("change", onChange);
+    }
+    const legacy = mql as unknown as {
+      addListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
+      removeListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
+    };
+    legacy.addListener?.(onChange);
+    return () => legacy.removeListener?.(onChange);
+  }, []);
+  return narrow;
 }
 
 function useIsCoarsePointer(): boolean {

@@ -119,16 +119,24 @@ export function EditorShell({
         />
       </div>
 
-      {/* Tablet / mobile layout */}
-      <div className="flex-1 lg:hidden flex flex-col gap-3 px-3 pb-3 overflow-hidden min-h-0">
-        <div className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden">
+      {/* Tablet / mobile layout — scrollable column. Phones can't fit
+       *  video + transport + FX + timeline + actions on one screen, so
+       *  rather than crushing the timeline (which the user explicitly
+       *  flagged as too short on a Galaxy Fold) we let the column scroll
+       *  vertically. Video is capped at 40 vh so the timeline always
+       *  appears above the fold on common portrait phones. */}
+      <div className="flex-1 lg:hidden flex flex-col gap-3 px-3 pb-3 overflow-y-auto overflow-x-hidden min-h-0">
+        <div
+          className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden"
+          style={{ maxHeight: "40vh" }}
+        >
           <div className="absolute inset-0">{videoArea}</div>
         </div>
         <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
           {transport}
         </div>
         {fxPanel}
-        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
+        <div className={`${timelineWrapperClass} overflow-x-hidden`}>
           {timeline}
         </div>
         <ChunkyButton variant="primary" size="lg" fullWidth onClick={() => setSheetOpen(true)}>

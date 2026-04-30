@@ -225,7 +225,8 @@ function SyncPatchPanel({ job }: { job: LocalJob }) {
         </span>
         <RuleStrip count={20} className="text-rule flex-1 max-w-[180px]" />
       </div>
-      <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-x-4">
+      {/* Desktop / wider tablets: 5-column grid. */}
+      <div className="hidden sm:grid sm:grid-cols-[auto_1fr_auto_auto_auto] gap-x-4">
         <HeaderCell>CAM</HeaderCell>
         <HeaderCell>SOURCE</HeaderCell>
         <HeaderCell align="right">OFFSET</HeaderCell>
@@ -233,6 +234,18 @@ function SyncPatchPanel({ job }: { job: LocalJob }) {
         <HeaderCell align="right">CONF</HeaderCell>
         {videos.map((cam, i) => (
           <SyncRow
+            key={cam.id}
+            cam={cam}
+            index={i}
+            last={i === videos.length - 1}
+          />
+        ))}
+      </div>
+      {/* Narrow phones: stacked card per cam — labels render inline so the
+       *  numeric columns can't overflow. */}
+      <div className="sm:hidden">
+        {videos.map((cam, i) => (
+          <SyncCard
             key={cam.id}
             cam={cam}
             index={i}
@@ -313,6 +326,60 @@ function SyncRow({
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * Mobile-only stacked card per cam. Renders the same data as SyncRow but
+ * label-value pairs flow vertically so OFFSET/DRIFT/CONF can never push
+ * the row past the viewport on a narrow phone.
+ */
+function SyncCard({
+  cam,
+  index,
+  last,
+}: {
+  cam: VideoAsset;
+  index: number;
+  last: boolean;
+}) {
+  const sync = cam.sync;
+  const border = last ? "" : "border-b border-rule/50";
+  return (
+    <div className={`px-3 py-3 ${border}`}>
+      <div className="flex items-center gap-2 mb-1.5">
+        <span
+          className="w-1.5 h-7 rounded-sm shrink-0"
+          style={{
+            background: cam.color,
+            boxShadow: `0 0 4px ${cam.color}55`,
+          }}
+        />
+        <span className="font-display font-semibold text-xs tracking-label uppercase shrink-0">
+          Cam {index + 1}
+        </span>
+        <span
+          className="font-mono text-xs text-ink-2 truncate min-w-0"
+          title={cam.filename}
+        >
+          {cam.filename}
+        </span>
+      </div>
+      <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px] pl-3.5">
+        <span className="font-display tracking-label uppercase text-ink-3">Offset</span>
+        <span className="font-mono tabular text-ink text-right">
+          {sync ? `${sync.offsetMs.toFixed(1)} ms` : "—"}
+        </span>
+        <span className="font-display tracking-label uppercase text-ink-3">Drift</span>
+        <span className="font-mono tabular text-ink text-right">
+          {sync ? `${((sync.driftRatio - 1) * 100).toFixed(3)}%` : "—"}
+        </span>
+        <span className="font-display tracking-label uppercase text-ink-3">Conf</span>
+        <span className="text-right">
+          {sync ? <ConfidenceLeds value={sync.confidence} /> : <span className="font-mono text-ink-3">—</span>}
+        </span>
+      </div>
+    </div>
   );
 }
 

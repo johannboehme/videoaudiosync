@@ -141,8 +141,10 @@ export function TransportBar() {
   });
 
   return (
-    <div className="flex items-center gap-3 flex-wrap">
-      <div className="flex items-center gap-1">
+    // gap-y-2 keeps the rows comfortably spaced once the row wraps onto
+    // multiple lines on narrow screens (Galaxy Fold folded ≈ 280 px).
+    <div className="flex items-center gap-x-3 gap-y-2 flex-wrap">
+      <div className="flex items-center gap-1 flex-wrap">
         <ChunkyButton
           variant="secondary"
           size="md"
@@ -195,9 +197,11 @@ export function TransportBar() {
         </ChunkyButton>
       </div>
 
-      <div className="h-8 w-px bg-rule mx-1" />
+      {/* The vertical divider is meaningful only when both groups sit on
+       *  the same row; on narrow widths the row wraps, so hide it. */}
+      <div className="hidden sm:block h-8 w-px bg-rule mx-1" />
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 flex-wrap">
         <ChunkyButton
           variant="secondary"
           size="sm"
@@ -225,7 +229,10 @@ export function TransportBar() {
         </ChunkyButton>
       </div>
 
-      <TransportClock className="ml-auto" />
+      {/* `ml-auto` only kicks in on sm+ so the clock floats right next to
+       *  the IN/OUT/LOOP group on desktop; on narrow widths it wraps to a
+       *  natural row of its own and centers visually with the rest. */}
+      <TransportClock className="sm:ml-auto" />
     </div>
   );
 }
