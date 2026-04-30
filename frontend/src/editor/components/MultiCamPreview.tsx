@@ -124,11 +124,15 @@ function ImageOverlay({ imageUrl, visible, clip }: ImageOverlayProps) {
       alt={clip.filename}
       className="absolute inset-0 w-full h-full"
       style={{
-        display: visible ? "block" : "none",
+        // Keep the GPU layer alive across cam-switches — see CamCanvas
+        // for the rationale. Image clips don't have a decoder cost but
+        // the compositor-layer effect is the same.
+        visibility: visible ? "visible" : "hidden",
         objectFit: "contain",
         background: "#1A1816",
         transform,
         transformOrigin: "center center",
+        willChange: "transform",
       }}
     />
   );

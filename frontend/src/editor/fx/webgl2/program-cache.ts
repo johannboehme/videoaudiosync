@@ -6,10 +6,16 @@
  * Cache compiliert on-demand, hält die Programme bis `destroy()`.
  */
 import { FULLSCREEN_VERT, VIGNETTE_FRAG } from "./vignette.frag";
+import { emit, PERF_ENABLED } from "../../perf/marks";
 
 const FRAGMENTS: Record<string, string> = {
   vignette: VIGNETTE_FRAG,
 };
+
+/** Names of all registered fragment shaders — exposed so callers (e.g.
+ *  FxOverlay) can warm the cache eagerly at mount instead of paying the
+ *  compile cost on first activation. */
+export const REGISTERED_FRAGMENTS: readonly string[] = Object.keys(FRAGMENTS);
 
 export interface CachedProgram {
   program: WebGLProgram;
@@ -35,11 +41,22 @@ export class ProgramCache {
     if (!fragSrc) {
       throw new Error(`ProgramCache: no fragment shader registered for '${name}'`);
     }
+    // Cold path: compile + link is the dominant first-FX-activation cost
+    // (1-50 ms depending on driver). Time it for the perf HUD.
+    const t0 = PERF_ENABLED ? performance.now() : 0;
     const frag = compile(this.gl, this.gl.FRAGMENT_SHADER, fragSrc);
     const program = link(this.gl, this.vert, frag);
     this.gl.deleteShader(frag);
     const cached: CachedProgram = { program, uniforms: new Map() };
     this.cache.set(name, cached);
+    if (PERF_ENABLED) {
+      emit({
+        kind: "shader-cold",
+        name,
+        durationMs: performance.now() - t0,
+        perfNow: t0,
+      });
+    }
     return cached;
   }
 

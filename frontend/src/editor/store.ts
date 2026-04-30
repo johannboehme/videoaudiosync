@@ -503,8 +503,21 @@ function clobberSameKindOverlapping(
   rangeStartS: number,
   rangeEndS: number,
   liveIds: ReadonlySet<string>,
-): PunchFx[] {
-  if (rangeEndS <= rangeStartS) return [...fx];
+): readonly PunchFx[] {
+  if (rangeEndS <= rangeStartS) return fx;
+  // Fast path: scan once, detect whether ANY non-live same-kind fx
+  // overlaps the range. If none does, the result is reference-identical
+  // to `fx` — we can skip allocating + set()ing entirely. This matters
+  // for `tickFxHold`, which calls us at 60 Hz while F is held; the
+  // common case (held FX growing into virgin tape) has no overlaps.
+  let needsChange = false;
+  for (const f of fx) {
+    if (f.kind !== kind || liveIds.has(f.id)) continue;
+    if (f.outS <= rangeStartS || f.inS >= rangeEndS) continue;
+    needsChange = true;
+    break;
+  }
+  if (!needsChange) return fx;
   const out: PunchFx[] = [];
   for (const f of fx) {
     if (f.kind !== kind || liveIds.has(f.id)) {
@@ -607,6 +620,47 @@ function buildClips(inits: ClipInit[] | undefined, fallbackOverrideMs: number): 
       flipY: init.flipY ?? false,
     };
   });
+}
+
+/**
+ * Single-slot memoizer for `camRanges`. The result is a pure function of
+ * the `clips` array, but `clips` only changes when the project is loaded
+ * or edited (rare) — vs `cuts`/`fx` which change on every keypress.
+ * Caching on the array reference means rapid `addCut` / `addFx` calls
+ * don't re-walk all clips to recompute the range list every time.
+ *
+ * WeakMap keeps the cache GC-clean: when a `clips` array is dropped the
+ * cached ranges go with it.
+ */
+const camRangesCache = new WeakMap<readonly Clip[], CamRange[]>();
+function computeCamRanges(clips: readonly Clip[]): CamRange[] {
+  const cached = camRangesCache.get(clips);
+  if (cached !== undefined) return cached;
+  const ranges = clips.map((c) => {
+    const range = clipRangeS(c);
+    return { id: c.id, startS: range.startS, endS: range.endS };
+  });
+  camRangesCache.set(clips, ranges);
+  return ranges;
+}
+
+/**
+ * Insert `cut` into a sorted-by-time `cuts` array, returning a new array.
+ * `existing` MUST already be sorted ascending by `atTimeS`. O(n) — beats
+ * O(n log n) `[...arr, x].sort()` because we already know where it goes.
+ */
+function insertCutSorted(existing: readonly Cut[], cut: Cut): Cut[] {
+  // Binary search for the insertion index.
+  let lo = 0;
+  let hi = existing.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (existing[mid].atTimeS <= cut.atTimeS) lo = mid + 1;
+    else hi = mid;
+  }
+  const next = existing.slice();
+  next.splice(lo, 0, cut);
+  return next;
 }
 
 export const useEditorStore = create<EditorState>()(
@@ -1089,10 +1143,16 @@ export const useEditorStore = create<EditorState>()(
       set({ audioVolume: clamped });
     },
     addCut(cut) {
+      // Compute ranges once (memoized on the clips array reference, so
+      // back-to-back addCut calls share the same range list) and reuse
+      // for both no-op guards instead of recomputing twice.
+      const s = get();
+      const ranges = computeCamRanges(s.clips);
+
       // No-op guard #1: if the cam is already active at this time (via a
       // prior cut or default-fallback), inserting another marker to the
       // same cam is redundant.
-      const currentActive = get().activeCamId(cut.atTimeS);
+      const currentActive = activeCamAt(s.cuts, cut.atTimeS, ranges);
       if (currentActive === cut.camId) return false;
 
       // No-op guard #2: if the target cam has NO material at this time,
@@ -1100,7 +1160,6 @@ export const useEditorStore = create<EditorState>()(
       // fall back to whatever cam has material here. This is the "single-
       // video area" case: in a region only cam-2 covers, hitting TAKE on
       // cam-1 used to deposit a marker that did nothing.
-      const ranges = get().camRanges();
       const target = ranges.find((r) => r.id === cut.camId);
       if (
         !target ||
@@ -1110,11 +1169,13 @@ export const useEditorStore = create<EditorState>()(
         return false;
       }
 
-      // Replace any cut at exactly the same instant on the same cam (idempotent).
-      const existing = get().cuts.filter(
+      // Idempotent: drop any cut already at this exact instant on the same
+      // cam. Then binary-search insert into the already-sorted array. O(n)
+      // splice instead of O(n log n) full re-sort on every keypress.
+      const existing = s.cuts.filter(
         (c) => !(c.atTimeS === cut.atTimeS && c.camId === cut.camId),
       );
-      const next = [...existing, cut].sort((a, b) => a.atTimeS - b.atTimeS);
+      const next = insertCutSorted(existing, cut);
       set({ cuts: next });
       return true;
     },
@@ -1345,19 +1406,12 @@ export const useEditorStore = create<EditorState>()(
     },
 
     camRanges() {
-      return get().clips.map((c) => {
-        const range = clipRangeS(c);
-        return { id: c.id, startS: range.startS, endS: range.endS };
-      });
+      return computeCamRanges(get().clips);
     },
     activeCamId(t) {
       const s = get();
       const time = t ?? s.playback.currentTime;
-      const ranges = s.clips.map((c) => {
-        const range = clipRangeS(c);
-        return { id: c.id, startS: range.startS, endS: range.endS };
-      });
-      return activeCamAt(s.cuts, time, ranges);
+      return activeCamAt(s.cuts, time, computeCamRanges(s.clips));
     },
     snapMasterTime(t) {
       const s = get();
@@ -1436,49 +1490,58 @@ export const useEditorStore = create<EditorState>()(
       set({ fx: get().fx.filter((f) => f.id !== id) });
     },
     beginFxHold(slotKey, kind, startS) {
+      // Single set() per keypress — cuts subscriber-fanout cost (13 field
+      // checks in useAutoPersist alone) by 3-4×. The previous version
+      // called set() up to four times: prior-hold cleanup → clobber →
+      // addFx → fxHolds update. Each one fired every store subscriber
+      // synchronously inside the hot keydown handler.
       const s = get();
-      // Cancel any prior hold on the same slot — defensive (the UI should
-      // already have endFxHold'd before re-entering, but this avoids a leak
-      // if a keydown fires twice without a keyup, which Safari sometimes
-      // does on inactive-window resume).
-      if (s.fxHolds[slotKey]) {
-        const cur = s.fxHolds[slotKey];
-        const reverted = cur.priorFx;
-        const nextHolds = { ...s.fxHolds };
-        delete nextHolds[slotKey];
-        set({ fx: reverted, fxHolds: nextHolds });
-      }
-      const bpm = get().jobMeta?.bpm?.value ?? null;
+      const bpm = s.jobMeta?.bpm?.value ?? null;
       const lengthS = defaultTapLengthS(kind, bpm);
-      const priorFx = get().fx.slice();
+
+      // If a stale prior hold exists on this slot (Safari can fire
+      // keydown twice without keyup on inactive-window resume), start
+      // from its priorFx baseline instead of stacking it on top.
+      const prior = s.fxHolds[slotKey];
+      const baselineFx = prior ? prior.priorFx : s.fx;
+      // The new entry's priorFx is the snapshot WE see — i.e. what to
+      // restore on cancel. After clobber/insert, that's the baseline.
+      const priorFx = baselineFx.slice();
+
       // Tape-overwrite: clobber non-live same-kind fx that overlap the
-      // default-tap window we're about to commit. As the hold extends
-      // past the default-tap (via tickFxHold), more fx in the path will
-      // be clobbered then. Anything strictly to the right of the live
-      // range stays untouched — recording does not erase the future.
-      const liveIds = new Set(
-        Object.values(get().fxHolds).map((h) => h.fxId),
-      );
+      // default-tap window. Live FX (currently held by other slots) are
+      // skipped via liveIds.
+      const liveIds = new Set<string>();
+      for (const [k, h] of Object.entries(s.fxHolds)) {
+        if (k !== slotKey) liveIds.add(h.fxId);
+      }
+      const outS = Math.max(startS + lengthS, startS + FX_MIN_WINDOW_S);
       const clobbered = clobberSameKindOverlapping(
-        get().fx,
+        baselineFx,
         kind,
         startS,
-        startS + lengthS,
+        outS,
         liveIds,
       );
-      set({ fx: clobbered });
-      const id = get().addFx(kind, startS, startS + lengthS);
-      const nextHolds: Record<string, FxHoldEntry> = {
-        ...get().fxHolds,
-        [slotKey]: { fxId: id, startS, priorFx },
-      };
-      set({ fxHolds: nextHolds });
+
+      // Append the new live FX inline — same logic as addFx() but lifted
+      // here so we don't pay another set() round-trip.
+      const id = makeFxId();
+      const newFx: PunchFx = { id, kind, inS: startS, outS };
+      const nextFx = [...clobbered, newFx];
+
+      const nextHolds: Record<string, FxHoldEntry> = { ...s.fxHolds };
+      if (prior) delete nextHolds[slotKey];
+      nextHolds[slotKey] = { fxId: id, startS, priorFx };
+
+      set({ fx: nextFx, fxHolds: nextHolds });
     },
     tickFxHold(slotKey, currentS) {
-      const hold = get().fxHolds[slotKey];
+      const s = get();
+      const hold = s.fxHolds[slotKey];
       if (!hold) return;
-      const fx = get().fx.find((f) => f.id === hold.fxId);
-      if (!fx) return;
+      const liveFx = s.fx.find((f) => f.id === hold.fxId);
+      if (!liveFx) return;
       // Push outS *past* the playhead by HOLD_OVERSHOOT_S so the FX stays
       // active across RAF tick boundaries. Without the buffer, the moment
       // currentTime catches up to outS the active-resolver (`t < outS`)
@@ -1487,21 +1550,26 @@ export const useEditorStore = create<EditorState>()(
       // performance feel — hold longer ↔ longer capsule, never shrinks
       // under your fingertip).
       const target = currentS + FX_HOLD_OVERSHOOT_S;
-      if (target <= fx.outS) return;
+      if (target <= liveFx.outS) return;
       // Tape-overwrite: as the live range grows, eat any non-live
       // same-kind fx in its path. Skip the live fx itself.
-      const liveIds = new Set(
-        Object.values(get().fxHolds).map((h) => h.fxId),
-      );
+      const liveIds = new Set<string>();
+      for (const h of Object.values(s.fxHolds)) liveIds.add(h.fxId);
       const clobbered = clobberSameKindOverlapping(
-        get().fx,
-        fx.kind,
+        s.fx,
+        liveFx.kind,
         hold.startS,
         target,
         liveIds,
       );
-      set({ fx: clobbered });
-      get().setFxOut(hold.fxId, target);
+      // Build the next fx array: clobbered list with the live fx's outS
+      // pushed to target. Single set() merges what used to be two
+      // (`set({fx: clobbered})` + `setFxOut`).
+      const clampedOut = Math.max(target, liveFx.inS + FX_MIN_WINDOW_S);
+      const nextFx = clobbered.map((f) =>
+        f.id === hold.fxId ? { ...f, outS: clampedOut } : f,
+      );
+      set({ fx: nextFx });
     },
     endFxHold(slotKey) {
       const cur = get().fxHolds;

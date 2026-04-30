@@ -22,6 +22,11 @@ export interface FxRenderer {
   render(t: number, activeFx: readonly PunchFx[]): void;
   /** Drop GPU resources and detach. */
   destroy(): void;
+  /** Eagerly compile/link every registered FX program now, instead of
+   *  paying the cost on the first RAF tick that activates it. Safe to
+   *  call multiple times (cache hits are no-ops). For backends without
+   *  a compile step (Canvas2D), this is a no-op. */
+  warmup(): void;
   /** Which backend was actually instantiated — useful for the dev console
    *  to show a one-line "FX backend: webgl2" log. */
   readonly backend: "webgl2" | "canvas2d";

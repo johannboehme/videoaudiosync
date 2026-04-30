@@ -15,7 +15,7 @@ import { fxCatalog } from "./../catalog";
 import type { WebGL2DrawContext } from "./../renderer-context";
 import type { FxRenderer } from "./../render";
 import type { PunchFx } from "./../types";
-import { ProgramCache, type CachedProgram } from "./program-cache";
+import { ProgramCache, REGISTERED_FRAGMENTS, type CachedProgram } from "./program-cache";
 import { makeFullscreenQuad } from "./quad";
 
 void activeFxAt;
@@ -106,5 +106,26 @@ export class WebGL2FxRenderer implements FxRenderer {
     this.programs.destroy();
     // Don't drop the gl context itself — the canvas owns it; the FxOverlay
     // component will discard the canvas on unmount.
+  }
+
+  /**
+   * Eagerly compile + link every registered FX fragment shader. Removes
+   * the 1–50 ms cold-start the user would otherwise see on first FX
+   * activation (compile cost varies wildly by GPU driver). Cache hits
+   * after warmup are a Map lookup, microsecond-level.
+   *
+   * Idempotent: subsequent calls are no-ops because the cache is hit.
+   */
+  warmup(): void {
+    for (const name of REGISTERED_FRAGMENTS) {
+      try {
+        this.programs.get(name);
+      } catch (err) {
+        // Don't let one bad shader poison the warmup of others. The
+        // exception will resurface on actual use; until then the user
+        // can still operate the editor.
+        console.warn(`[fx] warmup: shader '${name}' failed to compile:`, err);
+      }
+    }
   }
 }

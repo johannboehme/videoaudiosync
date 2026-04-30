@@ -45,6 +45,27 @@ export function FxOverlay({ maxDpr = 2 }: Props) {
       // One-line dev hint so the user can see which path is active.
       console.info(`[fx] backend=${renderer.backend}`);
     }
+    // Warm the shader cache during idle time so the user's first F-press
+    // doesn't pay the compile + link cost (1–50 ms depending on driver).
+    // requestIdleCallback is the right fit — we don't fight first paint
+    // and we don't block the React commit. Falls back to a deferred RAF
+    // on Safari, which lacks rIC. Warmup is idempotent.
+    const warm = () => {
+      try {
+        renderer.warmup();
+      } catch (err) {
+        console.warn("[fx] warmup failed:", err);
+      }
+    };
+    type IdleWindow = typeof window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number;
+    };
+    const w = window as IdleWindow;
+    if (typeof w.requestIdleCallback === "function") {
+      w.requestIdleCallback(warm, { timeout: 1000 });
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(warm));
+    }
     return () => {
       renderer.destroy();
       rendererRef.current = null;
@@ -84,6 +105,18 @@ export function FxOverlay({ maxDpr = 2 }: Props) {
       const t = s.playback.currentTime;
       const active = activeFxAt(s.fx, t);
       renderer.render(t, active);
+      // Close the perf "fx-first-render" marker as soon as we drew the
+      // first frame with at least one active FX. The Editor's keydown
+      // handler stashed it on window when the F hotkey began a hold.
+      if (active.length > 0) {
+        const w = window as unknown as {
+          __fxFirstRenderPending?: { end: () => void };
+        };
+        if (w.__fxFirstRenderPending) {
+          w.__fxFirstRenderPending.end();
+          w.__fxFirstRenderPending = undefined;
+        }
+      }
       const wantsTick =
         s.playback.isPlaying ||
         active.length > 0 ||

@@ -41,6 +41,13 @@ import {
   getCachedAnalysis,
   getOrComputeAnalysis,
 } from "../local/render/audio-analysis";
+import { PerfHUD } from "../editor/perf/PerfHUD";
+import {
+  trackKeypressToPaint,
+  trackCamSwitchToPaint,
+  beginFxFirstRender,
+  PERF_ENABLED,
+} from "../editor/perf/marks";
 
 interface WaveformData {
   peaks: [number, number][];
@@ -194,6 +201,10 @@ export default function Editor() {
       const clip = s.clips[n - 1];
       if (!clip) return;
       e.preventDefault();
+      // Perf instrumentation: capture press → next paint for the digit
+      // hotkey + the cam-switch this triggers. No-op when perf disabled.
+      trackKeypressToPaint(e.key);
+      trackCamSwitchToPaint(clip.id);
       const startS = s.snapMasterTime(s.playback.currentTime);
       // beginHoldGesture must happen BEFORE addCut, so the snapshot
       // captures cuts as they were *before* the immediate tap-cut lands.
@@ -337,6 +348,17 @@ export default function Editor() {
       }
       const slotKey = `key:${e.key.toUpperCase()}`;
       if (s.fxHolds[slotKey]) return;
+      // Perf instrumentation: keypress → paint, plus an "fx first render"
+      // marker the FX overlay's RAF tick will close on the first frame
+      // it actually drew this hold. Sandboxes are no-ops when perf=off.
+      trackKeypressToPaint(e.key);
+      const pending = beginFxFirstRender();
+      if (pending && PERF_ENABLED) {
+        // Stash on window so the FX overlay tick can pick it up without
+        // adding a coupling import. One slot is enough — the F hotkey
+        // is the only fx-hold trigger in V1.
+        (window as unknown as { __fxFirstRenderPending?: { end: () => void } }).__fxFirstRenderPending = pending;
+      }
       const t = s.snapMasterTime(s.playback.currentTime);
       s.beginFxHold(slotKey, kind, t);
       ensureTick();
@@ -838,6 +860,7 @@ export default function Editor() {
 
   return (
     <>
+      <PerfHUD />
       <EditorShell
         jobTitle={job.title || job.id}
         jobId={job.id}

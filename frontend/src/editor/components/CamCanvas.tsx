@@ -18,18 +18,21 @@ import { camSourceTimeS } from "../../local/timing/cam-time";
 
 interface Props {
   videoUrl: string;
-  /** When false, the element is rendered with `display:none` so it
-   *  doesn't paint over the active cam. Hidden cams stay mounted so the
-   *  browser keeps decoding their material — toggling display is far
-   *  cheaper than unmount/remount and avoids a black flash on cut. */
+  /** When false, the element is hidden via `visibility: hidden` (not
+   *  `display: none`). Both keep the cam mounted so the decoder stays hot,
+   *  but `visibility` ALSO preserves the GPU compositor layer and the
+   *  rasterised first-frame buffer. With `display: none` the browser
+   *  destroys the layer; switching back forces a fresh layer allocation
+   *  and a frame upload, which manifests as a "first switch is slowest"
+   *  visible jank. `visibility` is a one-property flip the compositor
+   *  handles in microseconds. */
   visible: boolean;
   clip: VideoClip;
 }
 
 export function CamCanvas({ videoUrl, visible, clip }: Props) {
   const ref = useRef<HTMLVideoElement>(null);
-  const isPlaying = useEditorStore((s) => s.playback.isPlaying);
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
+  const warmedRef = useRef(false);
   const setClipDisplayDims = useEditorStore((s) => s.setClipDisplayDims);
 
   // Report post-rotation natural dims so the output-frame resolver can
@@ -52,45 +55,119 @@ export function CamCanvas({ videoUrl, visible, clip }: Props) {
     };
   }, [clip.id, setClipDisplayDims, videoUrl]);
 
-  // store.currentTime is master-time (anchored to the master audio).
-  // sourceT = where this cam's <video> should be playing internally.
-  // Same `camSourceTimeS` helper the render pipeline uses, so what the
-  // user sees here is what gets baked.
+  // Decoder warmup. Once the element has its first frame ready
+  // (HAVE_CURRENT_DATA), do a one-shot play()→pause(). This pushes a
+  // decoded frame into the GPU layer so the very first cam-switch the
+  // user makes already has a real picture to present, and the H.264 /
+  // AV1 / VP9 decoder has spun up on the worker thread that owns this
+  // element. Without it, the decoder's first-decode latency lands on
+  // the moment the user presses 1-9, not on app load. Muted videos are
+  // allowed to autoplay so this works without any user gesture.
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    if (warmedRef.current) return;
+    const warm = () => {
+      if (warmedRef.current) return;
+      if (v.readyState < 2 /* HAVE_CURRENT_DATA */) return;
+      warmedRef.current = true;
+      const p = v.play();
+      const stop = () => {
+        if (!v.paused) v.pause();
+      };
+      if (p && typeof p.then === "function") {
+        p.then(stop).catch(() => undefined);
+      } else {
+        stop();
+      }
+    };
+    if (v.readyState >= 2) {
+      warm();
+    } else {
+      v.addEventListener("loadeddata", warm, { once: true });
+    }
+    return () => {
+      v.removeEventListener("loadeddata", warm);
+    };
+  }, [videoUrl]);
+
+  // Sync the cam's <video> element to master-time.
+  //
+  // Why this is one mount-effect and NOT a useEffect with `currentTime`
+  // in the deps array: `playback.currentTime` updates ~60 Hz during
+  // playback (×2 in StrictMode dev), and a deps-driven effect tears
+  // down + rebinds at that rate per cam. With multiple cams that's
+  // hundreds of effect re-bindings per second of pure React overhead,
+  // even when the body short-circuits.
+  //
+  // Instead we subscribe directly to the store with a narrow selector;
+  // the callback runs synchronously inside `set()`, but the body is
+  // tiny (one float compare) and there's zero React reconciliation.
+  // Same mathematical behaviour, far cheaper steady state.
   //
   // Anchor (NOT visible-startS) is what feeds camSourceTimeS — trim is
   // a true cut, the cam plays from source-time `trimInS` at the visible
   // left edge, not from source frame 0.
-  const masterT = currentTime;
-  const range = clipRangeS(clip);
-  const sourceT = camSourceTimeS(masterT, {
-    masterStartS: range.anchorS,
-    driftRatio: clip.driftRatio,
-  });
-  const hasMaterial = sourceT >= 0 && sourceT < clip.sourceDurationS;
-
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
-    if (!hasMaterial) {
-      if (!v.paused) v.pause();
-      return;
-    }
-    // Drift correction: snap to target if we're off by more than 100 ms.
-    // Browsers handle ~50 ms of drift gracefully; > 100 ms is audible /
-    // visible enough to warrant a hard seek.
-    if (Math.abs(v.currentTime - sourceT) > 0.1) {
-      try {
-        v.currentTime = Math.max(0, Math.min(clip.sourceDurationS, sourceT));
-      } catch {
-        /* element not ready yet — next tick */
+    const range = clipRangeS(clip);
+    const driftRatio = clip.driftRatio;
+    const sourceDurS = clip.sourceDurationS;
+
+    function sync(masterT: number, isPlaying: boolean): void {
+      if (!v) return;
+      const sourceT = camSourceTimeS(masterT, {
+        masterStartS: range.anchorS,
+        driftRatio,
+      });
+      const inRange = sourceT >= 0 && sourceT < sourceDurS;
+      if (!inRange) {
+        if (!v.paused) v.pause();
+        return;
+      }
+      // Drift correction: hard seek when more than 100 ms off. Browsers
+      // handle ~50 ms gracefully; > 100 ms is visible / audible.
+      if (Math.abs(v.currentTime - sourceT) > 0.1) {
+        try {
+          v.currentTime = Math.max(0, Math.min(sourceDurS, sourceT));
+        } catch {
+          /* element not ready yet — next tick */
+        }
+      }
+      if (isPlaying && v.paused) {
+        v.play().catch(() => undefined);
+      } else if (!isPlaying && !v.paused) {
+        v.pause();
       }
     }
-    if (isPlaying && v.paused) {
-      v.play().catch(() => undefined);
-    } else if (!isPlaying && !v.paused) {
-      v.pause();
+
+    // Initial sync from current state.
+    {
+      const s = useEditorStore.getState();
+      sync(s.playback.currentTime, s.playback.isPlaying);
     }
-  }, [hasMaterial, isPlaying, sourceT, clip.sourceDurationS]);
+
+    // React to currentTime changes only. isPlaying changes are rarer
+    // and observed via a separate selector so we don't fire on every
+    // currentTime tick AND every isPlaying tick.
+    const unsubTime = useEditorStore.subscribe(
+      (s) => s.playback.currentTime,
+      (t) => {
+        sync(t, useEditorStore.getState().playback.isPlaying);
+      },
+    );
+    const unsubPlay = useEditorStore.subscribe(
+      (s) => s.playback.isPlaying,
+      (isPlaying) => {
+        sync(useEditorStore.getState().playback.currentTime, isPlaying);
+      },
+    );
+    return () => {
+      unsubTime();
+      unsubPlay();
+    };
+  }, [clip]);
 
   // CSS transform mirrors what the compositor applies during export:
   // rotate first, then flip — so a horizontal mirror stays horizontal
@@ -112,11 +189,16 @@ export function CamCanvas({ videoUrl, visible, clip }: Props) {
       preload="auto"
       className="absolute inset-0 w-full h-full"
       style={{
-        display: visible ? "block" : "none",
+        // visibility (not display) — see Props.visible doc-comment for
+        // why. willChange: transform asks the browser to keep this on a
+        // dedicated GPU layer so the visibility flip is a one-bit
+        // compositor toggle, not a layer rebuild.
+        visibility: visible ? "visible" : "hidden",
         objectFit: "contain",
         background: "#1A1816",
         transform,
         transformOrigin: "center center",
+        willChange: "transform",
       }}
     />
   );

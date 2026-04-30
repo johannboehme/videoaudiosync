@@ -63,4 +63,9 @@ export class Canvas2DFxRenderer implements FxRenderer {
   destroy(): void {
     // Nothing to release — Canvas2D context is GC'd with the element.
   }
+
+  warmup(): void {
+    // No shader compilation — Canvas2D draws are JIT'd by the browser
+    // on demand and don't have a measurable cold-start.
+  }
 }
