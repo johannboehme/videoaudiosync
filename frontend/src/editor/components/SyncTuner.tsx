@@ -78,7 +78,10 @@ export function SyncTuner({ lastSyncOverrideMs }: Props) {
 
   return (
     <div className="flex flex-col gap-5">
-      <header className="flex items-center justify-between gap-3">
+      {/* On narrow phones the title and the A/B segmented control don't
+       *  fit on one row (segments alone are ~210 px); stack them so the
+       *  title can show in full instead of collapsing to "S...". */}
+      <header className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <div className="flex items-center gap-2 text-ink min-w-0">
           <SyncIcon width={18} height={18} />
           <h2 className="font-display text-lg leading-none truncate">

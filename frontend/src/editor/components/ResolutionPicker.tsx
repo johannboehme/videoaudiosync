@@ -113,7 +113,11 @@ export function ResolutionPicker({ source, value, onChange }: Props) {
       </div>
 
       <div className="flex items-end gap-2">
-        <div className="flex flex-col gap-1 flex-1">
+        {/* `min-w-0` on each column lets the input shrink inside the row.
+         *  Without it, type=number inputs default to their intrinsic
+         *  width (~120 px) and a 4-digit value pushes the Height input
+         *  off the right edge of the side panel. */}
+        <div className="flex flex-col gap-1 flex-1 min-w-0">
           <span className="text-[10px] font-mono tracking-label uppercase text-ink-3">Width</span>
           <input
             type="number"
@@ -125,7 +129,7 @@ export function ResolutionPicker({ source, value, onChange }: Props) {
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            className="bg-paper-hi border border-rule rounded-md h-9 px-2 font-mono text-sm tabular text-right"
+            className="w-full min-w-0 bg-paper-hi border border-rule rounded-md h-9 px-2 font-mono text-sm tabular text-right"
           />
         </div>
         <button
@@ -133,7 +137,7 @@ export function ResolutionPicker({ source, value, onChange }: Props) {
           aria-label={aspectLock ? "Aspect locked" : "Aspect free"}
           onClick={() => setAspectLock((v) => !v)}
           className={[
-            "h-9 w-9 rounded-md border flex items-center justify-center text-base mb-0",
+            "h-9 w-9 shrink-0 rounded-md border flex items-center justify-center text-base mb-0",
             aspectLock
               ? "bg-paper-hi border-rule text-hot shadow-emboss"
               : "bg-paper-deep border-rule text-ink-3 shadow-pressed",
@@ -141,7 +145,7 @@ export function ResolutionPicker({ source, value, onChange }: Props) {
         >
           {aspectLock ? "🔒" : "🔓"}
         </button>
-        <div className="flex flex-col gap-1 flex-1">
+        <div className="flex flex-col gap-1 flex-1 min-w-0">
           <span className="text-[10px] font-mono tracking-label uppercase text-ink-3">Height</span>
           <input
             type="number"
@@ -153,7 +157,7 @@ export function ResolutionPicker({ source, value, onChange }: Props) {
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            className="bg-paper-hi border border-rule rounded-md h-9 px-2 font-mono text-sm tabular text-right"
+            className="w-full min-w-0 bg-paper-hi border border-rule rounded-md h-9 px-2 font-mono text-sm tabular text-right"
           />
         </div>
       </div>
