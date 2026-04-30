@@ -285,8 +285,8 @@ describe("Canvas2DBackend — fx pass", () => {
     b.drawFrame(
       descriptor({
         fx: [
-          { id: "f1", kind: "vignette", params: { intensity: 0.5, falloff: 0.5 } },
-          { id: "f2", kind: "vignette", params: { intensity: 0.3, falloff: 0.7 } },
+          { id: "f1", kind: "vignette", inS: 0, params: { intensity: 0.5, falloff: 0.5 } },
+          { id: "f2", kind: "vignette", inS: 0, params: { intensity: 0.3, falloff: 0.7 } },
         ],
       }),
       new Map(),

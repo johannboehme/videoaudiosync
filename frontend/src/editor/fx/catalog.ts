@@ -9,7 +9,7 @@ import type {
   CanvasLikeContext,
   WebGL2DrawContext,
 } from "./renderer-context";
-import type { FxKind, PunchFx } from "./types";
+import type { FxKind, FxParamDef, PunchFx } from "./types";
 
 export interface FxDefinition {
   kind: FxKind;
@@ -18,6 +18,11 @@ export interface FxDefinition {
   /** Capsule fill colour on the ProgramStrip + LED tint on the pad. */
   capsuleColor: string;
   defaultParams: Record<string, number>;
+  /** Encoder-Definition für die zwei FX-Knobs (DEPTH/EDGE etc.). Treibt
+   *  die UI im FxHardwarePanel — der Encoder liest min/max/kind hiervon
+   *  und schreibt in `fxDefaults` im Store. Optional damit alte Tests, die
+   *  ad-hoc FxDefinition-Stubs bauen, nicht brechen. */
+  params?: readonly [FxParamDef, FxParamDef];
   /** Default tap-length when the user just taps (no hold) and BPM is set.
    *  Multiplied by `60/bpm`. Falls back to `defaultLengthS` when BPM null. */
   defaultLengthBeats?: number;
@@ -28,12 +33,38 @@ export interface FxDefinition {
    *   - Live preview's Canvas2DBackend (when WebGL2 unavailable)
    *   - Final render via `compositor.ts` (also via Canvas2DBackend)
    *  Implementations should NOT touch ctx state outside save/restore;
-   *  the backend wraps each call in save/restore for safety. */
-  drawCanvas2D(ctx: CanvasLikeContext, fx: PunchFx, w: number, h: number): void;
+   *  the backend wraps each call in save/restore for safety.
+   *
+   *  - `t` is master-time; FX compute capsule-local progress as `t - fx.inS`
+   *  - `source` is a snapshot of the backbuffer right BEFORE this FX
+   *    runs — i.e. the layer-pass output combined with every FX that
+   *    has already been processed in this frame. Source-sampling FX
+   *    (RGB, ZOOM, ECHO, TAPE, WEAR) read from it; pure overlays
+   *    (Vignette) ignore it. May be null if the backend couldn't take
+   *    a snapshot (test stubs / first-frame edge cases) — FX should
+   *    no-op gracefully in that case. The re-snapshot per FX is what
+   *    lets multiple replace-FX (e.g. WEAR + TAPE) compose serially
+   *    instead of clobbering each other. */
+  drawCanvas2D(
+    ctx: CanvasLikeContext,
+    fx: PunchFx,
+    w: number,
+    h: number,
+    t: number,
+    source: CanvasImageSource | null,
+  ): void;
 
   /** WebGL2 renderer. Called with a configured fullscreen-quad pipeline;
-   *  implementation pulls params, sets uniforms, and issues the draw. */
-  drawWebGL2(ctx: WebGL2DrawContext, fx: PunchFx, w: number, h: number): void;
+   *  implementation pulls params, sets uniforms, and issues the draw.
+   *  `t` is master-time; the source layer texture is exposed via
+   *  `ctx.bindSourceTexture()` and sampled as `u_source` in the shader. */
+  drawWebGL2(
+    ctx: WebGL2DrawContext,
+    fx: PunchFx,
+    w: number,
+    h: number,
+    t: number,
+  ): void;
 }
 
 const VIGNETTE_DEFAULTS = {
@@ -58,10 +89,28 @@ const VIGNETTE: FxDefinition = {
   label: "VIGN",
   capsuleColor: "#1F4E5F",
   defaultParams: { ...VIGNETTE_DEFAULTS },
-  defaultLengthBeats: 1,
-  defaultLengthS: 0.5,
+  params: [
+    {
+      id: "intensity",
+      label: "DEPTH",
+      kind: "linear",
+      defaultValue: VIGNETTE_DEFAULTS.intensity,
+      min: 0,
+      max: 1,
+    },
+    {
+      id: "falloff",
+      label: "EDGE",
+      kind: "linear",
+      defaultValue: VIGNETTE_DEFAULTS.falloff,
+      min: 0,
+      max: 1,
+    },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
 
-  drawCanvas2D(ctx, fx, w, h) {
+  drawCanvas2D(ctx, fx, w, h, _t, _source) {
     const { intensity, falloff } = vignetteParams(fx);
     if (intensity <= 0) return;
     // Inner radius = where the falloff begins (no darkening before this).
@@ -79,6 +128,8 @@ const VIGNETTE: FxDefinition = {
 
   drawWebGL2(ctx, fx) {
     const { intensity, falloff } = vignetteParams(fx);
+    // Pure overlay — no source sampling, additive premult blend.
+    ctx.setBlendMode("over");
     ctx.useProgram("vignette");
     ctx.setUniform1f("u_intensity", intensity);
     ctx.setUniform1f("u_falloff", falloff);
@@ -86,8 +137,573 @@ const VIGNETTE: FxDefinition = {
   },
 };
 
+// — Helpers für Bipolar-Params (LFO-Style) ——————————————————
+//
+// Mehrere FX (ECHO, ZOOM, TAPE) haben einen Time-Param der bipolar
+// im Encoder geführt wird: linke Hälfte free, rechte Hälfte synced
+// auf Beat-Divisions {1/16, 1/8, 1/4, 1/2, 1, 2, 4}. Die Backend-Logic
+// muss daraus eine Periode (in Sekunden) ableiten, die dann mit der
+// capsule-local-time zu einem 0..1 Phase-Wert wird (für sin-LFOs etc.).
+
+const BEAT_STOPS_S: readonly number[] = [
+  // Sekunden bei 120 BPM Default (= 0.5 s pro Beat). Wenn das Job-BPM
+  // gesetzt ist, könnte der Renderer das mitziehen — V1 ist bewusst
+  // BPM-frei (der Backend-Pass sieht keinen BPM-Context), wir nehmen
+  // den Default als pragmatische Konstante.
+  // 1/16, 1/8, 1/4, 1/2, 1, 2, 4 beats at 120 BPM:
+  0.5 / 4, // 1/16 = 0.125 s
+  0.5 / 2, // 1/8  = 0.25 s
+  0.5 / 1, // 1/4  = 0.5 s
+  0.5 * 2, // 1/2  = 1.0 s
+  0.5 * 4, // 1    = 2.0 s
+  0.5 * 8, // 2    = 4.0 s
+  0.5 * 16, // 4    = 8.0 s
+];
+
+/** Resolve a bipolar 0..1 value to a period in seconds.
+ *  - 0..0.49: free, period = (0.5 - v) * 2 → 0.02..1.0 s scaled
+ *  - ~0.5:    "OFF" → returns Infinity (no LFO modulation)
+ *  - >0.5:    snap to nearest of BEAT_STOPS_S
+ *  Returns Infinity for OFF detent so callers can branch on isFinite. */
+function bipolarPeriodS(v: number): number {
+  if (v >= 0.48 && v <= 0.52) return Infinity; // OFF detent
+  if (v < 0.5) {
+    // Free: maps 0..0.48 → 2.0 s..0.04 s (shorter periods toward 0).
+    const t = v / 0.48; // 0..1
+    return 0.04 + (1 - t) * (2.0 - 0.04);
+  }
+  // Synced: 7 buckets evenly across 0.52..1.0
+  const tt = (v - 0.5) / 0.5; // 0..1
+  const idx = Math.min(6, Math.max(0, Math.round(tt * 7 - 0.5)));
+  return BEAT_STOPS_S[idx];
+}
+
+/** Compute the LFO phase 0..1 within the current period for a capsule
+ *  at master-time `t` (capsule started at `inS`). For "OFF" period
+ *  returns 0 so the FX shader sees a stationary phase. */
+function lfoPhase(t: number, inS: number, period: number): number {
+  if (!isFinite(period) || period <= 0) return 0;
+  const local = Math.max(0, t - inS);
+  return (local % period) / period;
+}
+
+/** One-shot phase: ramps 0→1 over the period and HOLDS at 1. Used for
+ *  effects whose semantics are "this happens once and stays" — TAPE-stop
+ *  is the canonical case (the tape slows down, then is stationary;
+ *  it does NOT periodically un-stop). */
+function oneShotPhase(t: number, inS: number, period: number): number {
+  if (!isFinite(period) || period <= 0) return 0;
+  const local = Math.max(0, t - inS);
+  return Math.min(1, local / period);
+}
+
+// — WEAR — Vintage-VHS-Verschleiß ———————————————————————————
+
+const WEAR_DEFAULTS = {
+  /** 0..1 — Master-Intensität. 0 = clean pass-through, 1 = totales
+   *  VHS-Wrack mit Dropout-Flecken und maximalem Color-Bleed. */
+  decay: 0.55,
+  /** 0..1 — bipolar; siehe `bipolarPeriodS`. Steuert die Periode der
+   *  Tracking-Bar-Bewegung. OFF-Detent = Bar versteckt. Default 0.821
+   *  = synced auf 1 Beat (langsame, ruhige Wanderung). */
+  drift: 0.821,
+} as const;
+
+function wearParams(fx: PunchFx): { decay: number; drift: number } {
+  const p = fx.params ?? {};
+  const decay = clamp01(p.decay ?? WEAR_DEFAULTS.decay);
+  const drift = clamp01(p.drift ?? WEAR_DEFAULTS.drift);
+  return { decay, drift };
+}
+
+const WEAR: FxDefinition = {
+  kind: "wear",
+  label: "WEAR",
+  // Faded sepia — sells the "old tape" vibe both on the LED and the
+  // capsule colour without clashing with TAPE's amber.
+  capsuleColor: "#C8A878",
+  defaultParams: { ...WEAR_DEFAULTS },
+  params: [
+    {
+      id: "decay",
+      label: "DECAY",
+      kind: "linear",
+      defaultValue: WEAR_DEFAULTS.decay,
+      min: 0,
+      max: 1,
+    },
+    {
+      id: "drift",
+      label: "DRIFT",
+      kind: "bipolar",
+      defaultValue: WEAR_DEFAULTS.drift,
+      min: 0,
+      max: 1,
+    },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
+
+  drawCanvas2D(ctx, fx, w, h, t, source) {
+    const { decay, drift } = wearParams(fx);
+    if (!source) return;
+    const period = bipolarPeriodS(drift);
+    const driftPhase = isFinite(period) ? lfoPhase(t, fx.inS, period) : -1;
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+
+    // Static head misalignment — three offset copies of the source
+    // composited via channel-multiply.
+    const head = decay * 0.0035 * w;
+    if (head > 0.3) {
+      drawChannel(ctx, source, w, h, -head, 0, "#FF0000");
+      ctx.globalCompositeOperation = "lighter";
+      drawChannel(ctx, source, w, h, 0, 0, "#00FF00");
+      drawChannel(ctx, source, w, h, head, 0, "#0000FF");
+      ctx.globalCompositeOperation = "source-over";
+    } else {
+      ctx.drawImage(source, 0, 0, w, h);
+    }
+
+    // Tracking-bar — subdued, amber-tinted (NOT pure white) so it reads
+    // as tape-tracking rather than a TV strobe.
+    if (driftPhase >= 0) {
+      const barY = (driftPhase % 1) * h;
+      const halfBand = h * 0.045;
+      const a = decay * 0.18;
+      const grad = ctx.createLinearGradient(0, barY - halfBand, 0, barY + halfBand);
+      grad.addColorStop(0, "rgba(255,235,191,0)");
+      grad.addColorStop(0.5, `rgba(255,235,191,${a.toFixed(3)})`);
+      grad.addColorStop(1, "rgba(255,235,191,0)");
+      ctx.globalCompositeOperation = "lighter";
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, barY - halfBand, w, halfBand * 2);
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    // Burn-in — multiply with a warm-amber tint. Multiply naturally
+    // pulls highlights toward the tint (bright pixels get more shifted
+    // than dark), which is the "highlights aging into sepia" effect we
+    // get for free from blend math without per-pixel ops.
+    if (decay > 0.05) {
+      const aR = 255;
+      const aG = Math.round(255 * (1 - decay * 0.20));
+      const aB = Math.round(255 * (1 - decay * 0.45));
+      const alpha = decay * 0.55;
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillStyle = `rgba(${aR},${aG},${aB},${alpha.toFixed(3)})`;
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    // NOTE: TV-static grain, sat/luma wobble and dropout flecks are
+    // WebGL2-only — implementing them in Canvas2D would need
+    // putImageData per frame which is too slow for the live preview.
+    // The Canvas2D path is a fallback for browsers without WebGL2;
+    // accept reduced fidelity there.
+
+    ctx.restore();
+  },
+
+  drawWebGL2(ctx, fx, w, h, t) {
+    const { decay, drift } = wearParams(fx);
+    const period = bipolarPeriodS(drift);
+    const driftPhase = isFinite(period) ? lfoPhase(t, fx.inS, period) : -1;
+    ctx.setBlendMode("replace");
+    ctx.useProgram("wear");
+    ctx.bindSourceTexture("u_source");
+    ctx.setUniform1f("u_decay", decay);
+    ctx.setUniform1f("u_driftPhase", driftPhase);
+    ctx.setUniform1f("u_t", t);
+    ctx.setUniform2f("u_texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
+    ctx.drawFullscreenQuad();
+  },
+};
+
+// — RGB — Chroma-Split (source-displacement) ————————————————
+
+const RGB_DEFAULTS = { split: 0.4, angle: 0 } as const;
+
+const RGB: FxDefinition = {
+  kind: "rgb",
+  label: "RGB",
+  capsuleColor: "#E74C8B",
+  defaultParams: { ...RGB_DEFAULTS },
+  params: [
+    { id: "split", label: "SPLIT", kind: "linear", defaultValue: RGB_DEFAULTS.split, min: 0, max: 1 },
+    { id: "angle", label: "ANGLE", kind: "linear", defaultValue: RGB_DEFAULTS.angle, min: 0, max: 1 },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
+
+  drawCanvas2D(ctx, fx, w, h, _t, source) {
+    const p = fx.params ?? {};
+    const split = clamp01(p.split ?? RGB_DEFAULTS.split);
+    const angle = clamp01(p.angle ?? RGB_DEFAULTS.angle);
+    if (split <= 0 || !source) return;
+    const mag = split * 0.06 * w;
+    const a = angle * Math.PI * 2;
+    const dx = Math.cos(a) * mag;
+    const dy = Math.sin(a) * mag;
+    // Composite three offset copies of the source with channel-mask
+    // multiply. We clear the destination first so the FX fully replaces
+    // the layer pass output (matching WebGL2 replace-blend semantics).
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = "source-over";
+    // R channel: shift -dx,-dy. Use multiply to mask out non-red pixels.
+    drawChannel(ctx, source, w, h, -dx, -dy, "#FF0000");
+    ctx.globalCompositeOperation = "lighter";
+    drawChannel(ctx, source, w, h, 0, 0, "#00FF00");
+    drawChannel(ctx, source, w, h, dx, dy, "#0000FF");
+    ctx.restore();
+  },
+
+  drawWebGL2(ctx, fx) {
+    const p = fx.params ?? {};
+    const split = clamp01(p.split ?? RGB_DEFAULTS.split);
+    const angle = clamp01(p.angle ?? RGB_DEFAULTS.angle);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("rgb");
+    ctx.bindSourceTexture("u_source");
+    ctx.setUniform1f("u_split", split);
+    ctx.setUniform1f("u_angle", angle);
+    ctx.drawFullscreenQuad();
+  },
+};
+
+/** Helper für RGB Canvas2D — zeichnet `source` mit (dx,dy) Offset und
+ *  multipliziert mit `mask` (z.B. "#FF0000" für nur-Rot). */
+function drawChannel(
+  ctx: CanvasLikeContext,
+  source: CanvasImageSource,
+  w: number,
+  h: number,
+  dx: number,
+  dy: number,
+  mask: string,
+): void {
+  // Zeichne offset-Source in einen Off-Screen-Buffer und multipliziere
+  // mit der Channel-Maske, dann blitte additiv auf ctx.
+  const off = createOffscreen(w, h);
+  if (!off) return;
+  off.ctx.drawImage(source, dx, dy, w, h);
+  off.ctx.globalCompositeOperation = "multiply";
+  off.ctx.fillStyle = mask;
+  off.ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(off.canvas, 0, 0);
+}
+
+function createOffscreen(
+  w: number,
+  h: number,
+): { canvas: OffscreenCanvas | HTMLCanvasElement; ctx: CanvasLikeContext } | null {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const c = new OffscreenCanvas(Math.max(1, w), Math.max(1, h));
+    const cx = c.getContext("2d") as OffscreenCanvasRenderingContext2D | null;
+    if (!cx) return null;
+    return { canvas: c, ctx: cx };
+  }
+  if (typeof document !== "undefined") {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, w);
+    c.height = Math.max(1, h);
+    const cx = c.getContext("2d");
+    if (!cx) return null;
+    return { canvas: c, ctx: cx };
+  }
+  return null;
+}
+
+// — ZOOM — Beat-Pump (source-resample) ——————————————————————
+
+const ZOOM_DEFAULTS = { punch: 0.5, rate: 0.821 } as const;
+
+const ZOOM: FxDefinition = {
+  kind: "zoom",
+  label: "ZOOM",
+  capsuleColor: "#5BAA46",
+  defaultParams: { ...ZOOM_DEFAULTS },
+  params: [
+    { id: "punch", label: "PUNCH", kind: "linear", defaultValue: ZOOM_DEFAULTS.punch, min: 0, max: 1 },
+    // RATE bipolar — left=free, right=beat-synced (1/16..4)
+    { id: "rate", label: "RATE", kind: "bipolar", defaultValue: ZOOM_DEFAULTS.rate, min: 0, max: 1 },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
+
+  drawCanvas2D(ctx, fx, w, h, t, source) {
+    const p = fx.params ?? {};
+    const punch = clamp01(p.punch ?? ZOOM_DEFAULTS.punch);
+    const rate = clamp01(p.rate ?? ZOOM_DEFAULTS.rate);
+    if (punch <= 0 || !source) return;
+    const period = bipolarPeriodS(rate);
+    const phase = lfoPhase(t, fx.inS, period);
+    const pulse = Math.pow(1 - phase, 4);
+    const zoom = 1 + punch * 0.30 * pulse;
+    if (zoom <= 1.0001) {
+      // No visible pump this frame — pass-through (don't even allocate).
+      return;
+    }
+    const cx = w / 2;
+    const cy = h / 2;
+    const sw = w / zoom;
+    const sh = h / zoom;
+    const sx = cx - sw / 2;
+    const sy = cy - sh / 2;
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    // Crop a window around centre at sample-rate, scale up to fill.
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
+    ctx.restore();
+  },
+
+  drawWebGL2(ctx, fx, _w, _h, t) {
+    const p = fx.params ?? {};
+    const punch = clamp01(p.punch ?? ZOOM_DEFAULTS.punch);
+    const rate = clamp01(p.rate ?? ZOOM_DEFAULTS.rate);
+    const period = bipolarPeriodS(rate);
+    const phase = lfoPhase(t, fx.inS, period);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("zoom");
+    ctx.bindSourceTexture("u_source");
+    ctx.setUniform1f("u_punch", punch);
+    ctx.setUniform1f("u_phase", phase);
+    ctx.drawFullscreenQuad();
+  },
+};
+
+// — UV — Blacklight Glow (source-derived bloom approximation) ——
+
+const UV_DEFAULTS = { glow: 0.6, tint: 0.5 } as const;
+
+const UV: FxDefinition = {
+  kind: "uv",
+  label: "UV",
+  capsuleColor: "#3FA9F5",
+  defaultParams: { ...UV_DEFAULTS },
+  params: [
+    { id: "glow", label: "GLOW", kind: "linear", defaultValue: UV_DEFAULTS.glow, min: 0, max: 1 },
+    { id: "tint", label: "TINT", kind: "linear", defaultValue: UV_DEFAULTS.tint, min: 0, max: 1 },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
+
+  drawCanvas2D(ctx, fx, w, h, _t, source) {
+    const p = fx.params ?? {};
+    const glow = clamp01(p.glow ?? UV_DEFAULTS.glow);
+    const tint = clamp01(p.tint ?? UV_DEFAULTS.tint);
+    if (!source) return;
+    // Canvas2D approximation: dim base, additive tinted blur on top.
+    // We don't do a real bloom (would need pixel ops); instead we
+    // exploit ctx.filter for a cheap blur and tint via globalComposite.
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    // 1. dim base
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(source, 0, 0, w, h);
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(0, 0, w, h);
+    // 2. blurred copy on top, additively, then tinted
+    const blurPx = 6 + glow * 14;
+    const off = createOffscreen(w, h);
+    if (off && "filter" in off.ctx) {
+      (off.ctx as CanvasRenderingContext2D).filter = `blur(${blurPx}px)`;
+      off.ctx.drawImage(source, 0, 0, w, h);
+      (off.ctx as CanvasRenderingContext2D).filter = "none";
+      // Tint: 0 = magenta, 1 = cyan
+      const tintColor = tint < 0.5 ? "#FF2DEE" : "#2DEEFF";
+      off.ctx.globalCompositeOperation = "multiply";
+      off.ctx.fillStyle = tintColor;
+      off.ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = 0.5 + glow * 0.7;
+      ctx.drawImage(off.canvas, 0, 0);
+    }
+    ctx.restore();
+  },
+
+  drawWebGL2(ctx, fx, w, h) {
+    const p = fx.params ?? {};
+    const glow = clamp01(p.glow ?? UV_DEFAULTS.glow);
+    const tint = clamp01(p.tint ?? UV_DEFAULTS.tint);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("uv");
+    ctx.bindSourceTexture("u_source");
+    ctx.setUniform1f("u_glow", glow);
+    ctx.setUniform1f("u_tint", tint);
+    ctx.setUniform2f("u_texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
+    ctx.drawFullscreenQuad();
+  },
+};
+
+// — ECHO — Stateless Multi-Tap Trail ————————————————————————
+
+const ECHO_DEFAULTS = { trail: 0.679, mix: 0.5 } as const;
+
+const ECHO: FxDefinition = {
+  kind: "echo",
+  label: "ECHO",
+  capsuleColor: "#9C5BD9",
+  defaultParams: { ...ECHO_DEFAULTS },
+  params: [
+    { id: "trail", label: "TRAIL", kind: "bipolar", defaultValue: ECHO_DEFAULTS.trail, min: 0, max: 1 },
+    { id: "mix", label: "MIX", kind: "linear", defaultValue: ECHO_DEFAULTS.mix, min: 0, max: 1 },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
+
+  drawCanvas2D(ctx, fx, w, h, t, source) {
+    const p = fx.params ?? {};
+    const trail = clamp01(p.trail ?? ECHO_DEFAULTS.trail);
+    const mix = clamp01(p.mix ?? ECHO_DEFAULTS.mix);
+    if (!source || mix <= 0) return;
+    const period = bipolarPeriodS(trail);
+    const phase = lfoPhase(t, fx.inS, period);
+    const a = phase * Math.PI * 2;
+    const ax = Math.cos(a);
+    const ay = Math.sin(a);
+    // Stateless trail: draw 5 offset copies behind axis with decaying alpha.
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(source, 0, 0, w, h);
+    ctx.globalCompositeOperation = "lighter";
+    const magBase = 0.10 * w; // x-axis scale; y-axis uses h
+    const magBaseY = 0.10 * h;
+    for (let i = 1; i <= 5; i++) {
+      const fi = i / 5;
+      const dx = -ax * magBaseY * fi * (trail / 1);
+      const dy = -ay * magBaseY * fi * (trail / 1);
+      void magBase;
+      const alpha = Math.exp(-fi * 2.5) * mix;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(source, dx, dy, w, h);
+    }
+    ctx.restore();
+  },
+
+  drawWebGL2(ctx, fx, _w, _h, t) {
+    const p = fx.params ?? {};
+    const trail = clamp01(p.trail ?? ECHO_DEFAULTS.trail);
+    const mix = clamp01(p.mix ?? ECHO_DEFAULTS.mix);
+    const period = bipolarPeriodS(trail);
+    const phase = lfoPhase(t, fx.inS, period);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("echo");
+    ctx.bindSourceTexture("u_source");
+    ctx.setUniform1f("u_trail", trail);
+    ctx.setUniform1f("u_mix", mix);
+    ctx.setUniform1f("u_phase", phase);
+    ctx.drawFullscreenQuad();
+  },
+};
+
+// — TAPE — Stateless Tape-Stop Approximation ————————————————
+
+const TAPE_DEFAULTS = { bend: 0.679, warp: 0.5 } as const;
+
+const TAPE: FxDefinition = {
+  kind: "tape",
+  label: "TAPE",
+  capsuleColor: "#E5A100",
+  defaultParams: { ...TAPE_DEFAULTS },
+  params: [
+    { id: "bend", label: "BEND", kind: "bipolar", defaultValue: TAPE_DEFAULTS.bend, min: 0, max: 1 },
+    { id: "warp", label: "WARP", kind: "linear", defaultValue: TAPE_DEFAULTS.warp, min: 0, max: 1 },
+  ],
+  defaultLengthBeats: 0,
+  defaultLengthS: 0,
+
+  drawCanvas2D(ctx, fx, w, h, t, source) {
+    const p = fx.params ?? {};
+    const bend = clamp01(p.bend ?? TAPE_DEFAULTS.bend);
+    const warp = clamp01(p.warp ?? TAPE_DEFAULTS.warp);
+    if (!source) return;
+    const period = bipolarPeriodS(bend);
+    // One-shot: tape decelerates over `period`, then stays stopped.
+    const phase = oneShotPhase(t, fx.inS, period);
+    const warpScale = 0.5 + warp * 0.5;
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    // Slice into 24 horizontal bands; each band slides by a per-band
+    // pseudo-random amount scaled by phase × (warp-scaled).
+    const bands = 24;
+    const bandH = h / bands;
+    for (let i = 0; i < bands; i++) {
+      const r = pseudoRand(i) - 0.5;
+      const drift = phase * 0.06 * r * warpScale * w;
+      const yPull = phase * 0.025 * r * warpScale * h;
+      const sy = i * bandH;
+      ctx.drawImage(
+        source,
+        0,
+        sy,
+        w,
+        bandH,
+        drift,
+        sy + yPull,
+        w,
+        bandH,
+      );
+    }
+    // Chromatic warp — coefficient bumped 4× so WARP=0 ↔ WARP=1 is a
+    // clearly audible difference in the output.
+    const chrom = phase * warp * 0.045 * w;
+    if (chrom > 0.3) {
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = 0.45;
+      const off = createOffscreen(w, h);
+      if (off) {
+        off.ctx.drawImage(source, -chrom, 0, w, h);
+        off.ctx.globalCompositeOperation = "multiply";
+        off.ctx.fillStyle = "#FF0000";
+        off.ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(off.canvas, 0, 0);
+        const off2 = createOffscreen(w, h);
+        if (off2) {
+          off2.ctx.drawImage(source, chrom, 0, w, h);
+          off2.ctx.globalCompositeOperation = "multiply";
+          off2.ctx.fillStyle = "#0000FF";
+          off2.ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(off2.canvas, 0, 0);
+        }
+      }
+    }
+    // Slight darken — independent of warp so the "stop" still reads.
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = phase * 0.20;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  },
+
+  drawWebGL2(ctx, fx, _w, _h, t) {
+    const p = fx.params ?? {};
+    const bend = clamp01(p.bend ?? TAPE_DEFAULTS.bend);
+    const warp = clamp01(p.warp ?? TAPE_DEFAULTS.warp);
+    const period = bipolarPeriodS(bend);
+    const phase = oneShotPhase(t, fx.inS, period);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("tape");
+    ctx.bindSourceTexture("u_source");
+    ctx.setUniform1f("u_warp", warp);
+    ctx.setUniform1f("u_phase", phase);
+    ctx.drawFullscreenQuad();
+  },
+};
+
+function pseudoRand(seed: number): number {
+  return Math.abs(Math.sin(seed * 91.345) * 43758.5453) % 1;
+}
+
 export const fxCatalog: Readonly<Record<FxKind, FxDefinition>> = {
   vignette: VIGNETTE,
+  wear: WEAR,
+  echo: ECHO,
+  rgb: RGB,
+  tape: TAPE,
+  zoom: ZOOM,
+  uv: UV,
 };
 
 export function getFxDefinition(kind: FxKind): FxDefinition {

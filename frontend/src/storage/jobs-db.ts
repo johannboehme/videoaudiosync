@@ -230,10 +230,20 @@ export interface LocalJob {
 
 /** Storage shape for a single Punch-in FX. Mirrors `PunchFx` from the
  *  editor module — kept duplicated here to avoid cross-module type
- *  dependency at the storage layer. */
+ *  dependency at the storage layer. New kinds added to `FxKind` need
+ *  to be mirrored here so persisted jobs round-trip cleanly. */
+export type PunchFxKindRecord =
+  | "vignette"
+  | "wear"
+  | "echo"
+  | "rgb"
+  | "tape"
+  | "zoom"
+  | "uv";
+
 export interface PunchFxRecord {
   id: string;
-  kind: "vignette";
+  kind: PunchFxKindRecord;
   inS: number;
   outS: number;
   params?: Record<string, number>;

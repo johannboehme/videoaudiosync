@@ -197,6 +197,8 @@ export function Timeline({
   const setSelectedCandidateIdx = useEditorStore((s) => s.setSelectedCandidateIdx);
   const resetClipAlignment = useEditorStore((s) => s.resetClipAlignment);
   const removeCutAt = useEditorStore((s) => s.removeCutAt);
+  const clearCuts = useEditorStore((s) => s.clearCuts);
+  const clearAllFx = useEditorStore((s) => s.clearAllFx);
   const preparingCamIds = useEditorStore((s) => s.preparingCamIds);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const holdGesture = useEditorStore((s) => s.holdGesture);
@@ -1173,6 +1175,8 @@ export function Timeline({
               mode={programStripMode}
               fx={fx}
               liveFxIds={liveFxIds}
+              onClearCuts={clearCuts}
+              onClearFx={clearAllFx}
             />
           </div>
         </div>

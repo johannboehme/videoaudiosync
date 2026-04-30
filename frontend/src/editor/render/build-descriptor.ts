@@ -145,6 +145,7 @@ function buildFx(fx: readonly PunchFx[], tMaster: number): FrameFx[] {
     return {
       id: f.id,
       kind: f.kind,
+      inS: f.inS,
       params: { ...def.defaultParams, ...(f.params ?? {}) },
     };
   });

@@ -6,10 +6,22 @@
  * Cache compiliert on-demand, hält die Programme bis `destroy()`.
  */
 import { FULLSCREEN_VERT, VIGNETTE_FRAG } from "./vignette.frag";
+import { WEAR_FRAG } from "./wear.frag";
+import { RGB_FRAG } from "./rgb.frag";
+import { ZOOM_FRAG } from "./zoom.frag";
+import { UV_FRAG } from "./uv.frag";
+import { ECHO_FRAG } from "./echo.frag";
+import { TAPE_FRAG } from "./tape.frag";
 import { emit, PERF_ENABLED } from "../../perf/marks";
 
 const FRAGMENTS: Record<string, string> = {
   vignette: VIGNETTE_FRAG,
+  wear: WEAR_FRAG,
+  rgb: RGB_FRAG,
+  zoom: ZOOM_FRAG,
+  uv: UV_FRAG,
+  echo: ECHO_FRAG,
+  tape: TAPE_FRAG,
 };
 
 /** Names of all registered fragment shaders — exposed so callers (e.g.

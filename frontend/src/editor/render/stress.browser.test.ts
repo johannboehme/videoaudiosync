@@ -80,6 +80,7 @@ function makeStressDescriptor(): FrameDescriptor {
     fx.push({
       id: `fx${i}`,
       kind: "vignette" as const,
+      inS: 0,
       params: { intensity: 0.5 + i * 0.15, falloff: 0.4 + i * 0.2 },
     });
   }

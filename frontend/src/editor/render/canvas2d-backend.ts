@@ -36,6 +36,12 @@ export class Canvas2DBackend implements CompositorBackend {
   private canvas: AnyCanvas | null = null;
   private ctx: AnyCtx2D | null = null;
   private caps: BackendCaps = { pixelW: 1, pixelH: 1 };
+  /** Pre-FX snapshot canvas — receives the layer-pass output before any
+   *  FX runs, so FX renderers that need to displace/sample the source
+   *  (RGB-Split, ZOOM, ECHO, TAPE, UV) have something to read from.
+   *  Pure-overlay FX (Vignette, Wash) ignore it. */
+  private snapshotCanvas: OffscreenCanvas | HTMLCanvasElement | null = null;
+  private snapshotCtx: AnyCtx2D | null = null;
 
   async init(canvas: AnyCanvas, caps: BackendCaps): Promise<void> {
     this.initSync(canvas, caps);
@@ -69,6 +75,20 @@ export class Canvas2DBackend implements CompositorBackend {
     // would clobber that. For export, OffscreenCanvas has no style.
     // Callers that need explicit CSS sizing should set it themselves
     // before / after init().
+
+    // Resize / lazy-create the snapshot canvas to match.
+    const sw = Math.max(1, Math.round(caps.pixelW));
+    const sh = Math.max(1, Math.round(caps.pixelH));
+    if (!this.snapshotCanvas) {
+      this.snapshotCanvas = makeSnapshotCanvas(sw, sh);
+      if (this.snapshotCanvas) {
+        this.snapshotCtx =
+          (this.snapshotCanvas.getContext("2d") as AnyCtx2D | null) ?? null;
+      }
+    } else {
+      this.snapshotCanvas.width = sw;
+      this.snapshotCanvas.height = sh;
+    }
   }
 
   warmup(): Promise<void> {
@@ -112,19 +132,48 @@ export class Canvas2DBackend implements CompositorBackend {
     if (d.fx.length > 0) {
       const w = d.output.w;
       const h = d.output.h;
+      // Re-snapshot the backbuffer into the snapshot canvas BEFORE
+      // EACH FX so replace-FX (RGB, ZOOM, ECHO, TAPE, WEAR, UV) see the
+      // cumulative output of every previous FX instead of the bare
+      // pre-FX layer pass — without this, two replace-FX in the same
+      // frame would each clobber each other and only the last would
+      // be visible. Cost is one drawImage(canvas → snapshot) per FX,
+      // which is GPU-accelerated in modern engines and well within
+      // budget for 7 simultaneous FX.
       for (const fx of d.fx) {
         const def = fxCatalog[fx.kind];
         if (!def) continue;
+        let source: CanvasImageSource | null = null;
+        if (this.snapshotCanvas && this.snapshotCtx) {
+          // Reset transform so the copy happens in pixel-space (the
+          // backend's main ctx is mid-frame transformed from output
+          // coords to backbuffer pixels via setTransform(sx, …)).
+          this.snapshotCtx.setTransform(1, 0, 0, 1, 0, 0);
+          this.snapshotCtx.clearRect(
+            0,
+            0,
+            this.snapshotCanvas.width,
+            this.snapshotCanvas.height,
+          );
+          this.snapshotCtx.drawImage(
+            this.canvas as CanvasImageSource,
+            0,
+            0,
+            this.snapshotCanvas.width,
+            this.snapshotCanvas.height,
+          );
+          source = this.snapshotCanvas as CanvasImageSource;
+        }
         const punch: PunchFx = {
           id: fx.id,
           kind: fx.kind,
-          // The draw functions only read params; in/out aren't used.
-          inS: 0,
+          inS: fx.inS,
+          // outS isn't read by draws — only inS for capsule-local time.
           outS: 0,
           params: fx.params,
         };
         ctx.save();
-        def.drawCanvas2D(ctx, punch, w, h);
+        def.drawCanvas2D(ctx, punch, w, h, d.tMaster, source);
         ctx.restore();
       }
     }
@@ -133,7 +182,25 @@ export class Canvas2DBackend implements CompositorBackend {
   dispose(): void {
     this.canvas = null;
     this.ctx = null;
+    this.snapshotCanvas = null;
+    this.snapshotCtx = null;
   }
+}
+
+function makeSnapshotCanvas(
+  w: number,
+  h: number,
+): OffscreenCanvas | HTMLCanvasElement | null {
+  if (typeof OffscreenCanvas !== "undefined") {
+    return new OffscreenCanvas(w, h);
+  }
+  if (typeof document !== "undefined") {
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+  return null;
 }
 
 /** Draw one layer onto `ctx` using the same translate→rotate→scale order

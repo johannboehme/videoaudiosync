@@ -3,11 +3,49 @@
  * Master-Timeline. Anders als Cuts (exklusive Cam-Switches) überlappen
  * P-FX frei und stapeln sich; ein Pixel kann mehreren FX angehören.
  *
- * V1: Vignette only. Weitere Kinds folgen iterativ — neue Kind = ein
- * Eintrag in `catalog.ts` plus eine `drawCanvas2D`/`drawWebGL2`-Pair.
+ * Pad-Bank: V (vignette), W (wear), E (echo), R (rgb), T (tape),
+ * Z (zoom), U (uv). Vignette ist V1 mit echtem Renderer; die anderen
+ * sechs sind aktuell Debug-Stubs (farbiger Frame + Label-Tag) — die
+ * Pad-/Encoder-/Tastatur-/Selection-Mechanik läuft trotzdem ende-zu-ende.
  */
 
-export type FxKind = "vignette";
+export type FxKind =
+  | "vignette"
+  | "wear"
+  | "echo"
+  | "rgb"
+  | "tape"
+  | "zoom"
+  | "uv";
+
+/** Encoder-Verhalten eines Param.
+ *
+ *  - `linear`  — kontinuierliche 0..max Skala (DEPTH, EDGE, AMOUNT, …).
+ *  - `bipolar` — TE-LFO-Style. Linke Hälfte free, rechte Hälfte snapped
+ *                auf Beat-Stops (1/16 1/8 1/4 1/2 1 2 4). Mitte = OFF.
+ *                Wird für zeitbasierte Params benutzt (RATE, BEND, …).
+ */
+export type FxParamKind = "linear" | "bipolar";
+
+/** Beschreibt einen einzelnen Knob-Param eines FX. Trägt sowohl die
+ *  UI-Metadaten (label, kind) als auch den storage-range (min/max), so
+ *  dass der Encoder display 0..100 ohne weitere mappers ableitet:
+ *    display = round(((value - min) / (max - min)) * 100)
+ *  Renderer arbeiten weiterhin auf dem nativen storage-Wert. */
+export interface FxParamDef {
+  /** Stable id — Schlüssel im PunchFx.params + UserDefaults Storage. */
+  id: string;
+  /** Engraved label (≤ 6 chars uppercase, e.g. "DEPTH"). */
+  label: string;
+  /** Encoder-Verhalten. */
+  kind: FxParamKind;
+  /** Default im Storage-Range. */
+  defaultValue: number;
+  /** Untergrenze des Storage-Ranges. */
+  min: number;
+  /** Obergrenze des Storage-Ranges. */
+  max: number;
+}
 
 export interface PunchFx {
   id: string;

@@ -267,9 +267,25 @@ export default function Editor() {
       return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
     }
 
+    // Pad-Bank: top letter row, mnemonic-aligned with the FxHardwarePanel.
+    // V (Vignette) sits on its own — bottom row — because vignette already
+    // shipped as F before the redesign and `V` matches the label.
+    // Both upper- and lower-case so Caps-Lock doesn't break Performance.
     const FX_HOTKEYS: Record<string, FxKind> = {
-      f: "vignette",
-      F: "vignette",
+      v: "vignette",
+      V: "vignette",
+      w: "wear",
+      W: "wear",
+      e: "echo",
+      E: "echo",
+      r: "rgb",
+      R: "rgb",
+      t: "tape",
+      T: "tape",
+      z: "zoom",
+      Z: "zoom",
+      u: "uv",
+      U: "uv",
     };
 
     // Local modifier state so the two key-handlers can talk to each other.
@@ -346,6 +362,11 @@ export default function Editor() {
         eraseKindFilter.add(kind);
         return;
       }
+      // Don't record FX capsules while paused. An accidental tap leaves
+      // a stub-marker on the timeline that's annoying to clean up later;
+      // the rule "punching only happens during playback" matches the
+      // tape-machine metaphor and is easy to remember.
+      if (!s.playback.isPlaying) return;
       const slotKey = `key:${e.key.toUpperCase()}`;
       if (s.fxHolds[slotKey]) return;
       // Perf instrumentation: keypress → paint, plus an "fx first render"
@@ -359,6 +380,9 @@ export default function Editor() {
         // is the only fx-hold trigger in V1.
         (window as unknown as { __fxFirstRenderPending?: { end: () => void } }).__fxFirstRenderPending = pending;
       }
+      // Recording-Head: jeder Press sets the selectedFxKind so the
+      // panel's encoders + LCD point at the kind that was last triggered.
+      s.setSelectedFxKind(kind);
       const t = s.snapMasterTime(s.playback.currentTime);
       s.beginFxHold(slotKey, kind, t);
       ensureTick();
@@ -816,9 +840,10 @@ export default function Editor() {
     icon: <CameraIcon />,
   });
   useRegisterShortcut({
-    id: "editor.fx-vignette",
-    keys: ["F"],
-    description: "Hold to record a vignette FX under the playhead",
+    id: "editor.fx-pad",
+    keys: ["V", "W", "E", "R", "T", "Z", "U"],
+    description:
+      "Hold a pad to record its FX under the playhead. V vignette · W wear · E echo · R rgb · T tape · Z zoom · U uv",
     group: "FX",
     icon: <VignetteIcon />,
   });
@@ -826,7 +851,7 @@ export default function Editor() {
     id: "editor.erase-fx",
     keys: ["X"],
     description:
-      "Hold to erase FX under the playhead. Combine with an FX key (e.g. X+F) to limit the wipe to that kind",
+      "Hold to erase FX under the playhead. Combine with an FX pad (e.g. X+V) to limit the wipe to that kind",
     group: "FX",
     icon: <XIcon />,
   });

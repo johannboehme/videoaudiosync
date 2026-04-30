@@ -76,6 +76,11 @@ export interface FrameLayer {
 export interface FrameFx {
   id: string;
   kind: FxKind;
+  /** Master-time inclusive start of the punched capsule. The backend
+   *  passes this to FX renderers so they can compute capsule-local time
+   *  (`tMaster - inS`) for animated effects (TAPE-stop progress, ZOOM
+   *  beat-pump phase, ECHO-trail offsets). */
+  inS: number;
   /** Already merged with the FX kind's `defaultParams` so the backend
    *  doesn't need to know about defaults. */
   params: Record<string, number>;

@@ -1,15 +1,15 @@
 /**
  * FX-Capsule-Layer für die ProgramStrip — Tonband-Visual.
  *
- * Konzept (verworfen: Capsules + Drag/Resize):
+ * Konzept:
  *   - Eine durchgängige Tape-Lane, die in horizontale Segmente unterteilt
  *     ist. Jedes Segment kennt die Menge der dort aktiven FX-Kinds.
- *   - Ein FX-Kind hat einen festen vertikalen Slot in der Lane. Slot-
- *     Index = Position im fxCatalog (Object.keys-Reihenfolge). Mit nur
- *     einem Kind füllt es die ganze Lane; mit N Kinds bekommt jedes
- *     1/N der Höhe ("Regenbogen"). Inaktive Slots sind transparent.
+ *   - Slot-Höhe ist DYNAMISCH pro Segment: nur die in diesem Segment
+ *     aktiven FX teilen sich die Höhe (1/k bei k aktiven). Frei wenn
+ *     gar nichts läuft. Reihenfolge der aktiven Slots = catalog-Order.
  *   - Live-Recording-Edge ist ein dünner heller Pulser am outS der
- *     liveFxIds, vertikal beschränkt auf den Slot des Live-Kinds.
+ *     liveFxIds, vertikal beschränkt auf den Slot des Live-Kinds an
+ *     dieser Stelle.
  *
  * Read-only — keine Pointer-Events, keine Drag/Resize, keine ×-Buttons.
  * Editieren passiert ausschließlich über Hotkeys + Pad-Buttons.
@@ -89,21 +89,39 @@ export function FxStripLayer({
     return out;
   }, [fx, viewStartS, viewEndS, slotIndexOf, N]);
 
-  // Per slot, the most-recent live fx (used for the leading-edge pulser).
+  // Pre-compute the active set for each live-fx outS so the pulser can
+  // place itself relative to the dynamic slot layout at that position.
   const livePulses = useMemo(() => {
-    const items: Array<{ slot: number; outS: number; color: string }> = [];
-    for (const f of fx) {
-      if (!liveFxIds.has(f.id)) continue;
-      const slot = slotIndexOf[f.kind];
-      if (slot == null) continue;
+    const items: Array<{
+      slotTopPct: number;
+      slotHPct: number;
+      outS: number;
+      color: string;
+    }> = [];
+    for (const live of fx) {
+      if (!liveFxIds.has(live.id)) continue;
+      const probe = live.outS - 1e-6; // tiny step back so [inS, outS) coverage rule holds
+      // Build the active set at this exact instant.
+      const active = new Array<boolean>(N).fill(false);
+      for (const f of fx) {
+        if (f.inS <= probe && probe < f.outS) {
+          const idx = slotIndexOf[f.kind];
+          if (idx != null) active[idx] = true;
+        }
+      }
+      const layout = computeSlotLayout(active);
+      const myIdx = slotIndexOf[live.kind];
+      const span = layout.find((s) => s.slotIndex === myIdx);
+      if (!span) continue;
       items.push({
-        slot,
-        outS: f.outS,
-        color: fxCatalog[f.kind].capsuleColor,
+        slotTopPct: span.topPct,
+        slotHPct: span.heightPct,
+        outS: live.outS,
+        color: fxCatalog[live.kind].capsuleColor,
       });
     }
     return items;
-  }, [fx, liveFxIds, slotIndexOf]);
+  }, [fx, liveFxIds, slotIndexOf, N]);
 
   if (N === 0) return null;
 
@@ -140,8 +158,8 @@ export function FxStripLayer({
       {livePulses.map((p, i) => {
         const x = tToX(p.outS);
         if (x < -2 || x > width + 2) return null;
-        const slotTop = (p.slot * height) / N;
-        const slotH = height / N;
+        const slotTop = (p.slotTopPct / 100) * height;
+        const slotH = (p.slotHPct / 100) * height;
         return (
           <span
             key={i}
@@ -163,20 +181,44 @@ export function FxStripLayer({
   );
 }
 
-/** Build a vertical multi-stop linear-gradient that paints the active
- *  slots in their catalog colour and leaves inactive slots transparent.
- *  Stops are placed at exact slot boundaries so the bands are crisp,
- *  not blended. */
+/** Compute the dynamic slot layout for one segment: only the active
+ *  slots share the lane height, in catalog order. With k actives each
+ *  gets 100/k of the height, starting at the top. Returns one entry per
+ *  active slot, in vertical order. */
+function computeSlotLayout(active: boolean[]): Array<{
+  slotIndex: number;
+  topPct: number;
+  heightPct: number;
+}> {
+  const k = active.reduce((n, on) => n + (on ? 1 : 0), 0);
+  if (k === 0) return [];
+  const each = 100 / k;
+  const out: Array<{ slotIndex: number; topPct: number; heightPct: number }> = [];
+  let written = 0;
+  for (let i = 0; i < active.length; i++) {
+    if (!active[i]) continue;
+    out.push({
+      slotIndex: i,
+      topPct: written * each,
+      heightPct: each,
+    });
+    written++;
+  }
+  return out;
+}
+
+/** Build a vertical multi-stop linear-gradient that paints ONLY the
+ *  active slots in their catalog colour, sharing the lane height equally
+ *  among them. Inactive slots don't take any space — with 1 fx active
+ *  the colour fills the full lane height, with 2 each takes half, etc. */
 function stripeGradient(active: boolean[], slots: FxKind[]): string {
-  const N = active.length;
-  if (N === 0) return "transparent";
+  const layout = computeSlotLayout(active);
+  if (layout.length === 0) return "transparent";
   const stops: string[] = [];
-  for (let i = 0; i < N; i++) {
-    const startPct = (i * 100) / N;
-    const endPct = ((i + 1) * 100) / N;
-    const color = active[i]
-      ? fxCatalog[slots[i]].capsuleColor
-      : "transparent";
+  for (const span of layout) {
+    const color = fxCatalog[slots[span.slotIndex]].capsuleColor;
+    const startPct = span.topPct;
+    const endPct = span.topPct + span.heightPct;
     stops.push(`${color} ${startPct.toFixed(3)}% ${endPct.toFixed(3)}%`);
   }
   return `linear-gradient(180deg, ${stops.join(", ")})`;

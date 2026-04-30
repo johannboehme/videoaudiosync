@@ -186,6 +186,7 @@ export class Compositor {
       ? activeFxAt(this.opts.fx, t).map((fx) => ({
           id: fx.id,
           kind: fx.kind,
+          inS: fx.inS,
           params: { ...fxCatalog[fx.kind].defaultParams, ...(fx.params ?? {}) },
         }))
       : [];

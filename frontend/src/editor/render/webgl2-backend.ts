@@ -87,6 +87,13 @@ export class WebGL2Backend implements CompositorBackend {
   private currentProgram: CachedProgram | null = null;
   private caps: BackendCaps = { pixelW: 1, pixelH: 1 };
   private drawCtx: WebGL2DrawContext | null = null;
+  /** Source-texture for FX shaders that need to sample the layer pass.
+   *  We copy the backbuffer into this texture once before each FX pass
+   *  via `copyTexSubImage2D` — cheap and avoids the full FBO refactor.
+   *  Reserved on TEXTURE1; FX shaders read it via `u_source`. */
+  private sourceTex: WebGLTexture | null = null;
+  private sourceTexW = 0;
+  private sourceTexH = 0;
 
   async init(canvas: AnyCanvas, caps: BackendCaps): Promise<void> {
     this.canvas = canvas;
@@ -119,6 +126,19 @@ export class WebGL2Backend implements CompositorBackend {
         throw new BackendError("init", "WebGL2Backend: createTexture failed");
       }
       gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      // FX source texture — bound to TEXTURE1, sized lazily in
+      // ensureSourceTex(). Holds the backbuffer's pre-FX content for
+      // source-sampling FX shaders (RGB, ZOOM, ECHO, TAPE, UV).
+      this.sourceTex = gl.createTexture();
+      if (!this.sourceTex) {
+        throw new BackendError("init", "WebGL2Backend: createTexture failed (sourceTex)");
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -201,24 +221,85 @@ export class WebGL2Backend implements CompositorBackend {
       this.quad.draw();
     }
 
-    // FX pass — additive. Re-uses the existing fxCatalog drawWebGL2.
+    // FX pass.
+    //
+    // Source texture lives at backbuffer pixel size (caps), NOT at
+    // descriptor output size — the layer pass writes into the viewport
+    // which is sized to caps. Sizing sourceTex to d.output.* would
+    // surface as "preview rendered tiny in the bottom-left corner"
+    // when caps ≠ output (DPR ≠ 1, resolution-scale dial down, etc.).
+    //
+    // We re-snapshot the backbuffer into sourceTex BEFORE EACH FX, so
+    // replace-blend FX (WEAR, TAPE, RGB, ZOOM, UV) see the cumulative
+    // result of every previous FX in this frame instead of the bare
+    // pre-FX layer pass. Without this, two replace-FX active at the
+    // same time would each clobber each other and only the last one
+    // in the array would be visible. The cost is one extra
+    // `copyTexSubImage2D` per FX per frame — cheap; on tested drivers
+    // a full-frame copy is < 0.2 ms even at 4K.
     if (d.fx.length > 0 && this.drawCtx) {
-      const w = d.output.w;
-      const h = d.output.h;
+      const fxW = this.caps.pixelW;
+      const fxH = this.caps.pixelH;
+      this.ensureSourceTex(fxW, fxH);
       for (const fx of d.fx) {
         const def = fxCatalog[fx.kind];
         if (!def) continue;
+        // Snapshot whatever the backbuffer currently shows (= layer
+        // pass + every prior FX in this frame).
+        this.copyBackbufferToSourceTex(fxW, fxH);
         const punch: PunchFx = {
           id: fx.id,
           kind: fx.kind,
-          inS: 0,
+          inS: fx.inS,
+          // outS isn't read by draws — only inS for capsule-local time.
           outS: 0,
           params: fx.params,
         };
-        def.drawWebGL2(this.drawCtx, punch, w, h);
+        // Reset to default ("over") before each FX — they opt in to
+        // "replace" via setBlendMode() if they need it.
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        def.drawWebGL2(this.drawCtx, punch, fxW, fxH, d.tMaster);
       }
       this.currentProgram = null;
     }
+  }
+
+  /** Resize sourceTex to (w,h) if needed. Lazy — only allocates the
+   *  texture storage when the output size changes. */
+  private ensureSourceTex(w: number, h: number): void {
+    const gl = this.gl;
+    if (!gl || !this.sourceTex) return;
+    if (this.sourceTexW === w && this.sourceTexH === h) return;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      w,
+      h,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      null,
+    );
+    this.sourceTexW = w;
+    this.sourceTexH = h;
+  }
+
+  /** Copy the current backbuffer (layer-pass output) into sourceTex.
+   *  Called once before the FX loop. Uses copyTexSubImage2D which is
+   *  fast on most drivers (no GPU stall). */
+  private copyBackbufferToSourceTex(w: number, h: number): void {
+    const gl = this.gl;
+    if (!gl || !this.sourceTex) return;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.sourceTex);
+    // Backbuffer is the default framebuffer; READ_BUFFER defaults to BACK.
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+    void w;
+    void h;
   }
 
   dispose(): void {
@@ -228,6 +309,7 @@ export class WebGL2Backend implements CompositorBackend {
       if (this.programs) this.programs.destroy();
       if (this.layerProgram) gl.deleteProgram(this.layerProgram);
       if (this.layerTexture) gl.deleteTexture(this.layerTexture);
+      if (this.sourceTex) gl.deleteTexture(this.sourceTex);
     }
     this.gl = null;
     this.canvas = null;
@@ -235,6 +317,9 @@ export class WebGL2Backend implements CompositorBackend {
     this.quad = null;
     this.layerProgram = null;
     this.layerTexture = null;
+    this.sourceTex = null;
+    this.sourceTexW = 0;
+    this.sourceTexH = 0;
     this.drawCtx = null;
     this.currentProgram = null;
   }
@@ -272,6 +357,11 @@ export class WebGL2Backend implements CompositorBackend {
         this.gl.useProgram(p.program);
         this.currentProgram = p;
       },
+      setUniform1i: (name: string, value: number) => {
+        if (!this.programs || !this.gl || !this.currentProgram) return;
+        const loc = this.programs.getUniform(this.currentProgram, name);
+        if (loc !== null) this.gl.uniform1i(loc, value);
+      },
       setUniform1f: (name: string, value: number) => {
         if (!this.programs || !this.gl || !this.currentProgram) return;
         const loc = this.programs.getUniform(this.currentProgram, name);
@@ -281,6 +371,40 @@ export class WebGL2Backend implements CompositorBackend {
         if (!this.programs || !this.gl || !this.currentProgram) return;
         const loc = this.programs.getUniform(this.currentProgram, name);
         if (loc !== null) this.gl.uniform2f(loc, a, b);
+      },
+      setUniform4f: (
+        name: string,
+        a: number,
+        b: number,
+        c: number,
+        d: number,
+      ) => {
+        if (!this.programs || !this.gl || !this.currentProgram) return;
+        const loc = this.programs.getUniform(this.currentProgram, name);
+        if (loc !== null) this.gl.uniform4f(loc, a, b, c, d);
+      },
+      bindSourceTexture: (samplerName?: string) => {
+        if (!this.programs || !this.gl || !this.currentProgram || !this.sourceTex) return;
+        // Bind the source texture to TEXTURE1 and tell the FX shader to
+        // read from sampler unit 1. Bind layerTexture back to TEXTURE0
+        // afterwards so subsequent layer-pass uploads still work.
+        this.gl.activeTexture(this.gl.TEXTURE1);
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.sourceTex);
+        const loc = this.programs.getUniform(
+          this.currentProgram,
+          samplerName ?? "u_source",
+        );
+        if (loc !== null) this.gl.uniform1i(loc, 1);
+      },
+      setBlendMode: (mode: "over" | "replace") => {
+        if (!this.gl) return;
+        if (mode === "over") {
+          this.gl.enable(this.gl.BLEND);
+          this.gl.blendFunc(this.gl.ONE, this.gl.ONE_MINUS_SRC_ALPHA);
+        } else {
+          // Replace = no blending, FX shader fully owns the output.
+          this.gl.disable(this.gl.BLEND);
+        }
       },
       drawFullscreenQuad: () => {
         if (this.quad) this.quad.draw();

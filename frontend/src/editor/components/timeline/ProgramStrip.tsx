@@ -23,6 +23,12 @@ import { activeCamAt } from "../../cuts";
 import type { PunchFx } from "../../fx/types";
 import { FxStripLayer } from "./FxStripLayer";
 import { tapeHeightForMode } from "./tape-height";
+import { useLongPressClear } from "./useLongPressClear";
+
+/** Hold-to-clear duration: 3 s feels deliberate (an accidental click
+ *  doesn't trigger it) but not punishing. The user cancels by lifting
+ *  or pressing Esc. */
+const CLEAR_HOLD_MS = 3000;
 
 interface CamLookup {
   id: string;
@@ -82,6 +88,11 @@ interface Props {
   /** FX IDs currently being live-extended via a hold gesture. Drives the
    *  fx-tape's leading-edge pulse animation. */
   liveFxIds?: ReadonlySet<string>;
+  /** Long-press-to-clear handlers — fired after a 3 s hold on the
+   *  matching strip. Visual feedback (red fill animation) is rendered
+   *  by ProgramStrip itself; the parent only commits the deletion. */
+  onClearCuts?: () => void;
+  onClearFx?: () => void;
 }
 
 const EMPTY_LIVE_FX_IDS: ReadonlySet<string> = new Set();
@@ -101,7 +112,21 @@ export function ProgramStrip({
   mode = "cuts",
   fx,
   liveFxIds = EMPTY_LIVE_FX_IDS,
+  onClearCuts,
+  onClearFx,
 }: Props) {
+  // Long-press timers per strip — independent so a hold on the cuts
+  // strip doesn't show a phantom red fill on the FX strip and vice versa.
+  const cutsLP = useLongPressClear({
+    durationMs: CLEAR_HOLD_MS,
+    onComplete: () => onClearCuts?.(),
+    disabled: !onClearCuts,
+  });
+  const fxLP = useLongPressClear({
+    durationMs: CLEAR_HOLD_MS,
+    onComplete: () => onClearFx?.(),
+    disabled: !onClearFx,
+  });
   // Default height is mode-dependent so FX-only and both layouts get
   // chunkier strips without the caller having to pass it through.
   const stripHeight = height ?? tapeHeightForMode(mode);
@@ -201,7 +226,10 @@ export function ProgramStrip({
     >
       {/* Cam-color program segments — inset like painted leader tape.
         * In `both` mode the segments are clipped to the top half so the FX
-        * lane fills the bottom half. In `fx` mode they're skipped entirely. */}
+        * lane fills the bottom half. In `fx` mode they're skipped entirely.
+        * Long-press anywhere on this lane (3 s) wipes all cuts; splice
+        * tabs stop event propagation so dragging / X-click them does NOT
+        * fire the clear gesture. */}
       {showCuts && (
       <div
         className="absolute left-0 right-0 overflow-hidden"
@@ -209,7 +237,12 @@ export function ProgramStrip({
           top: contentTop,
           // In "both" mode, leave room for the FX layer + 1 px etched divider.
           bottom: mode === "both" ? stripHeight - splitMidY : contentBottom,
+          touchAction: onClearCuts ? "none" : undefined,
         }}
+        onPointerDown={onClearCuts ? cutsLP.start : undefined}
+        onPointerUp={onClearCuts ? cutsLP.cancel : undefined}
+        onPointerCancel={onClearCuts ? cutsLP.cancel : undefined}
+        onPointerLeave={onClearCuts ? cutsLP.cancel : undefined}
       >
         {segments.map((seg, i) => {
           const x1 = tToX(seg.startS);
@@ -444,11 +477,22 @@ export function ProgramStrip({
         />
       )}
 
-      {/* FX-Capsule-Lane — full strip in "fx" mode, bottom half in "both". */}
+      {/* FX-Capsule-Lane — full strip in "fx" mode, bottom half in "both".
+        * Long-press anywhere on this lane (3 s) wipes all FX. The
+        * FxStripLayer itself is `pointer-events: none`, so the wrapper
+        * catches every press without children intercepting. */}
       {showFx && fx && (
         <div
           className="absolute left-0 right-0"
-          style={{ top: fxLayerTop, height: fxLayerHeight }}
+          style={{
+            top: fxLayerTop,
+            height: fxLayerHeight,
+            touchAction: onClearFx ? "none" : undefined,
+          }}
+          onPointerDown={onClearFx ? fxLP.start : undefined}
+          onPointerUp={onClearFx ? fxLP.cancel : undefined}
+          onPointerCancel={onClearFx ? fxLP.cancel : undefined}
+          onPointerLeave={onClearFx ? fxLP.cancel : undefined}
         >
           <FxStripLayer
             fx={fx}
@@ -459,6 +503,86 @@ export function ProgramStrip({
             liveFxIds={liveFxIds}
           />
         </div>
+      )}
+
+      {/* Long-press red-fill overlays — animate left-to-right while the
+       *  user holds. Sit ABOVE the lanes so the user sees the timer
+       *  visually walking across. Pointer-events:none so they don't
+       *  swallow the still-active long-press handlers underneath. */}
+      {showCuts && cutsLP.progress !== null && (
+        <ClearProgressOverlay
+          progress={cutsLP.progress}
+          top={contentTop}
+          bottom={mode === "both" ? stripHeight - splitMidY : contentBottom}
+          label="DELETE ALL CUTS"
+        />
+      )}
+      {showFx && fxLP.progress !== null && (
+        <ClearProgressOverlay
+          progress={fxLP.progress}
+          top={fxLayerTop}
+          bottom={stripHeight - (fxLayerTop + fxLayerHeight)}
+          label="DELETE ALL FX"
+        />
+      )}
+    </div>
+  );
+}
+
+/** Red bar that fills left-to-right tracking long-press progress.
+ *  Positioned absolutely inside the ProgramStrip's container; each
+ *  caller passes top/bottom insets so the overlay covers the right
+ *  lane region (top half for cuts in "both" mode, bottom half for fx,
+ *  full strip otherwise). */
+function ClearProgressOverlay({
+  progress,
+  top,
+  bottom,
+  label,
+}: {
+  progress: number;
+  top: number;
+  bottom: number;
+  label: string;
+}) {
+  const pct = Math.max(0, Math.min(1, progress)) * 100;
+  return (
+    <div
+      aria-hidden
+      className="absolute left-0 right-0 pointer-events-none overflow-hidden"
+      style={{
+        top,
+        bottom,
+        // Mute the underlying strip so the red bar reads against a
+        // dimmer background — gives the gesture more visual weight
+        // without a separate dim layer.
+        backgroundColor: "rgba(0,0,0,0.18)",
+      }}
+    >
+      <div
+        className="absolute top-0 bottom-0 left-0"
+        style={{
+          width: `${pct}%`,
+          background:
+            "linear-gradient(90deg, rgba(192,57,43,0.55) 0%, rgba(192,57,43,0.85) 80%, #FFFFFF 100%)",
+          boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18), 0 0 8px rgba(192,57,43,0.6)",
+          transition: "width 60ms linear",
+        }}
+      />
+      {pct > 18 && (
+        <span
+          className="absolute top-1/2 -translate-y-1/2 font-display tracking-label uppercase pointer-events-none"
+          style={{
+            left: 8,
+            fontSize: 9,
+            color: "#FFF6F4",
+            textShadow: "0 1px 0 rgba(0,0,0,0.55), 0 0 6px rgba(192,57,43,0.9)",
+            fontWeight: 700,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label} · {Math.round(pct)}%
+        </span>
       )}
     </div>
   );

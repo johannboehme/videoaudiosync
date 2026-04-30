@@ -196,7 +196,7 @@ describe("WebGL2Backend — vignette FX pixel parity", () => {
     backend.drawFrame(
       descriptor(
         [videoLayer()],
-        [{ id: "f1", kind: "vignette", params: { intensity: 0.9, falloff: 0.9 } }],
+        [{ id: "f1", kind: "vignette", inS: 0, params: { intensity: 0.9, falloff: 0.9 } }],
       ),
       new Map([["a", { kind: "image", bitmap }]]),
     );

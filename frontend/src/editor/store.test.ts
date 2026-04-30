@@ -642,8 +642,9 @@ describe("useEditorStore", () => {
       const s = useEditorStore.getState();
       expect(s.fx).toHaveLength(1);
       expect(s.fx[0].inS).toBe(3);
-      // Default = 1 beat at no-bpm fallback (0.5 s)
-      expect(s.fx[0].outS).toBeCloseTo(3.5, 6);
+      // V1 catalog defaults all FX to 0-length tap → outS = startS +
+      // FX_MIN_WINDOW_S so taps act like instant punctuation, not stamps.
+      expect(s.fx[0].outS).toBeCloseTo(3.05, 6);
       expect(s.fxHolds["key:F"]).toBeDefined();
       expect(s.fxHolds["key:F"].fxId).toBe(s.fx[0].id);
       expect(s.fxHolds["key:F"].priorFx).toEqual([]);
@@ -652,8 +653,8 @@ describe("useEditorStore", () => {
     test("tickFxHold extends outS past playhead and never shrinks", () => {
       useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
       const initialOut = useEditorStore.getState().fx[0].outS;
-      // Initial = startS + default-tap (1 beat = 0.5s fallback when no BPM).
-      expect(initialOut).toBeCloseTo(3.5, 6);
+      // Tap-length = FX_MIN_WINDOW_S (50 ms) — see catalog defaults.
+      expect(initialOut).toBeCloseTo(3.05, 6);
       // Hold ticks at currentS=5 → outS pushed past 5 by overshoot buffer.
       useEditorStore.getState().tickFxHold("key:F", 5);
       expect(useEditorStore.getState().fx[0].outS).toBeGreaterThan(5);
@@ -749,17 +750,18 @@ describe("useEditorStore", () => {
       test("beginFxHold splits an existing same-kind fx around the default-tap window", () => {
         // Existing fx covering [1, 5]
         useEditorStore.getState().addFx("vignette", 1, 5);
-        // New hold begins at t=3 with default-tap len 0.5 → range [3, 3.5]
-        // strictly inside [1, 5]: prior splits into left [1,3] + right
-        // [3.5,5], plus the new live fx [3, 3.5]. Anything outside the
-        // live range stays — recording does NOT erase the future.
+        // New hold begins at t=3 with default-tap len = FX_MIN_WINDOW_S
+        // (0.05s) → range [3, 3.05] strictly inside [1, 5]: prior
+        // splits into left [1,3] + right [3.05,5], plus the new live
+        // fx [3, 3.05]. Anything outside the live range stays —
+        // recording does NOT erase the future.
         useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
         const fx = useEditorStore.getState().fx;
         expect(fx).toHaveLength(3);
         const left = fx.find((f) => f.inS === 1)!;
         expect(left.outS).toBeCloseTo(3, 6);
         const right = fx.find((f) => Math.abs(f.outS - 5) < 1e-6)!;
-        expect(right.inS).toBeCloseTo(3.5, 6);
+        expect(right.inS).toBeCloseTo(3.05, 6);
       });
 
       test("beginFxHold leaves fx outside the default-tap window untouched", () => {
@@ -774,8 +776,9 @@ describe("useEditorStore", () => {
       });
 
       test("beginFxHold removes an existing same-kind fx fully inside the new range", () => {
-        // Existing fx [3.1, 3.3] entirely INSIDE the new hold's default-tap span.
-        useEditorStore.getState().addFx("vignette", 3.1, 3.3);
+        // Existing fx [3.01, 3.04] entirely INSIDE the new hold's
+        // default-tap span [3, 3.05] (FX_MIN_WINDOW_S = 0.05s).
+        useEditorStore.getState().addFx("vignette", 3.01, 3.04);
         useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
         const fx = useEditorStore.getState().fx;
         // Only the new live fx remains.

@@ -244,6 +244,21 @@ interface EditorState {
    *  selectors work cleanly (a Map would mutate-in-place under naive use). */
   fxHolds: Record<string, FxHoldEntry>;
 
+  /** "Recording head" state — which FX kind the FxHardwarePanel's two
+   *  encoders + LCD are currently editing. Drücken eines Pads (Tastatur
+   *  oder UI) selektiert den Kind; die Werte der Knobs werden in
+   *  `fxDefaults` für genau diesen Kind geschrieben. Was schon auf der
+   *  Timeline liegt (PunchFx mit gefrozen `params`) bleibt unverändert —
+   *  Recording-Head schreibt vorwärts, nicht rückwärts. */
+  selectedFxKind: FxKind;
+
+  /** Per-Kind Encoder-Defaults — Storage-Range (z.B. vignette intensity
+   *  in 0..1, NICHT die 0..100 Display-Werte). Wenn ein Eintrag fehlt,
+   *  fällt `beginFxHold` auf `fxCatalog[kind].defaultParams` zurück.
+   *  In-memory only in V1 — Persistenz über jobs.db kommt sobald wir
+   *  entscheiden ob das per-Job (Edit) oder global (User-Pref) lebt. */
+  fxDefaults: Partial<Record<FxKind, Record<string, number>>>;
+
   /** Master-audio playback gain. 1.0 = source level (default), 0 = muted,
    *  2.0 = +6 dB. Applied by `useAudioMaster` to the master `<audio>`
    *  element AND baked into the rendered output by `edit.ts`. */
@@ -422,6 +437,10 @@ interface EditorState {
   /** Move a fx's out-point. Min-window 0.05 s preserved relative to inS. */
   setFxOut(id: string, outS: number): void;
   removeFx(id: string): void;
+  /** Drop every persisted FX-capsule. Used by the long-press-clear
+   *  gesture on the FX strip. Live recordings (`fxHolds`) are left
+   *  untouched — `cancelAllFxHolds()` is the right call for those. */
+  clearAllFx(): void;
   /** Begin a live punch-in. Creates a fx with default-tap-length and
    *  records a hold under `slotKey`. `startS` should already be snapped. */
   beginFxHold(slotKey: string, kind: FxKind, startS: number): void;
@@ -443,6 +462,16 @@ interface EditorState {
    *  never touched here — call endFxHold first if you want to abort
    *  a live recording. */
   eraseFxAt(t: number, kinds: FxKind[] | "all"): void;
+
+  /** Switch which FxKind the panel's encoders are editing. Called from
+   *  pad-press handlers (mouse + keyboard) — the recording head moves
+   *  with whatever you just punched. */
+  setSelectedFxKind(kind: FxKind): void;
+
+  /** Set the encoder default for `paramId` of `kind` (storage-range —
+   *  the encoder's display 0..100 is mapped against the param's
+   *  min/max in catalog). Called from the encoder's drag handler. */
+  setFxDefault(kind: FxKind, paramId: string, value: number): void;
 
   setProgramStripMode(mode: UiSlice["programStripMode"]): void;
   setFxPanelOpen(open: boolean): void;
@@ -682,6 +711,8 @@ export const useEditorStore = create<EditorState>()(
     preparingCamIds: new Set<string>(),
     fx: [],
     fxHolds: {},
+    selectedFxKind: "vignette",
+    fxDefaults: {},
     audioVolume: 1.0,
 
     reset() {
@@ -703,6 +734,8 @@ export const useEditorStore = create<EditorState>()(
         preparingCamIds: new Set<string>(),
         fx: [],
         fxHolds: {},
+        selectedFxKind: "vignette",
+        fxDefaults: {},
         audioVolume: 1.0,
       });
     },
@@ -756,6 +789,8 @@ export const useEditorStore = create<EditorState>()(
         selectedClipId,
         fx: opts?.fx ?? [],
         fxHolds: {},
+        selectedFxKind: "vignette",
+        fxDefaults: {},
         audioVolume:
           typeof opts?.audioVolume === "number" && opts.audioVolume >= 0
             ? Math.min(4, opts.audioVolume)
@@ -1489,6 +1524,14 @@ export const useEditorStore = create<EditorState>()(
     removeFx(id) {
       set({ fx: get().fx.filter((f) => f.id !== id) });
     },
+    clearAllFx() {
+      // Don't touch live recordings — they're owned by `fxHolds` and
+      // need to flow through cancelAllFxHolds() if the caller wants to
+      // also abort in-flight punches.
+      const liveIds = new Set<string>();
+      for (const h of Object.values(get().fxHolds)) liveIds.add(h.fxId);
+      set({ fx: get().fx.filter((f) => liveIds.has(f.id)) });
+    },
     beginFxHold(slotKey, kind, startS) {
       // Single set() per keypress — cuts subscriber-fanout cost (13 field
       // checks in useAutoPersist alone) by 3-4×. The previous version
@@ -1525,9 +1568,17 @@ export const useEditorStore = create<EditorState>()(
       );
 
       // Append the new live FX inline — same logic as addFx() but lifted
-      // here so we don't pay another set() round-trip.
+      // here so we don't pay another set() round-trip. Bake whatever the
+      // panel encoders are currently showing into the new capsule so
+      // it's frozen at write-time (Recording Head — what was on the
+      // knobs at the moment of the press is what gets recorded).
       const id = makeFxId();
-      const newFx: PunchFx = { id, kind, inS: startS, outS };
+      const userDefaults = s.fxDefaults[kind];
+      const params =
+        userDefaults && Object.keys(userDefaults).length > 0
+          ? { ...userDefaults }
+          : undefined;
+      const newFx: PunchFx = { id, kind, inS: startS, outS, params };
       const nextFx = [...clobbered, newFx];
 
       const nextHolds: Record<string, FxHoldEntry> = { ...s.fxHolds };
@@ -1673,6 +1724,21 @@ export const useEditorStore = create<EditorState>()(
     },
     setFxPanelOpen(open) {
       set({ ui: { ...get().ui, fxPanelOpen: open } });
+    },
+    setSelectedFxKind(kind) {
+      if (get().selectedFxKind === kind) return;
+      set({ selectedFxKind: kind });
+    },
+    setFxDefault(kind, paramId, value) {
+      const cur = get().fxDefaults;
+      const sub = cur[kind] ?? {};
+      if (sub[paramId] === value) return;
+      set({
+        fxDefaults: {
+          ...cur,
+          [kind]: { ...sub, [paramId]: value },
+        },
+      });
     },
   })),
 );

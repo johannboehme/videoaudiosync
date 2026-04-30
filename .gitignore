@@ -9,6 +9,8 @@ data/
 node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+# vitest-browser failure screenshots — regenerated per run, not source.
+frontend/src/**/__screenshots__/
 .claude/
 app/static/
 .pytest_cache/
