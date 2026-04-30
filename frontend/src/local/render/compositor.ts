@@ -21,6 +21,13 @@ import type { Visualizer } from "./visualizer/types";
 import type { PunchFx } from "../../editor/fx/types";
 import { activeFxAt } from "../../editor/fx/active";
 import { fxCatalog } from "../../editor/fx/catalog";
+import { Canvas2DBackend } from "../../editor/render/canvas2d-backend";
+import type {
+  FrameDescriptor,
+  FrameFx,
+  FrameLayer,
+} from "../../editor/render/frame-descriptor";
+import type { LayerSource, SourcesMap } from "../../editor/render/backend";
 
 export interface CompositorOptions {
   /** Output canvas dimensions — what's encoded. Overlays + visualizers are
@@ -69,6 +76,12 @@ export class Compositor {
   private ctx: OffscreenCanvasRenderingContext2D;
   private opts: CompositorOptions;
   private assBlob: string | null = null;
+  /** Shared draw pipeline — same Canvas2DBackend the live preview uses
+   *  when WebGL2 is unavailable. Routing the export through this
+   *  ensures preview ↔ export pixel parity by construction; whatever
+   *  the backend draws on a frame N descriptor here is exactly what
+   *  the preview RAF would draw on the same descriptor. */
+  private backend: Canvas2DBackend;
 
   constructor(opts: CompositorOptions) {
     this.opts = opts;
@@ -76,6 +89,8 @@ export class Compositor {
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("Compositor: OffscreenCanvas 2d context unavailable");
     this.ctx = ctx;
+    this.backend = new Canvas2DBackend();
+    this.backend.initSync(this.canvas, { pixelW: opts.width, pixelH: opts.height });
   }
 
   /**
@@ -151,51 +166,51 @@ export class Compositor {
     const dispH = swap ? srcW : srcH;
     const fit = computeFitRect(dispW, dispH, this.opts.width, this.opts.height);
 
-    const needsTransform = rot !== 0 || flipX || flipY;
-    if (!needsTransform) {
-      if (fit.fillsCanvas) {
-        this.ctx.drawImage(source, 0, 0, this.opts.width, this.opts.height);
-      } else {
-        this.ctx.fillStyle = "#000";
-        this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
-        this.ctx.drawImage(source, fit.x, fit.y, fit.w, fit.h);
-      }
-    } else {
-      // Rotated / flipped path: draw into a transformed coordinate system
-      // whose origin sits at the centre of the fit-rect, then place the
-      // source (in its stored, un-rotated dimensions) symmetrically
-      // around it. Order: translate → rotate → scale (flip) → drawImage.
-      // That way `flipX` mirrors along the *post-rotation* horizontal
-      // axis, which matches what the user sees in the preview.
-      this.ctx.fillStyle = "#000";
-      this.ctx.fillRect(0, 0, this.opts.width, this.opts.height);
-      const cx = fit.x + fit.w / 2;
-      const cy = fit.y + fit.h / 2;
-      const drawW = swap ? fit.h : fit.w;
-      const drawH = swap ? fit.w : fit.h;
-      this.ctx.save();
-      this.ctx.translate(cx, cy);
-      if (rot !== 0) this.ctx.rotate((rot * Math.PI) / 180);
-      if (flipX || flipY) this.ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-      this.ctx.drawImage(source, -drawW / 2, -drawH / 2, drawW, drawH);
-      this.ctx.restore();
-    }
-
     const t = timestampUs / 1_000_000;
 
-    // Punch-in FX paint OVER the source frame, but BEFORE visualizers /
-    // text overlays — that way overlays remain readable even when a fx
-    // (e.g. vignette) darkens the periphery.
-    if (this.opts.fx && this.opts.fx.length > 0) {
-      const active = activeFxAt(this.opts.fx, t);
-      for (const fx of active) {
-        const def = fxCatalog[fx.kind];
-        if (!def) continue;
-        this.ctx.save();
-        def.drawCanvas2D(this.ctx, fx, this.opts.width, this.opts.height);
-        this.ctx.restore();
-      }
-    }
+    const layer: FrameLayer = {
+      layerId: "src",
+      // Kind is informational at this layer — the backend dispatches on
+      // the SourcesMap entry's kind, not this one.
+      source: { kind: "video", clipId: "src", sourceTimeS: 0, sourceDurS: 0 },
+      weight: 1,
+      fitRect: { x: fit.x, y: fit.y, w: fit.w, h: fit.h },
+      rotationDeg: rot,
+      flipX,
+      flipY,
+      displayW: dispW,
+      displayH: dispH,
+    };
+
+    const fxFrame: FrameFx[] = this.opts.fx
+      ? activeFxAt(this.opts.fx, t).map((fx) => ({
+          id: fx.id,
+          kind: fx.kind,
+          params: { ...fxCatalog[fx.kind].defaultParams, ...(fx.params ?? {}) },
+        }))
+      : [];
+
+    const descriptor: FrameDescriptor = {
+      tMaster: t,
+      output: { w: this.opts.width, h: this.opts.height },
+      layers: [layer],
+      fx: fxFrame,
+    };
+
+    const sources: SourcesMap = new Map<string, LayerSource>([
+      ["src", classifySource(source)],
+    ]);
+
+    // Layer + fx pass — same code path as the live preview's Canvas2D
+    // fallback. Bit-equivalent pixels for any (rotation, flip, fx)
+    // combination by construction.
+    this.backend.drawFrame(descriptor, sources);
+
+    // Reset transform before visualizers / overlays so they render in
+    // raw output-pixel coords. Backend leaves the canvas in a scale-
+    // transformed state that's identity here (pixelW == output.w on
+    // the export side) but explicit reset is cheap insurance.
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     if (this.opts.visualizers && this.opts.visualizers.length > 0) {
       for (const v of this.opts.visualizers) {
@@ -220,6 +235,18 @@ export class Compositor {
   }
 
   destroy(): void {
-    // Nothing to tear down — pure Canvas2D rendering, no worker resources.
+    this.backend.dispose();
   }
+}
+
+/** Map a generic CanvasImageSource into the backend's LayerSource union.
+ *  ImageBitmap / OffscreenCanvas / HTMLImageElement land in the "image"
+ *  bucket (the backend's `drawImage` accepts any of them). VideoFrame
+ *  uses the dedicated "videoframe" branch so future GPU backends can
+ *  pick `importExternalTexture` instead of an upload. */
+function classifySource(source: CanvasImageSource): LayerSource {
+  if (typeof VideoFrame !== "undefined" && source instanceof VideoFrame) {
+    return { kind: "videoframe", frame: source };
+  }
+  return { kind: "image", bitmap: source as ImageBitmap | HTMLImageElement };
 }

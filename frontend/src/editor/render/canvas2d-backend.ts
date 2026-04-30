@@ -38,6 +38,14 @@ export class Canvas2DBackend implements CompositorBackend {
   private caps: BackendCaps = { pixelW: 1, pixelH: 1 };
 
   async init(canvas: AnyCanvas, caps: BackendCaps): Promise<void> {
+    this.initSync(canvas, caps);
+  }
+
+  /** Synchronous setup — for callers that can't `await` (notably
+   *  `compositor.ts` which keeps a synchronous public API for the
+   *  encoder loop). Behaviour identical to `init()`; the async form
+   *  exists only to satisfy the `CompositorBackend` interface. */
+  initSync(canvas: AnyCanvas, caps: BackendCaps): void {
     this.canvas = canvas;
     const ctx = canvas.getContext("2d") as AnyCtx2D | null;
     if (!ctx) {
