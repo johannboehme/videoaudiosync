@@ -38,7 +38,17 @@ export function SegmentedControl<V extends string>({
   fullWidth = false,
   label,
 }: Props<V>) {
-  const heightCls = size === "sm" ? "h-9 text-xs" : "h-11 text-sm";
+  // Narrow phones drop md-size text from 14 px → 11 px so a 4-segment
+  // fullWidth control (e.g. Export's WEB / ARCHIVE / MOBILE / CUSTOM)
+  // doesn't overflow the bottom-sheet on a 390-px-wide iPhone.
+  const heightCls =
+    size === "sm" ? "h-9 text-xs" : "h-11 text-[11px] sm:text-sm";
+  // Padding shrinks with size — at sm we run out of room to keep px-3
+  // when 4 segments share a 380 px sidebar (e.g. WEB / ARCHIVE / MOBILE
+  // / CUSTOM each gets ~82 px of room, and ARCHIVE alone needs ~98 px
+  // with px-3). px-2 shaves 16 px off each segment's padding budget so
+  // the labels actually fit.
+  const paddingCls = size === "sm" ? "px-2" : "px-2 sm:px-3";
   const containerRef = useRef<HTMLDivElement | null>(null);
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [pill, setPill] = useState<{ left: number; width: number } | null>(
@@ -112,9 +122,19 @@ export function SegmentedControl<V extends string>({
               aria-selected={active}
               onClick={() => onChange(o.value)}
               className={[
-                "relative z-10 flex-1 rounded-[5px] px-3 font-display tracking-label uppercase",
+                // Always nowrap — a 12-char label like "B • OVERRIDE"
+                // shouldn't break onto two lines.
+                // `flex-1` only when the control is fullWidth (segments
+                // need to share leftover room equally). When the control
+                // is auto-sized inline, segments grow to fit their text
+                // — adding `flex-1 min-w-0` there caused "B • OVERRIDE"
+                // to be clipped to "B • OVERRID".
+                "relative z-10 rounded-[5px] font-display tracking-label uppercase",
+                "whitespace-nowrap",
                 "transition-colors",
                 heightCls,
+                paddingCls,
+                fullWidth ? "flex-1 min-w-0" : "",
                 active ? "text-paper-hi" : "text-ink-2 hover:text-ink",
               ].join(" ")}
               style={{ minWidth: 44 }}
