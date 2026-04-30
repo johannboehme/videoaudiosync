@@ -63,14 +63,12 @@ export class Canvas2DBackend implements CompositorBackend {
     if (!this.canvas) return;
     this.canvas.width = Math.max(1, Math.round(caps.pixelW));
     this.canvas.height = Math.max(1, Math.round(caps.pixelH));
-    if (
-      caps.cssW != null &&
-      caps.cssH != null &&
-      "style" in this.canvas
-    ) {
-      this.canvas.style.width = `${caps.cssW}px`;
-      this.canvas.style.height = `${caps.cssH}px`;
-    }
+    // Intentionally NOT touching `canvas.style.width / .height` — for
+    // the live preview the surrounding container (Tailwind w-full h-full
+    // inside OutputFrameBox) drives the CSS size, and an inline width
+    // would clobber that. For export, OffscreenCanvas has no style.
+    // Callers that need explicit CSS sizing should set it themselves
+    // before / after init().
   }
 
   warmup(): Promise<void> {

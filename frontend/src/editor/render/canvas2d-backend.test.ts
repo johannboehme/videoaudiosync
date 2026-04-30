@@ -99,14 +99,15 @@ describe("Canvas2DBackend — lifecycle", () => {
     );
   });
 
-  it("resize() updates canvas pixel dims and CSS dims if provided", async () => {
+  it("resize() updates only the backbuffer pixel dims (no inline CSS)", async () => {
     const { canvas } = makeMockCanvas();
     const b = new Canvas2DBackend();
     await b.init(canvas, { pixelW: 100, pixelH: 50 });
     b.resize({ pixelW: 400, pixelH: 200, cssW: 200, cssH: 100 });
     expect(canvas.width).toBe(400);
     expect(canvas.height).toBe(200);
-    expect(canvas.style.width).toBe("200px");
+    // Intentionally untouched — the container drives CSS size.
+    expect(canvas.style.width).toBe("");
   });
 
   it("warmup() resolves immediately (no compile step)", async () => {

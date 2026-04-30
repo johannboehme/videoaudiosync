@@ -67,10 +67,19 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
     const poolHost = poolHostRef.current;
     if (!canvas || !poolHost) return;
 
+    // EditorShell renders `videoArea` in TWO sibling layouts (one
+    // desktop, one tablet/mobile) that toggle via Tailwind responsive
+    // classes — only one is visible at a time. React still mounts both
+    // component instances. We don't want a hidden Compositor running
+    // its own RAF + decoders + GL context, so skip init unless this
+    // particular mount is actually visible. `offsetParent === null`
+    // when any ancestor has `display: none` (per HTML spec).
+    if (canvas.offsetParent === null) return;
+
+    const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(1, Math.round(rect.width));
     const cssH = Math.max(1, Math.round(rect.height));
-    const dpr = window.devicePixelRatio || 1;
 
     const runtime = new PreviewRuntime({
       canvas,
@@ -81,10 +90,6 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
       dpr,
       initialScale: COMPOSITOR_INITIAL_SCALE,
     });
-    // Expose the runtime so devs can tweak `setScale(0.75)` from the
-    // console without a reload. Read-only by external code — owned by
-    // this component and disposed on unmount.
-    (window as unknown as { __vasCompositor?: PreviewRuntime }).__vasCompositor = runtime;
 
     let cancelled = false;
     void runtime
@@ -95,8 +100,22 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
           return;
         }
         runtime.attachVideoPool(poolHost);
+        // Re-read canvas size now that init() has finished — between
+        // the constructor and here the layout settled (the canvas's
+        // initial getBoundingClientRect is often 0×0 because React's
+        // useEffect runs before the first paint sizes the box). The
+        // ResizeObserver in the next useEffect catches subsequent
+        // changes; this catches the initial settle.
+        const r = canvas.getBoundingClientRect();
+        runtime.resize(
+          Math.max(1, Math.round(r.width)),
+          Math.max(1, Math.round(r.height)),
+          window.devicePixelRatio || 1,
+        );
         runtime.start();
         runtimeRef.current = runtime;
+        // Expose for `setScale(0.75)` from the devtools console.
+        (window as unknown as { __vasCompositor?: PreviewRuntime }).__vasCompositor = runtime;
       })
       .catch((err) => {
         console.error("[compositor] init failed:", err);
@@ -105,10 +124,10 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
 
     return () => {
       cancelled = true;
-      runtimeRef.current = null;
-      runtime.dispose();
       const w = window as unknown as { __vasCompositor?: PreviewRuntime };
       if (w.__vasCompositor === runtime) delete w.__vasCompositor;
+      if (runtimeRef.current === runtime) runtimeRef.current = null;
+      runtime.dispose();
     };
     // We deliberately do NOT depend on `cams` here — the runtime
     // reconciles its pool on every tick via `setCams(...)`, so adding
@@ -119,17 +138,30 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
   }, []);
 
   // Track the canvas's container size and forward to the runtime.
+  // The runtime might not exist yet on the first observation (init() is
+  // async); the .then() callback in the mount effect calls resize once
+  // explicitly to catch up. Subsequent grow events come through here.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ro = new ResizeObserver(() => {
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      pending = null;
       const rect = canvas.getBoundingClientRect();
       const cssW = Math.max(1, Math.round(rect.width));
       const cssH = Math.max(1, Math.round(rect.height));
       runtimeRef.current?.resize(cssW, cssH, window.devicePixelRatio || 1);
+    };
+    const ro = new ResizeObserver(() => {
+      // Coalesce — observer can fire multiple times in one frame.
+      if (pending != null) return;
+      pending = setTimeout(flush, 0);
     });
     ro.observe(canvas);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (pending != null) clearTimeout(pending);
+    };
   }, []);
 
   // Page Visibility — pause the RAF when the tab is hidden so we don't
@@ -153,6 +185,7 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
       <div ref={poolHostRef} aria-hidden style={{ display: "none" }} />
       <canvas
         ref={canvasRef}
+        data-vas-compositor
         className="absolute inset-0 w-full h-full"
         style={{ background: "#1A1816" }}
       />

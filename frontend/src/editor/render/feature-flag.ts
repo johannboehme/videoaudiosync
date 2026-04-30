@@ -21,6 +21,17 @@ export function readEnabled(): boolean {
   }
 }
 
+/** Re-reads URL + localStorage on every call. Use this in component
+ *  bodies so the editor picks up a flag flip without requiring a hard
+ *  module reload (Vite dev keeps modules across navigations, and a
+ *  frozen-at-module-load const would lie). */
+export function isCompositorV2Enabled(): boolean {
+  return readEnabled();
+}
+
+/** Snapshot value at module load — kept exported for any caller that
+ *  truly wants a one-shot read (e.g. logging at boot). Prefer
+ *  `isCompositorV2Enabled()` in render paths. */
 export const COMPOSITOR_V2_ENABLED: boolean = readEnabled();
 
 /**

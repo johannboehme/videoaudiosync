@@ -148,10 +148,9 @@ export class WebGL2Backend implements CompositorBackend {
     if (!this.canvas || !this.gl) return;
     this.canvas.width = Math.max(1, Math.round(caps.pixelW));
     this.canvas.height = Math.max(1, Math.round(caps.pixelH));
-    if (caps.cssW != null && caps.cssH != null && "style" in this.canvas) {
-      this.canvas.style.width = `${caps.cssW}px`;
-      this.canvas.style.height = `${caps.cssH}px`;
-    }
+    // Same reasoning as Canvas2DBackend.resize — the surrounding
+    // container drives CSS size; an inline style would clobber the
+    // Tailwind layout.
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
 

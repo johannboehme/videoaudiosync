@@ -11,7 +11,7 @@ import { TransportBar } from "../editor/components/TransportBar";
 import { OptionsPanel } from "../editor/components/OptionsPanel";
 import { MultiCamPreview } from "../editor/components/MultiCamPreview";
 import { Compositor } from "../editor/components/Compositor";
-import { COMPOSITOR_V2_ENABLED } from "../editor/render/feature-flag";
+import { isCompositorV2Enabled } from "../editor/render/feature-flag";
 import { FxHardwarePanel } from "../editor/components/FxHardwarePanel";
 import {
   CameraIcon,
@@ -867,7 +867,7 @@ export default function Editor() {
         jobTitle={job.title || job.id}
         jobId={job.id}
         videoArea={
-          COMPOSITOR_V2_ENABLED ? (
+          isCompositorV2Enabled() ? (
             <Compositor
               cams={Object.fromEntries(
                 Object.entries(assets.cams).map(([id, ca]) => [id, { videoUrl: ca.videoUrl }]),
