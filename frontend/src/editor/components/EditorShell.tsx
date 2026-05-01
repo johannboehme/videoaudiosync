@@ -56,7 +56,7 @@ export function EditorShell({
   }, [sideCollapsed]);
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden paper-bg">
+    <div className="flex flex-col h-screen overflow-hidden paper-bg no-long-press">
       <TopBar
         title={jobTitle}
         jobId={jobId}

@@ -47,9 +47,19 @@ interface Props {
    *  hover. Prompts via window.confirm before firing. */
   onDelete?: () => void;
   height?: number;
+  /** When true, render a compact (~64 px) variant: drop the filename
+   *  + reset chevron + delete affordance, condense "CAM 1" to "1",
+   *  shrink the TAKE button to a square. Used on phone-sized
+   *  viewports where the default 156 px header eats >50% of the
+   *  timeline canvas. */
+  compact?: boolean;
 }
 
 const HEADER_W = 156;
+/** Compact width — keeps a 28 px square TAKE button + a one-digit cam
+ *  number column inside a column small enough that the timeline canvas
+ *  retains the lion's share of a 280–390 px wide phone screen. */
+export const HEADER_W_COMPACT = 64;
 
 export function LaneHeader({
   name,
@@ -69,6 +79,7 @@ export function LaneHeader({
   onReset,
   onDelete,
   height = 80,
+  compact = false,
 }: Props) {
   const handlePointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
     e.stopPropagation();
@@ -102,7 +113,7 @@ export function LaneHeader({
   // - Right: TAKE button with the keyboard-shortcut number as a small
   //   superscript badge in its top-right corner — replaces the standalone
   //   hotkey "1" badge that used to look like a clickable button.
-  const TAKE_W = 44;
+  const TAKE_W = compact ? 28 : 44;
   const TAKE_H = Math.max(28, height - 8);
   const tallyColor =
     status === "on-air"
@@ -112,11 +123,16 @@ export function LaneHeader({
         : "#9A8F80";
   const tallyShadow =
     status === "on-air" ? "0 0 4px rgba(255,51,38,0.55)" : "inset 0 0 0 0.5px rgba(0,0,0,0.15)";
+  // "Cam 1" → "1" on compact (~64 px width). Strip the prefix once at
+  // render time so the JSX stays one path and the shortcut hotkey badge
+  // (which uses the cam index) still aligns.
+  const compactName =
+    name.replace(/^cam\s+/i, "") || name;
   return (
     <div
       className="group relative shrink-0 select-none flex items-stretch overflow-hidden border-r border-b border-rule cursor-pointer bg-paper-hi hover:bg-paper transition-colors"
       style={{
-        width: HEADER_W,
+        width: compact ? HEADER_W_COMPACT : HEADER_W,
         height,
         boxShadow: selected ? `inset 3px 0 0 ${color}` : undefined,
       }}
@@ -144,14 +160,24 @@ export function LaneHeader({
           ×
         </button>
       )}
-      {/* Cam-color edge stripe — full-height solid bar. */}
-      <div className="w-[5px] shrink-0" style={{ background: color }} />
+      {/* Cam-color edge stripe — full-height solid bar. Slimmer in
+       *  compact mode so the inside columns get more breathing room. */}
+      <div
+        className="shrink-0"
+        style={{ width: compact ? 3 : 5, background: color }}
+      />
 
-      {/* Module body */}
-      <div className="flex-1 relative px-2 py-1.5 flex items-center gap-2 min-w-0">
-        <div className="flex-1 min-w-0 flex flex-col gap-0.5 pr-1">
+      {/* Module body — px-1 in compact (8 px less padding to widen the
+       *  TAKE/label region inside ~64 px). */}
+      <div
+        className={[
+          "flex-1 relative flex items-center min-w-0",
+          compact ? "px-1 py-1 gap-1" : "px-2 py-1.5 gap-2",
+        ].join(" ")}
+      >
+        <div className={`flex-1 min-w-0 flex flex-col gap-0.5 ${compact ? "" : "pr-1"}`}>
           {/* Top row: tally dot + cam name + reset action. */}
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
             <span
               aria-hidden
               className="block w-[6px] h-[6px] rounded-full shrink-0"
@@ -169,9 +195,9 @@ export function LaneHeader({
               }
             />
             <span className="font-display font-semibold text-[11px] tracking-label uppercase text-ink leading-none truncate">
-              {name}
+              {compact ? compactName : name}
             </span>
-            {canReset && onReset && (
+            {canReset && onReset && !compact && (
               <button
                 type="button"
                 aria-label="Reset alignment to detected"
@@ -186,14 +212,18 @@ export function LaneHeader({
               </button>
             )}
           </div>
-          {/* Bottom row: filename, takes the full inner width so longer
-           * names actually fit before truncation kicks in. */}
-          <span
-            className="font-mono text-[9px] text-ink-3 leading-snug truncate min-w-0"
-            title={filename}
-          >
-            {filename}
-          </span>
+          {/* Filename — desktop only. On compact phone widths it would
+           *  be cut off after 4–5 chars and just adds visual noise. The
+           *  full filename is still available via the cam's tooltip /
+           *  the OPTIONS panel when the lane is selected. */}
+          {!compact && (
+            <span
+              className="font-mono text-[9px] text-ink-3 leading-snug truncate min-w-0"
+              title={filename}
+            >
+              {filename}
+            </span>
+          )}
           {preparing && (
             <span
               className="inline-flex items-center gap-1 font-display tracking-label uppercase text-[8.5px] text-hot mt-0.5"
@@ -205,7 +235,7 @@ export function LaneHeader({
                 className="inline-block w-[5px] h-[5px] rounded-full bg-hot animate-pulse"
                 style={{ boxShadow: "0 0 4px rgba(255,87,34,0.85)" }}
               />
-              prep
+              {compact ? "" : "prep"}
             </span>
           )}
         </div>
@@ -219,6 +249,10 @@ export function LaneHeader({
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
+          // Suppress the platform long-press callout so the
+          // hold-to-paint gesture isn't interrupted by a "save image
+          // / select all" context menu on phones.
+          onContextMenu={(e) => e.preventDefault()}
           aria-label={
             hotkeyLabel
               ? `Take ${name} — keyboard shortcut ${hotkeyLabel} (hold to overwrite range)`
@@ -229,6 +263,10 @@ export function LaneHeader({
             width: TAKE_W,
             height: TAKE_H,
             transform: pressed ? "translateY(2px)" : undefined,
+            WebkitTouchCallout: "none",
+            WebkitUserSelect: "none",
+            userSelect: "none",
+            touchAction: "none",
           }}
         >
           <span
@@ -236,7 +274,13 @@ export function LaneHeader({
             style={takeFace(status === "on-air", pressed, painting, color)}
           >
             <span
-              className="font-display font-semibold text-[10px] tracking-label uppercase leading-none"
+              className={[
+                "font-display font-semibold tracking-label uppercase leading-none",
+                // Compact (~28 px square button): 8 px caption, "REC"
+                // and "TAKE" both still fit comfortably without
+                // truncation. Full size keeps the original 10 px.
+                compact ? "text-[8px]" : "text-[10px]",
+              ].join(" ")}
               style={{
                 color: painting
                   ? "#FFF"
@@ -277,6 +321,7 @@ export function LaneHeader({
 }
 
 LaneHeader.WIDTH = HEADER_W;
+LaneHeader.WIDTH_COMPACT = HEADER_W_COMPACT;
 
 /**
  * Recessed paper-toned button face.

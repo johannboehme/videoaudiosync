@@ -36,6 +36,7 @@ import { motion } from "framer-motion";
 import { useEditorStore } from "../store";
 import { fxCatalog, defaultTapLengthS } from "../fx/catalog";
 import type { FxKind, FxParamDef } from "../fx/types";
+import { useIsNarrowViewport } from "../use-is-narrow";
 
 interface PadDef {
   slotKey: string;
@@ -88,9 +89,13 @@ const TAB_WIDTH = 110;
 export function FxHardwarePanel() {
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
   const setFxPanelOpen = useEditorStore((s) => s.setFxPanelOpen);
-  const isMobile = useIsCoarsePointer();
   const isNarrow = useIsNarrowViewport();
-  const open = isMobile || fxPanelOpen;
+  // Mobile users asked to be able to fold the FX panel away on demand —
+  // before it was permanently expanded (open = isMobile || ...). Now it
+  // tracks the same `fxPanelOpen` flag everywhere; the tab is always
+  // toggleable, so a coarse-pointer user can also press the pull-tab to
+  // collapse / expand the pad bank.
+  const open = fxPanelOpen;
   const padBodyH = isNarrow ? PAD_BODY_H_NARROW : PAD_BODY_H;
   const expandedH = isNarrow ? EXPANDED_H_NARROW : EXPANDED_H;
 
@@ -130,7 +135,7 @@ export function FxHardwarePanel() {
       <Tab
         open={open}
         onClick={() => setFxPanelOpen(!fxPanelOpen)}
-        toggleable={!isMobile}
+        toggleable
       />
     </div>
   );
@@ -172,6 +177,15 @@ function Tab({
         borderBottom: "none",
       }}
     >
+      {/* Tap-area extender — invisible, expands the hit-rect to ~36 px
+       *  tall × 144 px wide so a fingertip can grab the 12 px tab on
+       *  touch devices. Clicks on this transparent overlay still
+       *  trigger the parent button's onClick. */}
+      <span
+        aria-hidden
+        className="absolute"
+        style={{ left: -16, right: -16, top: -12, bottom: -12 }}
+      />
       <span
         aria-hidden
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
@@ -326,12 +340,22 @@ function FxPad({ pad }: { pad: PadDef }) {
       onPointerDown={handleDown}
       onPointerUp={handleUp}
       onPointerCancel={handleUp}
+      // Suppress the system long-press callout — pads are hold-to-play,
+      // and on Android Chrome the platform "save / share" menu used to
+      // hijack the gesture and abort the FX hold.
+      onContextMenu={(e) => e.preventDefault()}
       whileTap={{ scale: 0.94 }}
       transition={{ duration: 0.05, ease: "easeOut" }}
       aria-label={`Trigger ${def.label}`}
       title={`${def.label} — hold to play (${pad.letter})`}
       className="relative rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
-      style={padBodyStyle(heldByThisSlot, isSelected, def.capsuleColor, glow)}
+      style={{
+        ...padBodyStyle(heldByThisSlot, isSelected, def.capsuleColor, glow),
+        WebkitTouchCallout: "none",
+        WebkitUserSelect: "none",
+        userSelect: "none",
+        touchAction: "none",
+      }}
     >
       {/* keyboard letter — top-left, small etched */}
       <span
@@ -968,57 +992,6 @@ function Divider() {
       }}
     />
   );
-}
-
-/**
- * True when the viewport is below the Tailwind `sm` breakpoint (640 px).
- * Used to switch the FX panel into a stacked 2-row layout on phones —
- * the original single-row layout needs ~720 px of horizontal room.
- */
-function useIsNarrowViewport(): boolean {
-  const [narrow, setNarrow] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia("(max-width: 639px)").matches;
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(max-width: 639px)");
-    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
-    if (mql.addEventListener) {
-      mql.addEventListener("change", onChange);
-      return () => mql.removeEventListener("change", onChange);
-    }
-    const legacy = mql as unknown as {
-      addListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
-      removeListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
-    };
-    legacy.addListener?.(onChange);
-    return () => legacy.removeListener?.(onChange);
-  }, []);
-  return narrow;
-}
-
-function useIsCoarsePointer(): boolean {
-  const [coarse, setCoarse] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia("(pointer: coarse)").matches;
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(pointer: coarse)");
-    const onChange = (e: MediaQueryListEvent) => setCoarse(e.matches);
-    if (mql.addEventListener) {
-      mql.addEventListener("change", onChange);
-      return () => mql.removeEventListener("change", onChange);
-    }
-    const legacy = mql as unknown as {
-      addListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
-      removeListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
-    };
-    legacy.addListener?.(onChange);
-    return () => legacy.removeListener?.(onChange);
-  }, []);
-  return coarse;
 }
 
 // — Constants & styles ————————————————————————————————————
