@@ -98,21 +98,26 @@ export function FxHardwarePanel() {
   const padBodyH = isNarrow ? PAD_BODY_H_NARROW : PAD_BODY_H;
   const expandedH = isNarrow ? EXPANDED_H_NARROW : EXPANDED_H;
 
-  // Negative margins on desktop pull the FX panel UP into the parent's
-  // gap-3 (12 px), so the pull-tab visually fills the gap between
-  // transport and timeline. On mobile the parent uses gap-2 (8 px) and
-  // the pull-tab needs visible breathing room from the snap-button
-  // strip that sits at the top of the timeline panel — so we drop the
-  // negative margins on phones and let the parent's gap render
-  // honestly above and below the FX tab.
-  const verticalPullIn = isNarrow ? 0 : -12;
+  // Margin strategy:
+  //   - Desktop: gap-3 (12 px) parent gap. We pull the panel up by 12
+  //     and down by 12 so the tab fits exactly into the parent gap and
+  //     reads as a single "drawer pulled out of the timeline" silhouette
+  //     spanning both transport-bottom and timeline-top edges.
+  //   - Mobile: gap-2 (8 px) parent gap. The user wants the tab to
+  //     attach to the timeline panel below (drawer handle pulled out
+  //     OF the snap panel) but keep visible breathing room from the
+  //     transport panel above. So we leave mt:0 (parent gap renders
+  //     above the tab) and set mb:-8 to pull the next sibling
+  //     (timeline panel) flush against the tab's bottom edge.
+  const marginTopPx = isNarrow ? 0 : -12;
+  const marginBottomPx = isNarrow ? -8 : -12;
   return (
     <div
       className="relative shrink-0 w-full select-none"
       style={{
         height: open ? expandedH : TAB_H,
-        marginTop: verticalPullIn,
-        marginBottom: verticalPullIn,
+        marginTop: marginTopPx,
+        marginBottom: marginBottomPx,
         overflow: "visible",
         transition: "height 200ms ease-out",
       }}
