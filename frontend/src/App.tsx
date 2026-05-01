@@ -3,7 +3,7 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-route
 import { detectCapabilities, meetsMinRequirements } from "./local/capabilities";
 import { markInterruptedJobsOnLoad } from "./local/lifecycle";
 import { HelpOverlay } from "./editor/components/HelpOverlay";
-import { RegistrationMark } from "./editor/components/RuleStrip";
+import { RecMark } from "./editor/components/RuleStrip";
 import { Footer } from "./components/Footer";
 import { Datenschutz } from "./pages/Datenschutz";
 import Editor from "./pages/Editor";
@@ -84,14 +84,13 @@ function TopBar() {
     <header className="border-b border-rule bg-paper-hi shadow-panel">
       <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4">
         <Link to="/" className="flex items-center gap-2 sm:gap-2.5 group min-w-0 shrink">
-          <RegistrationMark className="text-hot shrink-0" />
+          <RecMark className="text-ink shrink-0" />
           <div className="leading-none min-w-0">
             <span className="font-display tracking-label uppercase text-[11px] text-ink-2 block">
-              VAS
+              TK-1
             </span>
             <span className="font-display text-[13px] sm:text-[15px] font-semibold text-ink leading-none block truncate">
-              <span className="hidden sm:inline">Video / Audio Sync</span>
-              <span className="sm:hidden">Video Sync</span>
+              Take One
             </span>
           </div>
         </Link>
