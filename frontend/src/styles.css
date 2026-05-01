@@ -80,12 +80,44 @@ body,
   50% { opacity: 1; transform: scaleY(1); }
 }
 
-/* PWA install-overlay rotating crosshair — runs while the service worker
- * precaches the offline bundle. Workbox can't report real progress so a
- * steady-rotation cue lets the user see "still working". */
-@keyframes vas-install-spin {
+/* PWA install overlay — VCR fast-forward animations.
+ * Workbox can't report real precache progress, so we lean on a tape-deck
+ * skeuomorph: two reels spin in opposite directions at FF speed, the
+ * magnetic tape between them scrolls, and a VFD counter ticks up. The
+ * combined motion reads as "definitely working" without faking a
+ * progress percentage. */
+
+/* Right reel (take-up) — fast clockwise. */
+@keyframes vcr-reel-spin-cw {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+/* Left reel (supply) — fast counter-clockwise. */
+@keyframes vcr-reel-spin-ccw {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+/* Magnetic tape "tracks" zooming past the heads. The repeating-gradient
+ * stripe slides one full period left-to-right per loop. */
+@keyframes vcr-tape-scroll {
+  from { background-position: 0 0; }
+  to { background-position: 14px 0; }
+}
+/* Glow pulse for the FF mode LED — a touch slower than vas-fx-live-pulse
+ * so it reads as a steady "armed" indicator rather than a heartbeat. */
+@keyframes vcr-ff-led {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(255, 87, 34, 0.5),
+      0 0 6px rgba(255, 87, 34, 0.55);
+    opacity: 0.85;
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(255, 87, 34, 0.8),
+      0 0 12px rgba(255, 87, 34, 0.85);
+    opacity: 1;
+  }
 }
 
 /* Hide native scrollbar but keep scrolling functional. Used by the
