@@ -1847,7 +1847,11 @@ function drawMatchMarkers({
   for (let i = 0; i < clip.candidates.length; i++) {
     const c = clip.candidates[i];
     const totalMs = c.offsetMs + clip.syncOverrideMs;
-    const startS = -totalMs / 1000 + clip.startOffsetS;
+    // Match position is fixed in master-timeline space: the absolute spot
+    // where master audio correlates with cam audio. Do NOT add startOffsetS
+    // — that would make markers slide with the lane drag and lose their
+    // meaning (the user couldn't snap a dragged lane onto its match point).
+    const startS = -totalMs / 1000;
     const x = ((startS - viewStart) / visibleDur) * canvasWidth;
     if (x < -8 || x > canvasWidth + 8) continue;
     const isPrimary = i === clip.selectedCandidateIdx;
