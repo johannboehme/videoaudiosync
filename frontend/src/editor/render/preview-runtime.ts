@@ -145,6 +145,17 @@ export class PreviewRuntime {
     }
   }
 
+  /** Replace the cam → URL map. Used by the Compositor's "+ Media" flow:
+   *  when a video/image is added to the running editor, the new cam's
+   *  asset URL must be plumbed into the runtime so its <video> element
+   *  can be mounted (or its bitmap fetched) on the next tick. Without
+   *  this, the descriptor builder sees the new clip in the store but
+   *  the source map has no entry for it — the active layer renders
+   *  nothing and the preview goes black. */
+  setCams(cams: ClipUrlMap): void {
+    this.opts = { ...this.opts, cams };
+  }
+
   /** Resolution dial. 1.0 = native, 0.75 = 75 % linear scale (≈56 % of
    *  pixels). The CSS size of the canvas doesn't change — the browser
    *  upscales the backbuffer at composite time, which is essentially

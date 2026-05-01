@@ -118,6 +118,71 @@ describe("useEditorStore", () => {
     expect(spec.export?.preset).toBe("web");
   });
 
+  describe("updateClip", () => {
+    test("preserves displayW/displayH set after the clip was first added", () => {
+      // Repro for the live-preview-goes-black bug when a user adds a
+      // second video/image to an already-loaded job: the `+ Media` flow
+      // emits a job-update which fires updateClip() on every existing
+      // cam. If updateClip rebuilds the clip from ClipInit (which has
+      // no display dims) and discards the existing displayW/displayH,
+      // resolveOutputDims() returns null and the compositor draws black.
+      useEditorStore.getState().loadJob(baseJobMeta, {
+        clips: [
+          {
+            id: "cam-1",
+            filename: "a.mp4",
+            color: "#fff",
+            sourceDurationS: 10,
+            syncOffsetMs: 0,
+          },
+        ],
+      });
+      // Simulate the <video> element reporting its natural pixel dims.
+      useEditorStore.getState().setClipDisplayDims("cam-1", 1920, 1080);
+      expect(useEditorStore.getState().clips[0].displayW).toBe(1920);
+      expect(useEditorStore.getState().clips[0].displayH).toBe(1080);
+
+      // Re-derive from a fresh ClipInit (what Editor.tsx does on a
+      // job-update event for already-known cams).
+      useEditorStore.getState().updateClip({
+        id: "cam-1",
+        filename: "a.mp4",
+        color: "#fff",
+        sourceDurationS: 10,
+        syncOffsetMs: 0,
+      });
+
+      const c = useEditorStore.getState().clips[0];
+      expect(c.displayW).toBe(1920);
+      expect(c.displayH).toBe(1080);
+    });
+
+    test("preserves displayW/displayH for image clips too", () => {
+      useEditorStore.getState().loadJob(baseJobMeta, {
+        clips: [
+          {
+            kind: "image",
+            id: "img-1",
+            filename: "p.png",
+            color: "#fff",
+            durationS: 5,
+          },
+        ],
+      });
+      useEditorStore.getState().setClipDisplayDims("img-1", 800, 600);
+      useEditorStore.getState().updateClip({
+        kind: "image",
+        id: "img-1",
+        filename: "p.png",
+        color: "#fff",
+        durationS: 5,
+      });
+      const c = useEditorStore.getState().clips[0];
+      expect(c.displayW).toBe(800);
+      expect(c.displayH).toBe(600);
+    });
+  });
+
   describe("resetClipAlignment", () => {
     test("reverts override / startOffset / candidate-idx to zeros", () => {
       const cands = [

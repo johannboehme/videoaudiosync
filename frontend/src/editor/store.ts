@@ -832,6 +832,8 @@ export const useEditorStore = create<EditorState>()(
           rotation: cur.rotation,
           flipX: cur.flipX,
           flipY: cur.flipY,
+          displayW: cur.displayW,
+          displayH: cur.displayH,
         };
       } else if (rebuilt.kind === "image" && cur.kind === "image") {
         merged = {
@@ -840,6 +842,8 @@ export const useEditorStore = create<EditorState>()(
           rotation: cur.rotation,
           flipX: cur.flipX,
           flipY: cur.flipY,
+          displayW: cur.displayW,
+          displayH: cur.displayH,
         };
       }
       const next = existing.slice();

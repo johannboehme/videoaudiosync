@@ -262,6 +262,87 @@ describe("PreviewRuntime — image bitmap cache", () => {
   });
 });
 
+describe("PreviewRuntime — setCams (live + Media flow)", () => {
+  it("forwards a newly-added cam URL to the pool on the next tick", async () => {
+    // Repro for the bug where adding a video to an already-running editor
+    // wouldn't actually mount its <video> element: the pool's setCams was
+    // called with the STALE cams map captured at construction time.
+    const backend = makeBackend();
+    const pool = makePool();
+    const setCamsSpy = (pool as unknown as { setCams: ReturnType<typeof vi.fn> })
+      .setCams;
+    (pool as unknown as { _add: (id: string) => void })._add("a");
+    const clipsBefore: Clip[] = [videoClip("a")];
+    const playback = { currentTime: 0, isPlaying: false };
+    const snap: { value: EditorStoreSnapshot } = { value: snapshot({ clips: clipsBefore }) };
+    const canvas = document.createElement("canvas");
+    const rt = new PreviewRuntime({
+      canvas,
+      cams: { a: { videoUrl: "a.mp4" } },
+      capabilities: { webgl2: false, webgpu: false },
+      cssW: 100,
+      cssH: 50,
+      dpr: 1,
+      initialScale: 1,
+      createBackendFn: vi.fn(async () => backend),
+      createPool: () => pool,
+      raf: () => 0,
+      cancelRaf: () => undefined,
+      readSnapshot: () => snap.value,
+      readPlayback: () => playback,
+    });
+    await rt.init();
+
+    // Simulate the editor's "+ Media" flow: a 2nd cam gets appended to
+    // the store AND its URL is registered in the runtime's cams map.
+    snap.value = snapshot({ clips: [videoClip("a"), videoClip("b")] });
+    rt.setCams({ a: { videoUrl: "a.mp4" }, b: { videoUrl: "b.mp4" } });
+    setCamsSpy.mockClear();
+    rt.tick();
+
+    // Pool should be reconciled with BOTH cams now.
+    expect(setCamsSpy).toHaveBeenCalledTimes(1);
+    const arg = setCamsSpy.mock.calls[0][0] as VideoCam[];
+    const ids = arg.map((c) => c.clip.id).sort();
+    expect(ids).toEqual(["a", "b"]);
+    const newCam = arg.find((c) => c.clip.id === "b");
+    expect(newCam?.videoUrl).toBe("b.mp4");
+  });
+
+  it("uses the updated cams map when loading bitmaps for newly-added image clips", async () => {
+    const fakeBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    const loadBitmap = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const pool = makePool();
+    const playback = { currentTime: 0, isPlaying: false };
+    const snap: { value: EditorStoreSnapshot } = { value: snapshot({ clips: [] }) };
+    const canvas = document.createElement("canvas");
+    const rt = new PreviewRuntime({
+      canvas,
+      cams: {},
+      capabilities: { webgl2: false, webgpu: false },
+      cssW: 100,
+      cssH: 50,
+      dpr: 1,
+      initialScale: 1,
+      createBackendFn: vi.fn(async () => backend),
+      createPool: () => pool,
+      raf: () => 0,
+      cancelRaf: () => undefined,
+      readSnapshot: () => snap.value,
+      readPlayback: () => playback,
+      loadBitmap,
+    });
+    await rt.init();
+
+    snap.value = snapshot({ clips: [imageClip("img1")] });
+    rt.setCams({ img1: { videoUrl: "img1.png" } });
+    rt.tick();
+
+    expect(loadBitmap).toHaveBeenCalledWith("img1.png");
+  });
+});
+
 describe("PreviewRuntime — resize + scale dial", () => {
   it("resize() forwards new pixel dims to the backend", async () => {
     const backend = makeBackend();
