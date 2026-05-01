@@ -11,6 +11,7 @@ pub mod drift;
 pub mod dtw;
 pub mod ncc;
 pub mod onset;
+pub mod phat;
 pub mod sync;
 pub mod util;
 pub mod xcorr;
@@ -38,6 +39,9 @@ struct SyncResultDto {
     peak_to_second_ratio: f64,
     /// Primary peak / median correlation over valid lags.
     peak_to_noise: f64,
+    /// GCC-PHAT peak-to-noise ratio. 0 means PHAT was skipped or
+    /// rejected; >20 = sharp same-source phase coherence.
+    phat_pnr: f64,
 }
 
 #[derive(Serialize)]
@@ -81,6 +85,7 @@ impl From<sync::SyncResult> for SyncResultDto {
                 .collect(),
             peak_to_second_ratio: finite_or_saturated(r.peak_to_second_ratio),
             peak_to_noise: finite_or_saturated(r.peak_to_noise),
+            phat_pnr: finite_or_saturated(r.phat_pnr),
         }
     }
 }

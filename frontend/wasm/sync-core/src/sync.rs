@@ -7,6 +7,7 @@ use crate::drift::{windowed_drift_refinement, DriftConfig};
 use crate::dtw::dtw_drift;
 use crate::ncc::{align_with_onset, MatchCandidate};
 use crate::onset::onset_envelope;
+use crate::phat::phat_refine;
 use crate::util::peak_normalize;
 use crate::xcorr::correlate_full;
 
@@ -29,6 +30,12 @@ pub struct SyncResult {
     /// "How exceptional is the chosen lag." `f64::INFINITY` for
     /// degenerate inputs.
     pub peak_to_noise: f64,
+    /// GCC-PHAT peak-to-noise ratio when the Stage-B refinement ran;
+    /// `0.0` if PHAT was skipped (low chroma confidence) or rejected
+    /// (PNR below the trust threshold). Same-source same-mic recordings
+    /// typically score 30–100; cover/different-performance pairs are
+    /// near the floor.
+    pub phat_pnr: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +144,7 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
             candidates: Vec::new(),
             peak_to_second_ratio: f64::INFINITY,
             peak_to_noise: f64::INFINITY,
+            phat_pnr: 0.0,
         };
     }
 
@@ -219,20 +227,68 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         }
     }
 
-    // Drift refinement seeded by the primary chroma+onset candidate. The
-    // ±1 s sanity check stops drift from wandering into another local
-    // lock-in if its per-window xcorr disagrees badly with the seed.
+    // Tier 2: GCC-PHAT sample-level refinement. Only meaningful when
+    // the chroma stage already locked onto roughly the right place
+    // (within ±0.5 s of truth) AND the input is plausibly same-source.
+    // The phat_refine function returns None — leaving us with the
+    // chroma lag — when PNR is below the trust threshold (cover
+    // version, different performance, narrowband material). This is
+    // the discriminator the chroma+onset stage cannot provide on
+    // beat-aligned-impostor inputs (real-music bench: hiphop / jazz
+    // pos-2000ms): on those, chroma's wrong pick has no phase
+    // coherence at sample level, so PHAT either snaps to the true
+    // lag or rejects with low PNR.
+    let mut phat_pnr = 0.0_f64;
+    if confidence >= opts.confidence_threshold {
+        if let Some(refined) = phat_refine(&ref_y, &query_y, opts.sr, lag) {
+            // Sanity check: PHAT should not move the seed by more
+            // than ±1 s. Larger jumps indicate a far-side phase peak
+            // we shouldn't trust.
+            if (refined.offset_samples - lag).abs() <= opts.sr as i64 {
+                lag = refined.offset_samples;
+                phat_pnr = refined.pnr as f64;
+                method.push_str("+phat");
+            }
+        }
+    }
+
+    // Drift refinement. Two roles:
+    //   - estimate `drift_ratio` (slope of the windowed linear fit) —
+    //     this is the only thing PHAT can't tell us, so we always
+    //     consume it when drift refinement runs;
+    //   - estimate the absolute offset — useful when PHAT was skipped
+    //     or rejected, but actively HARMFUL when PHAT already locked
+    //     onto a sample-precise lag. On real hip-hop / jazz material
+    //     drift's per-window xcorr can lock onto a bar-aligned beat
+    //     ~234 ms off and walk the lag away from PHAT's correct
+    //     answer (real-music bench: pos-2000ms regression). So the
+    //     offset side of drift's output is only honored when PHAT
+    //     didn't produce a trustworthy result.
     if confidence >= opts.confidence_threshold {
         if let Some(refined) =
             windowed_drift_refinement(&ref_y, &query_y, opts.sr, lag, DriftConfig::default())
         {
-            if (refined.offset_samples - lag).abs() <= opts.sr as i64 {
+            let phat_locked = phat_pnr > 0.0;
+            // Sanity floor on offset-replacement: must agree with seed
+            // within 1 s. When PHAT succeeded the bar is much tighter
+            // (50 ms) — we're refining a sample-level number, not
+            // searching for it.
+            let offset_tolerance = if phat_locked {
+                (0.05 * opts.sr as f32) as i64
+            } else {
+                opts.sr as i64
+            };
+            let diff = (refined.offset_samples - lag).abs();
+            if diff <= offset_tolerance {
                 lag = refined.offset_samples;
-                drift = refined.drift_ratio;
-                method.push_str("+drift");
-                if let Some(p) = candidates.get_mut(0) {
-                    p.offset_ms = lag as f64 / opts.sr as f64 * 1000.0;
-                }
+            }
+            // Always trust drift_ratio: even when we keep PHAT's lag,
+            // the slope of drift's linear fit captures audio-clock
+            // mismatch that PHAT alone can't see.
+            drift = refined.drift_ratio;
+            method.push_str("+drift");
+            if let Some(p) = candidates.get_mut(0) {
+                p.offset_ms = lag as f64 / opts.sr as f64 * 1000.0;
             }
         }
     }
@@ -263,6 +319,7 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         candidates,
         peak_to_second_ratio: peak_to_second,
         peak_to_noise,
+        phat_pnr,
     }
 }
 

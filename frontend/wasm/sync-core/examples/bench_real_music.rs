@@ -54,10 +54,19 @@ fn main() {
     let scenarios = build_scenarios();
 
     println!(
-        "{:<14} {:<22} {:>11} {:>11} {:>9} {:>6} {:>6} {:>6} {:>4}",
-        "genre", "scenario", "expected_ms", "got_ms", "err_ms", "conf", "psr", "pnr", "ok",
+        "{:<14} {:<22} {:>11} {:>11} {:>9} {:>6} {:>6} {:>6} {:>7} {:>4}",
+        "genre",
+        "scenario",
+        "expected_ms",
+        "got_ms",
+        "err_ms",
+        "conf",
+        "psr",
+        "pnr",
+        "phatPNR",
+        "ok",
     );
-    println!("{}", "-".repeat(102));
+    println!("{}", "-".repeat(110));
 
     let mut total_pass = 0usize;
     let mut total_n = 0usize;
@@ -101,7 +110,7 @@ fn main() {
             if recall_hit { g.recall_k += 1; }
 
             println!(
-                "{:<14} {:<22} {:>11.1} {:>11.1} {:>+9.1} {:>6.2} {:>6} {:>6} {:>4}",
+                "{:<14} {:<22} {:>11.1} {:>11.1} {:>+9.1} {:>6.2} {:>6} {:>6} {:>7} {:>4}",
                 clip.genre,
                 s.name,
                 expected_ms,
@@ -110,6 +119,7 @@ fn main() {
                 result.confidence,
                 fmt_ratio(psr),
                 fmt_ratio(pnr),
+                fmt_ratio(result.phat_pnr),
                 if pass { "✓" } else { "✗" },
             );
         }

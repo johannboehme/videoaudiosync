@@ -46,6 +46,11 @@ export interface SyncResult {
   peakToSecondRatio: number;
   /** Primary peak / median correlation over valid lags. */
   peakToNoise: number;
+  /** GCC-PHAT peak-to-noise ratio when the sample-level refinement
+   *  ran. `0` if PHAT was skipped or rejected. >20 indicates a sharp
+   *  same-source phase peak — the strongest "this match is unambiguous"
+   *  signal we can produce; near-zero means the chroma lag was kept. */
+  phatPnr: number;
 }
 
 const TARGET_SR = 22050;
@@ -80,6 +85,7 @@ interface RawSyncResult {
   candidates?: RawCandidate[];
   peak_to_second_ratio?: number;
   peak_to_noise?: number;
+  phat_pnr?: number;
 }
 
 /** Pure mapping helper — exported so it can be unit-tested without loading
@@ -102,6 +108,8 @@ export function mapWasmResult(raw: RawSyncResult): SyncResult {
     // info" reading instead of NaN/0 sneaking through.
     peakToSecondRatio: raw.peak_to_second_ratio ?? Number.POSITIVE_INFINITY,
     peakToNoise: raw.peak_to_noise ?? Number.POSITIVE_INFINITY,
+    // PHAT default = 0 (i.e. "skipped / rejected") for pre-Tier-2 WASM.
+    phatPnr: raw.phat_pnr ?? 0,
   };
 }
 
