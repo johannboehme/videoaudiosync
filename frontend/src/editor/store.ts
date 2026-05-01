@@ -502,18 +502,9 @@ const initialUi: UiSlice = {
   // becomes false.
   lanesLocked: true,
   programStripMode: "both",
-  // Default to open on touch devices — pads are the only way to fire FX
-  // on a phone, so we want them visible on first load. The user can
-  // still collapse via the pull-tab; toggle state persists per session.
-  // Desktop keeps the slide-out drawer feel (closed until tapped). The
-  // explicit Boolean() coerces the jsdom case (no matchMedia) to false
-  // — leaving the chained && would return `undefined` and break the
-  // store-init test that asserts a strict false.
-  fxPanelOpen: Boolean(
-    typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(pointer: coarse)").matches,
-  ),
+  // Closed by default on every form factor. The pull-tab is the
+  // discovery affordance; users tap it to expand the pad bank.
+  fxPanelOpen: false,
 };
 
 const FX_MIN_WINDOW_S = 0.05;
