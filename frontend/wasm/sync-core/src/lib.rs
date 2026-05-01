@@ -11,6 +11,7 @@ pub mod drift;
 pub mod dtw;
 pub mod ncc;
 pub mod onset;
+pub mod phat;
 pub mod sync;
 pub mod util;
 pub mod xcorr;
@@ -31,6 +32,16 @@ struct SyncResultDto {
     method: String,
     warning: Option<String>,
     candidates: Vec<MatchCandidateDto>,
+    /// Primary peak / second-highest peak. >1.5 = comfortable margin.
+    /// `null` (≈ infinity) when no runner-up exists. Serialized as a
+    /// finite number on the JS side; we cap infinity at a large sentinel
+    /// so JSON survives the round-trip.
+    peak_to_second_ratio: f64,
+    /// Primary peak / median correlation over valid lags.
+    peak_to_noise: f64,
+    /// GCC-PHAT peak-to-noise ratio. 0 means PHAT was skipped or
+    /// rejected; >20 = sharp same-source phase coherence.
+    phat_pnr: f64,
 }
 
 #[derive(Serialize)]
@@ -38,6 +49,21 @@ struct MatchCandidateDto {
     offset_ms: f64,
     confidence: f64,
     overlap_frames: u32,
+}
+
+/// JSON's number type cannot represent ±infinity — `serde_json` writes
+/// it as `null`, which then deserializes to `null` on the JS side and
+/// gets coerced to 0 by careless arithmetic. Cap at a large finite
+/// sentinel so the JSON is always a number; the UI treats anything
+/// above this as "saturated / unique peak" anyway.
+const SATURATED_RATIO: f64 = 1.0e6;
+
+fn finite_or_saturated(v: f64) -> f64 {
+    if v.is_finite() {
+        v
+    } else {
+        SATURATED_RATIO
+    }
 }
 
 impl From<sync::SyncResult> for SyncResultDto {
@@ -57,6 +83,9 @@ impl From<sync::SyncResult> for SyncResultDto {
                     overlap_frames: c.overlap_frames,
                 })
                 .collect(),
+            peak_to_second_ratio: finite_or_saturated(r.peak_to_second_ratio),
+            peak_to_noise: finite_or_saturated(r.peak_to_noise),
+            phat_pnr: finite_or_saturated(r.phat_pnr),
         }
     }
 }

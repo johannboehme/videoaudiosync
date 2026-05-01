@@ -7,6 +7,7 @@ use crate::drift::{windowed_drift_refinement, DriftConfig};
 use crate::dtw::dtw_drift;
 use crate::ncc::{align_with_onset, MatchCandidate};
 use crate::onset::onset_envelope;
+use crate::phat::phat_refine;
 use crate::util::peak_normalize;
 use crate::xcorr::correlate_full;
 
@@ -20,6 +21,21 @@ pub struct SyncResult {
     /// Alternate match candidates with NCC ≥ 60 % of the primary's. Sorted
     /// descending by NCC. Used by the editor for snap-to-alternate-match.
     pub candidates: Vec<MatchCandidateOut>,
+    /// Primary peak / second-highest peak on the ranking surface. >1.5 ≈
+    /// comfortable margin; ≈1.0 means the runner-up is essentially as
+    /// strong as the pick (UI should warn). `f64::INFINITY` when no
+    /// runner-up exists. Surfaced from `AlignmentReport::discrimination`.
+    pub peak_to_second_ratio: f64,
+    /// Primary peak / median correlation over the valid-overlap region.
+    /// "How exceptional is the chosen lag." `f64::INFINITY` for
+    /// degenerate inputs.
+    pub peak_to_noise: f64,
+    /// GCC-PHAT peak-to-noise ratio when the Stage-B refinement ran;
+    /// `0.0` if PHAT was skipped (low chroma confidence) or rejected
+    /// (PNR below the trust threshold). Same-source same-mic recordings
+    /// typically score 30–100; cover/different-performance pairs are
+    /// near the floor.
+    pub phat_pnr: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +142,9 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
             method: "chroma".to_string(),
             warning: Some("Empty audio".to_string()),
             candidates: Vec::new(),
+            peak_to_second_ratio: f64::INFINITY,
+            peak_to_noise: f64::INFINITY,
+            phat_pnr: 0.0,
         };
     }
 
@@ -153,39 +172,43 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         /*max_alternates=*/ 10,
     );
 
-    let (mut lag, mut confidence, mut candidates) = match report {
-        Some(r) => {
-            // Primary stays whatever chroma+onset picked. Sample-level
-            // Pearson re-ranking was tried and made primaries WORSE on
-            // real music (raw audio inner product is too sensitive to
-            // amplitude/noise differences) — but the same scoring is a
-            // useful confidence reading on each surfaced candidate, so
-            // the UI's snap-to-alternate-match list can rank them.
-            let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
-                .chain(r.alternates.iter())
-                .map(|c| {
-                    let mut out = cand_to_out(c, opts.sr);
-                    let sample = sample_level_pearson(
-                        &ref_y,
-                        &query_y,
-                        c.offset_samples,
-                    );
-                    // Surface the higher of chroma-NCC and sample-NCC so
-                    // alts that look strong at the audio level are visibly
-                    // ranked higher in the snap UI.
-                    out.confidence = (sample as f64).max(c.ncc as f64);
-                    out
-                })
-                .collect();
-            let primary_lag = r.primary.offset_samples;
-            let primary_conf = r.primary.ncc as f64;
-            if let Some(p) = cands.get_mut(0) {
-                p.confidence = primary_conf;
+    let (mut lag, mut confidence, mut candidates, peak_to_second, peak_to_noise) =
+        match report {
+            Some(r) => {
+                // Primary stays whatever chroma+onset picked. Sample-level
+                // Pearson re-ranking was tried and made primaries WORSE on
+                // real music (raw audio inner product is too sensitive to
+                // amplitude/noise differences) — but the same scoring is a
+                // useful confidence reading on each surfaced candidate, so
+                // the UI's snap-to-alternate-match list can rank them.
+                let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
+                    .chain(r.alternates.iter())
+                    .map(|c| {
+                        let mut out = cand_to_out(c, opts.sr);
+                        let sample =
+                            sample_level_pearson(&ref_y, &query_y, c.offset_samples);
+                        // Surface the higher of chroma-NCC and sample-NCC so
+                        // alts that look strong at the audio level are visibly
+                        // ranked higher in the snap UI.
+                        out.confidence = (sample as f64).max(c.ncc as f64);
+                        out
+                    })
+                    .collect();
+                let primary_lag = r.primary.offset_samples;
+                let primary_conf = r.primary.ncc as f64;
+                if let Some(p) = cands.get_mut(0) {
+                    p.confidence = primary_conf;
+                }
+                (
+                    primary_lag,
+                    primary_conf,
+                    cands,
+                    r.discrimination.peak_to_second_ratio as f64,
+                    r.discrimination.peak_to_noise as f64,
+                )
             }
-            (primary_lag, primary_conf, cands)
-        }
-        None => (0, 0.0, Vec::new()),
-    };
+            None => (0, 0.0, Vec::new(), f64::INFINITY, f64::INFINITY),
+        };
     let mut method = "ncc+onset".to_string();
     let mut drift = 1.0f64;
     let mut warning: Option<String> = None;
@@ -204,20 +227,112 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         }
     }
 
-    // Drift refinement seeded by the primary chroma+onset candidate. The
-    // ±1 s sanity check stops drift from wandering into another local
-    // lock-in if its per-window xcorr disagrees badly with the seed.
+    // Tier 2: GCC-PHAT sample-level refinement. Whitening makes the
+    // cross-spectrum carry phase only, so the IFFT peaks like a delta
+    // function at the true sample lag for same-source pairs — orders
+    // of magnitude sharper than chroma+onset and the only stage
+    // capable of telling beat-aligned impostors apart on repetitive
+    // material (techno / house / hip-hop loops where every kick lines
+    // up at every alternate).
+    //
+    // Multi-seed: chroma+onset's argmax can land on an onset-boosted
+    // beat-shifted lag while the *true* lag sits one row down in the
+    // alternates list with a slightly higher chroma-only NCC. We run
+    // PHAT against the primary AND the top-K alternates and keep the
+    // result with the highest PNR — PHAT's PNR contrast between right
+    // and wrong seed is so extreme (real-music bench: 2.3e8 vs 50
+    // for the house-loop +100 ms case) that this is unambiguous.
+    let mut phat_pnr = 0.0_f64;
+    if confidence >= opts.confidence_threshold {
+        let primary_phat = phat_refine(&ref_y, &query_y, opts.sr, lag);
+        // When the primary's PHAT peak is unambiguous (PNR ≥ 100), the
+        // chroma seed was right and there's nothing to gain from
+        // probing alternates — trying them on perfectly periodic
+        // material (e.g. a 2.5 s-period synthetic test fixture) just
+        // introduces ties between equally-phase-coherent shifts. We
+        // only multi-seed when the primary's phase coherence looks
+        // shaky, which is exactly where chroma+onset's onset-boost may
+        // have walked the picker off the true lag (real-music bench:
+        // house-loop pos-100ms — primary PNR ≈ 50, alt[0] PNR ≈ 2e8).
+        const PHAT_TRUST_PNR: f32 = 100.0;
+        let primary_strong = primary_phat
+            .as_ref()
+            .map(|r| r.pnr >= PHAT_TRUST_PNR)
+            .unwrap_or(false);
+
+        let best = if primary_strong {
+            primary_phat
+        } else {
+            let mut best = primary_phat;
+            // candidates[0] mirrors the primary; skip(1) picks up
+            // genuine alternates. 4 alternates is enough to break the
+            // beat-shifted-impostor pattern without burning an FFT on
+            // tail entries we'll never trust.
+            for c in candidates.iter().skip(1).take(4) {
+                let cand_lag = (c.offset_ms / 1000.0 * opts.sr as f64).round() as i64;
+                // Skip near-duplicates of seeds we've already tried.
+                let too_close = best
+                    .as_ref()
+                    .map(|p| (p.offset_samples - cand_lag).abs() <= opts.sr as i64 / 10)
+                    .unwrap_or(false)
+                    || (cand_lag - lag).abs() <= opts.sr as i64 / 10;
+                if too_close {
+                    continue;
+                }
+                if let Some(r) = phat_refine(&ref_y, &query_y, opts.sr, cand_lag) {
+                    best = match best {
+                        None => Some(r),
+                        Some(prev) if r.pnr > prev.pnr => Some(r),
+                        Some(prev) => Some(prev),
+                    };
+                }
+            }
+            best
+        };
+        if let Some(r) = best {
+            lag = r.offset_samples;
+            phat_pnr = r.pnr as f64;
+            method.push_str("+phat");
+        }
+    }
+
+    // Drift refinement. Two roles:
+    //   - estimate `drift_ratio` (slope of the windowed linear fit) —
+    //     this is the only thing PHAT can't tell us, so we always
+    //     consume it when drift refinement runs;
+    //   - estimate the absolute offset — useful when PHAT was skipped
+    //     or rejected, but actively HARMFUL when PHAT already locked
+    //     onto a sample-precise lag. On real hip-hop / jazz material
+    //     drift's per-window xcorr can lock onto a bar-aligned beat
+    //     ~234 ms off and walk the lag away from PHAT's correct
+    //     answer (real-music bench: pos-2000ms regression). So the
+    //     offset side of drift's output is only honored when PHAT
+    //     didn't produce a trustworthy result.
     if confidence >= opts.confidence_threshold {
         if let Some(refined) =
             windowed_drift_refinement(&ref_y, &query_y, opts.sr, lag, DriftConfig::default())
         {
-            if (refined.offset_samples - lag).abs() <= opts.sr as i64 {
+            let phat_locked = phat_pnr > 0.0;
+            // Sanity floor on offset-replacement: must agree with seed
+            // within 1 s. When PHAT succeeded the bar is much tighter
+            // (50 ms) — we're refining a sample-level number, not
+            // searching for it.
+            let offset_tolerance = if phat_locked {
+                (0.05 * opts.sr as f32) as i64
+            } else {
+                opts.sr as i64
+            };
+            let diff = (refined.offset_samples - lag).abs();
+            if diff <= offset_tolerance {
                 lag = refined.offset_samples;
-                drift = refined.drift_ratio;
-                method.push_str("+drift");
-                if let Some(p) = candidates.get_mut(0) {
-                    p.offset_ms = lag as f64 / opts.sr as f64 * 1000.0;
-                }
+            }
+            // Always trust drift_ratio: even when we keep PHAT's lag,
+            // the slope of drift's linear fit captures audio-clock
+            // mismatch that PHAT alone can't see.
+            drift = refined.drift_ratio;
+            method.push_str("+drift");
+            if let Some(p) = candidates.get_mut(0) {
+                p.offset_ms = lag as f64 / opts.sr as f64 * 1000.0;
             }
         }
     }
@@ -246,6 +361,9 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         method,
         warning,
         candidates,
+        peak_to_second_ratio: peak_to_second,
+        peak_to_noise,
+        phat_pnr,
     }
 }
 
