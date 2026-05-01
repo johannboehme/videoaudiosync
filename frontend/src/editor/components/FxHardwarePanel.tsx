@@ -59,15 +59,36 @@ const BEAT_STOPS = ["1/16", "1/8", "1/4", "1/2", "1", "2", "4"] as const;
 
 const TAB_H = 12;
 const PAD_BODY_H = 110;
-const EXPANDED_H = TAB_H + PAD_BODY_H; // 122 — tab and pad body touch directly
-// On narrow viewports the LCD/encoders sit on top of a wrapped pad grid.
-// Tight measurement at fold-folded (280 CSS px): 78 px LCD/encoder
-// row + 6 px gap + 3 rows of 60 px pads (192) + 2 × 4 px gaps + 12 px
-// inner py-1.5 = ~252 px. We round up to 256 for breathing room without
-// reintroducing the wasted middle gap the earlier 286 / mt-auto layout
-// produced.
-const PAD_BODY_H_NARROW = 256;
-const EXPANDED_H_NARROW = TAB_H + PAD_BODY_H_NARROW;
+// Mobile pad layout pieces — used to compute panel height per-viewport
+// so the bottom padding under the pad row matches the top padding
+// above the LCD (`py-1.5` = 6 px). At fold-folded (280 px wide) we get
+// 3 pads per row → 3 rows; at iPhone-12 (390) we get 5 → 2 rows; at
+// 540+ we get 7 → 1 row. The earlier static 256 value was tuned to
+// the worst case (3 rows) and left ~36 px of dead space below the
+// pads on iPhone-class viewports — exactly the "viel platz unten"
+// the user spotted.
+const PAD_SIZE_NARROW = 60; // pad width = pad height on phones
+const PAD_GAP_NARROW = 4; // matches `gap-1` in the JSX below
+const LCD_ROW_H_NARROW = 78; // LCD is the tallest item in the top row
+const PADBODY_INNER_PY_NARROW = 12; // 2× py-1.5
+const PADBODY_INNER_PX_NARROW = 16; // 2× px-2
+const PADBODY_INNER_GAP_NARROW = 6; // gap-1.5 between LCD row and pad row
+function padBodyHeightNarrow(rows: number): number {
+  return (
+    LCD_ROW_H_NARROW +
+    PADBODY_INNER_GAP_NARROW +
+    rows * PAD_SIZE_NARROW +
+    (rows - 1) * PAD_GAP_NARROW +
+    PADBODY_INNER_PY_NARROW
+  );
+}
+function padsPerRowNarrow(containerCssWidth: number): number {
+  // The pad row sits inside `px-2` (16) of the panel body. Each pad is
+  // 60 px wide and the inter-pad gap is `gap-1` (4 px).
+  const inner = Math.max(0, containerCssWidth - PADBODY_INNER_PX_NARROW);
+  const fits = Math.floor((inner + PAD_GAP_NARROW) / (PAD_SIZE_NARROW + PAD_GAP_NARROW));
+  return Math.max(1, Math.min(PADS.length, fits));
+}
 const TAB_WIDTH = 110;
 
 /**
@@ -95,8 +116,28 @@ export function FxHardwarePanel() {
   // toggleable, so a coarse-pointer user can also press the pull-tab to
   // collapse / expand the pad bank.
   const open = fxPanelOpen;
-  const padBodyH = isNarrow ? PAD_BODY_H_NARROW : PAD_BODY_H;
-  const expandedH = isNarrow ? EXPANDED_H_NARROW : EXPANDED_H;
+
+  // On mobile we measure the panel's actual rendered width (via a
+  // ResizeObserver) so we can derive the exact pad-row count → exact
+  // panel height. The earlier static `PAD_BODY_H_NARROW = 256` was
+  // sized for the worst case (3 rows of pads at fold-folded) and left
+  // ~36 px of dead space under the pads on iPhone-class viewports
+  // where the pads actually fit in 2 rows. Now the bottom padding
+  // matches the LCD's top padding (`py-1.5` = 6 px) at every width.
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [containerW, setContainerW] = useState(0);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !isNarrow) return;
+    const apply = () => setContainerW(el.clientWidth);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isNarrow]);
+  const padRowsNarrow = Math.ceil(PADS.length / padsPerRowNarrow(containerW || 280));
+  const padBodyH = isNarrow ? padBodyHeightNarrow(padRowsNarrow) : PAD_BODY_H;
+  const expandedH = TAB_H + padBodyH;
 
   // Margin strategy:
   //   - Desktop: gap-3 (12 px) parent gap. We pull the panel up by 12
@@ -113,6 +154,7 @@ export function FxHardwarePanel() {
   const marginBottomPx = isNarrow ? -8 : -12;
   return (
     <div
+      ref={containerRef}
       className="relative shrink-0 w-full select-none"
       style={{
         height: open ? expandedH : TAB_H,
