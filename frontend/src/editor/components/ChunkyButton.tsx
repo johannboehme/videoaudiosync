@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { ButtonHTMLAttributes, ReactNode } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
-type Size = "sm" | "md" | "lg";
+type Size = "xs" | "sm" | "md" | "lg";
 
 type ButtonProps = Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
@@ -40,6 +40,12 @@ const VARIANT: Record<Variant, { rest: string; pressed: string }> = {
 };
 
 const SIZE: Record<Size, string> = {
+  // xs is below the 44 px Apple HIG / 48 dp Material guideline, but the
+  // mobile transport row uses it for icon-only buttons that need to
+  // fit 8-up across a 280 px Galaxy-Fold-folded screen. No min-width:
+  // an icon-only xs button ends up ~28 px wide (16 px icon + 12 px
+  // px-1.5), which is the absolute floor we accept for fingertips.
+  xs: "h-8 px-1.5 text-xs gap-1",
   sm: "h-9 px-3 text-xs gap-1.5 min-w-[44px]",
   md: "h-11 px-4 text-sm gap-2 min-w-[44px]",
   lg: "h-14 px-6 text-base gap-2.5 min-w-[44px]",
