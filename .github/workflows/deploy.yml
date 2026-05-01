@@ -30,4 +30,4 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_ed25519 \
               "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-              'bash ~/videoaudiosync/deploy/deploy.sh'
+              'bash ~/tk-1/deploy/deploy.sh'

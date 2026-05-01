@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$HOME/videoaudiosync}"
+REPO_DIR="${REPO_DIR:-$HOME/tk-1}"
 BRANCH="${BRANCH:-main}"
 
 cd "$REPO_DIR"
