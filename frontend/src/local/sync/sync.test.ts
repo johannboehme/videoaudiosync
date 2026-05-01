@@ -56,4 +56,33 @@ describe("mapWasmResult — sync-core DTO mapping", () => {
     } as Parameters<typeof mapWasmResult>[0]);
     expect(result.candidates).toEqual([]);
   });
+
+  it("maps Tier 1.2 discrimination metrics (PSR / PNR) when present", () => {
+    const result = mapWasmResult({
+      offset_ms: 0,
+      confidence: 0.9,
+      drift_ratio: 1.0,
+      method: "ncc+onset",
+      warning: null,
+      candidates: [],
+      peak_to_second_ratio: 3.4,
+      peak_to_noise: 12.5,
+    });
+    expect(result.peakToSecondRatio).toBe(3.4);
+    expect(result.peakToNoise).toBe(12.5);
+  });
+
+  it("falls back to +Infinity when Tier 1.2 fields are missing (legacy WASM)", () => {
+    const result = mapWasmResult({
+      offset_ms: 0,
+      confidence: 0.9,
+      drift_ratio: 1.0,
+      method: "ncc+onset",
+      warning: null,
+      candidates: [],
+      // peak_to_second_ratio + peak_to_noise omitted
+    });
+    expect(result.peakToSecondRatio).toBe(Number.POSITIVE_INFINITY);
+    expect(result.peakToNoise).toBe(Number.POSITIVE_INFINITY);
+  });
 });

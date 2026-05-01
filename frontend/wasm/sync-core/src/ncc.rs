@@ -24,11 +24,21 @@
 //!      maxima with min-distance separation as alternates.
 
 use crate::chroma::{ChromaMatrix, HOP, N_PITCH_CLASSES};
+use crate::util::median;
 use crate::xcorr::correlate_full;
 
 /// Minimum joint-active fraction of the shorter signal we require at a
 /// candidate lag. Below this we set NCC to 0 (i.e. ignore the lag).
 const MIN_OVERLAP_FRACTION: f32 = 0.20;
+
+/// Hard floor (in seconds) on the joint-active overlap a candidate lag
+/// needs to be considered. The fraction above is enough to throw out
+/// trivial 2–3-frame edge matches, but a 5 % overlap on a 30 s query
+/// (= 1.5 s actual) already includes plausibly-sized but wildly
+/// unreliable picks; a 1 s floor moves the bar to where sample-level
+/// Pearson and onset Pearson can both stabilize. Sub-second queries
+/// (rare in multi-cam edits) intentionally bypass via `max(8, …)`.
+const MIN_OVERLAP_SECONDS: f32 = 1.0;
 
 /// Minimum spacing between alternate candidates, in seconds. Two peaks
 /// closer than this collapse into one (the higher). 0.25 s lets us
@@ -49,6 +59,14 @@ const MIN_PEAK_SPACING_S: f32 = 0.25;
 /// for each candidate is the chroma-only NCC at the chosen lag, so the
 /// user-facing scale stays in chroma-only units regardless of how
 /// strongly onset tilted the pick.
+///
+/// (Tier 1.1 attempted to fold onset multiplicatively into the score
+/// itself; on the real-music bench it slightly *reduced* mean PSR
+/// because rhythmic material has near-uniform onset Pearson at every
+/// beat-aligned lag — the bonus rewarded false alignments almost as
+/// much as the true one. Reverted in favor of GCC-PHAT (Tier 2) for
+/// real same-source disambiguation. Margin metrics from Tier 1.2 still
+/// give the UI a way to see the tightness in `peak_to_second_ratio`.)
 const ONSET_WEIGHT: f32 = 0.85;
 
 /// Alternate candidates with NCC below `top_ncc * REL_THRESHOLD` are
@@ -68,12 +86,34 @@ pub struct MatchCandidate {
     pub overlap_frames: u32,
 }
 
+/// How sharply the primary peak stands above the rest of the correlation
+/// surface. The reported chroma NCC alone collapses everything into [0, 1]
+/// and on real music routinely sits at 0.95–1.00 even when the second
+/// peak is fractionally below — the margin disappears in the rounding.
+/// These metrics surface that margin so the UI can distinguish a clear
+/// pick from a knife-edge tie. Both are computed on the ranking array
+/// (chroma + onset fusion when onset is supplied) so they reflect what
+/// the picker actually saw, not the post-clamp confidence number.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiscriminationStats {
+    /// Primary peak / second-highest local maximum on the ranking array.
+    /// 1.0 = tie, 2.0 = primary twice as strong as runner-up. `f32::MAX`
+    /// when there is no second peak (single isolated maximum).
+    pub peak_to_second_ratio: f32,
+    /// Primary peak / median of the ranking array over the valid-overlap
+    /// region. A "noise floor" comparison: how exceptional the chosen
+    /// lag is relative to the bulk of the correlation surface.
+    /// `f32::MAX` when the median is effectively zero (degenerate input).
+    pub peak_to_noise: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct AlignmentReport {
     pub primary: MatchCandidate,
     /// Up to N alternate candidates with NCC ≥ REL_THRESHOLD * primary.ncc,
     /// sorted descending by NCC. Used for "snap to alternate match" UI.
     pub alternates: Vec<MatchCandidate>,
+    pub discrimination: DiscriminationStats,
 }
 
 /// Compute the per-frame "active" mask: 1 if the frame has non-zero
@@ -118,6 +158,48 @@ fn overlap_counts(cr_mask: &[f32], cq_mask: &[f32]) -> Vec<f32> {
 fn idx_to_offset_samples(idx: usize, n_ref_frames: usize, hop: usize) -> i64 {
     let lag_frames = idx as i64 - (n_ref_frames as i64 - 1);
     -lag_frames * hop as i64
+}
+
+/// Sub-frame peak-position refinement via parabolic interpolation across
+/// three neighboring NCC samples. Returns the integer-frame `idx`
+/// shifted by a fractional amount in (-0.5, +0.5) frames; converted to
+/// audio samples this collapses the visible 23 ms quantization step
+/// (HOP=512 @ 22050 Hz) into ~3–5 ms residual error on average. Returns
+/// `None` for boundary peaks or near-flat tops where the closed-form
+/// formula is numerically unstable.
+fn refine_peak_offset_samples(
+    ncc: &[f32],
+    idx: usize,
+    n_ref_frames: usize,
+    hop: usize,
+) -> i64 {
+    let base = idx_to_offset_samples(idx, n_ref_frames, hop);
+    if idx == 0 || idx + 1 >= ncc.len() {
+        return base;
+    }
+    let a = ncc[idx - 1];
+    let b = ncc[idx];
+    let c = ncc[idx + 1];
+    let denom = a - 2.0 * b + c;
+    // Near-flat top (denom ≈ 0) or upward-curving (denom > 0, not a
+    // maximum) — interpolation result would be meaningless or out of
+    // [-1, +1]. Skip refinement.
+    if denom.abs() < 1e-9 || denom > 0.0 {
+        return base;
+    }
+    let delta = 0.5 * (a - c) / denom;
+    if !delta.is_finite() || delta.abs() > 1.0 {
+        return base;
+    }
+    // `delta` is the offset in chroma frames toward where the true peak
+    // lies between samples [idx-1, idx, idx+1]. Each frame is `hop`
+    // audio samples; positive delta = peak shifted right of `idx`. The
+    // existing idx_to_offset_samples convention has *higher* idx mapping
+    // to *more negative* sample lag (see fn body), so a positive
+    // delta-frames shift means we should SUBTRACT delta * hop from the
+    // base sample offset to track the true peak.
+    let frac_samples = (delta * hop as f32).round() as i64;
+    base - frac_samples
 }
 
 /// Score a single candidate lag against a pair of 1-D feature sequences
@@ -213,7 +295,16 @@ pub fn align_with_onset(
     if min_active == 0 {
         return None;
     }
-    let min_overlap = (min_active as f32 * MIN_OVERLAP_FRACTION).max(8.0);
+    // Floor on overlap: the existing 20 %-of-shorter rule (and the 8-frame
+    // absolute minimum) lets too-thin overlaps through on long queries.
+    // Add a 1-second seconds-based floor that kicks in when the fraction
+    // is too lax — but cap the floor at 80 % of the shorter signal so
+    // sub-second queries (rare but legal) don't get trivially rejected.
+    let frames_per_sec = sample_rate as f32 / HOP as f32;
+    let seconds_floor = (MIN_OVERLAP_SECONDS * frames_per_sec).min(min_active as f32 * 0.8);
+    let min_overlap = (min_active as f32 * MIN_OVERLAP_FRACTION)
+        .max(8.0)
+        .max(seconds_floor);
 
     // Build chroma NCC: raw / sqrt(overlap_count). Where overlap is
     // below threshold, NCC = 0.
@@ -283,7 +374,7 @@ pub fn align_with_onset(
     let primary_ncc_norm = (ncc_chroma[primary_idx] / conf_norm).clamp(0.0, 1.0);
 
     let primary = MatchCandidate {
-        offset_samples: idx_to_offset_samples(primary_idx, cr.n_frames, HOP),
+        offset_samples: refine_peak_offset_samples(&ncc, primary_idx, cr.n_frames, HOP),
         ncc: primary_ncc_norm,
         overlap_frames: overlaps[primary_idx].round() as u32,
     };
@@ -305,25 +396,47 @@ pub fn align_with_onset(
     }
     peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+    // Discrimination stats — surface how sharply primary stands above the
+    // rest of the surface. Computed on `ncc` (the same array peaks were
+    // selected from), so the metric tracks whatever fusion the picker
+    // used. A "tie" PSR ≈ 1.0 means the next runner-up is essentially as
+    // good as the chosen lag — the UI should mark it as ambiguous even
+    // though `confidence` will round to 1.0.
+    let second_peak_val = peaks
+        .iter()
+        .find(|(i, _)| *i != primary_idx)
+        .map(|(_, v)| *v);
+    let peak_to_second_ratio = match second_peak_val {
+        Some(v) if v > 1e-6 => primary_val / v,
+        _ => f32::MAX,
+    };
+    let valid_values: Vec<f32> = ncc.iter().copied().filter(|&v| v > 0.0).collect();
+    let med = median(&valid_values);
+    let peak_to_noise = if med > 1e-6 { primary_val / med } else { f32::MAX };
+    let discrimination = DiscriminationStats {
+        peak_to_second_ratio,
+        peak_to_noise,
+    };
+
+    // Track integer-frame indices separately from the (possibly
+    // sub-frame-refined) offset_samples so spacing stays exact: the
+    // refinement shifts offset_samples by up to ±HOP/2, which the old
+    // `lag = -offset / HOP` round-trip would corrupt.
+    let mut accepted_idxs: Vec<usize> = vec![primary_idx];
     let mut alternates: Vec<MatchCandidate> = Vec::new();
     for (idx, _val) in peaks.into_iter() {
         if idx == primary_idx {
             continue;
         }
-        // Must be far enough from existing accepted peaks (and the primary).
-        let too_close = std::iter::once(primary_idx)
-            .chain(alternates.iter().map(|c| {
-                // Map offset back to index. lag_frames = -offset/hop;
-                // idx = lag_frames + (cr.n_frames - 1).
-                let lag = -c.offset_samples / HOP as i64;
-                (lag + cr.n_frames as i64 - 1) as usize
-            }))
-            .any(|other| (other as isize - idx as isize).unsigned_abs() < min_spacing_frames);
+        let too_close = accepted_idxs
+            .iter()
+            .any(|&other| (other as isize - idx as isize).unsigned_abs() < min_spacing_frames);
         if too_close {
             continue;
         }
+        accepted_idxs.push(idx);
         alternates.push(MatchCandidate {
-            offset_samples: idx_to_offset_samples(idx, cr.n_frames, HOP),
+            offset_samples: refine_peak_offset_samples(&ncc, idx, cr.n_frames, HOP),
             ncc: (ncc_chroma[idx] / conf_norm).clamp(0.0, 1.0),
             overlap_frames: overlaps[idx].round() as u32,
         });
@@ -335,6 +448,7 @@ pub fn align_with_onset(
     Some(AlignmentReport {
         primary,
         alternates,
+        discrimination,
     })
 }
 
@@ -465,6 +579,128 @@ mod tests {
              primary.ncc={} alt.ncc={}",
             report.primary.ncc,
             alt.ncc,
+        );
+    }
+
+    /// Tier 1.4: a 30 s query against a 60 s ref still finds the right
+    /// alignment when the seconds-based overlap floor kicks in, but a
+    /// trivial 0.05 s edge-match on a 60 s ref does NOT pass — the
+    /// floor closes the "lag where 3 frames happen to align" loophole.
+    #[test]
+    fn min_overlap_floor_keeps_normal_alignment() {
+        let sr = 22050u32;
+        let song = make_song(30.0, sr, 7);
+        let mut reference = vec![0.0f32; (sr as f32 * 1.0) as usize];
+        reference.extend_from_slice(&song);
+        let cr = chroma_features(&reference, sr);
+        let cq = chroma_features(&song, sr);
+        let report = align_with_candidates(&cr, &cq, sr, 4).expect("report");
+        let off_ms = report.primary.offset_samples as f64 / sr as f64 * 1000.0;
+        assert!(
+            (off_ms - 1000.0).abs() < 100.0,
+            "expected ~+1000ms; got {}",
+            off_ms,
+        );
+    }
+
+    /// Tier 1.3: parabolic peak refinement must collapse the 23 ms hop
+    /// quantization for offsets that don't fall on hop-multiples.
+    /// Setup: a 137-ms shift (≈ 5.9 hops, very off-grid). Without
+    /// refinement the integer-hop result rounds to the nearest hop
+    /// (~12 ms residual). With refinement the residual must drop below
+    /// half a hop.
+    #[test]
+    fn parabolic_refinement_shrinks_off_grid_residual() {
+        let sr = 22050u32;
+        let song = make_song(15.0, sr, 451);
+        let pad_samples = (0.137 * sr as f32) as usize; // 137 ms — not a hop multiple
+        let mut reference = vec![0.0f32; pad_samples];
+        reference.extend_from_slice(&song);
+        let cr = chroma_features(&reference, sr);
+        let cq = chroma_features(&song, sr);
+        let report = align_with_candidates(&cr, &cq, sr, 4).expect("report");
+        let off_ms = report.primary.offset_samples as f64 / sr as f64 * 1000.0;
+        let residual_ms = (off_ms - 137.0).abs();
+        assert!(
+            residual_ms < 12.0,
+            "refined residual must be sub-half-hop (<12 ms) for off-grid \
+             137 ms shift; got off_ms={} residual={}",
+            off_ms,
+            residual_ms,
+        );
+    }
+
+    /// Tier 1.3 numerical edge cases: peaks at the boundary or with a
+    /// flat top must NOT corrupt the offset (the closed-form parabola
+    /// is undefined there). The function should fall back to the
+    /// integer-hop offset.
+    #[test]
+    fn parabolic_refinement_handles_boundary_and_flat_peaks() {
+        // Boundary at idx=0
+        let ncc = vec![5.0, 4.0, 3.0, 2.0];
+        let n_ref = 2;
+        let hop = 512;
+        let base = idx_to_offset_samples(0, n_ref, hop);
+        assert_eq!(refine_peak_offset_samples(&ncc, 0, n_ref, hop), base);
+
+        // Boundary at idx=len-1
+        let last = ncc.len() - 1;
+        let base_last = idx_to_offset_samples(last, n_ref, hop);
+        assert_eq!(refine_peak_offset_samples(&ncc, last, n_ref, hop), base_last);
+
+        // Flat top: a == b == c → denom == 0
+        let flat = vec![1.0, 1.0, 1.0];
+        let base_flat = idx_to_offset_samples(1, n_ref, hop);
+        assert_eq!(refine_peak_offset_samples(&flat, 1, n_ref, hop), base_flat);
+
+        // Upward curve (denom > 0) — not a maximum; refinement skipped.
+        let upward = vec![1.0, 2.0, 4.0]; // a-2b+c = 1-4+4 = 1 > 0
+        let base_up = idx_to_offset_samples(1, n_ref, hop);
+        assert_eq!(refine_peak_offset_samples(&upward, 1, n_ref, hop), base_up);
+    }
+
+    /// Tier 1.2: discrimination stats must be populated and sane.
+    /// Identity input has a strong, isolated primary peak; PSR should be
+    /// well above 1.0 and PNR even higher (median of an autocorrelation
+    /// surface is far below the peak).
+    #[test]
+    fn discrimination_stats_strong_for_identity() {
+        let sr = 22050u32;
+        let song = make_song(20.0, sr, 17);
+        let cr = chroma_features(&song, sr);
+        let cq = chroma_features(&song, sr);
+        let report = align_with_candidates(&cr, &cq, sr, 4).expect("report");
+        assert!(
+            report.discrimination.peak_to_second_ratio > 1.0,
+            "psr should be >1 for identity; got {}",
+            report.discrimination.peak_to_second_ratio,
+        );
+        assert!(
+            report.discrimination.peak_to_noise > 2.0,
+            "pnr should be >2 for identity (peak much higher than median); got {}",
+            report.discrimination.peak_to_noise,
+        );
+    }
+
+    /// Tier 1.2: when ref contains the master twice, two near-equal peaks
+    /// exist. PSR should sit close to 1.0 — the metric exposes the
+    /// ambiguity that `confidence` alone hides (chroma NCC clamps to ~1
+    /// for both).
+    #[test]
+    fn discrimination_psr_drops_for_repeated_pattern() {
+        let sr = 22050u32;
+        let song = make_song(5.0, sr, 42);
+        let mut reference = song.clone();
+        reference.extend(vec![0.0f32; (sr as f32 * 2.0) as usize]);
+        reference.extend_from_slice(&song);
+        let cr = chroma_features(&reference, sr);
+        let cq = chroma_features(&song, sr);
+        let report = align_with_candidates(&cr, &cq, sr, 4).expect("report");
+        assert!(
+            report.discrimination.peak_to_second_ratio < 1.5,
+            "psr should be near 1.0 for self-repeating ref \
+             (two near-equal peaks); got {}",
+            report.discrimination.peak_to_second_ratio,
         );
     }
 

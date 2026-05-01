@@ -36,6 +36,16 @@ export interface SyncResult {
   /** Top-K alternative offsets ranked by sample-level confidence.
    *  candidates[0] mirrors offsetMs/confidence (the chosen primary). */
   candidates: MatchCandidate[];
+  /** Primary peak / second-highest peak on the matcher's ranking surface.
+   *  `1.0` = a tie (UI should warn — the runner-up is just as good).
+   *  `>1.5` ≈ comfortable margin. Saturates at ~1e6 when there is no
+   *  runner-up (single isolated peak). Use this — not `confidence` — to
+   *  decide whether the match is unambiguous: real-music chroma NCC sits
+   *  at ~1.0 even on the failing pos-2000ms case, so the absolute number
+   *  is a poor discriminator. */
+  peakToSecondRatio: number;
+  /** Primary peak / median correlation over valid lags. */
+  peakToNoise: number;
 }
 
 const TARGET_SR = 22050;
@@ -68,6 +78,8 @@ interface RawSyncResult {
   method: string;
   warning: string | null;
   candidates?: RawCandidate[];
+  peak_to_second_ratio?: number;
+  peak_to_noise?: number;
 }
 
 /** Pure mapping helper — exported so it can be unit-tested without loading
@@ -85,6 +97,11 @@ export function mapWasmResult(raw: RawSyncResult): SyncResult {
       confidence: c.confidence,
       overlapFrames: c.overlap_frames,
     })),
+    // Older WASM bundles (pre-Tier-1.2) don't ship these fields. Fall
+    // back to the saturation sentinel so consumers see a "no margin
+    // info" reading instead of NaN/0 sneaking through.
+    peakToSecondRatio: raw.peak_to_second_ratio ?? Number.POSITIVE_INFINITY,
+    peakToNoise: raw.peak_to_noise ?? Number.POSITIVE_INFINITY,
   };
 }
 

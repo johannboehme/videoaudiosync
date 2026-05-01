@@ -20,6 +20,15 @@ pub struct SyncResult {
     /// Alternate match candidates with NCC ≥ 60 % of the primary's. Sorted
     /// descending by NCC. Used by the editor for snap-to-alternate-match.
     pub candidates: Vec<MatchCandidateOut>,
+    /// Primary peak / second-highest peak on the ranking surface. >1.5 ≈
+    /// comfortable margin; ≈1.0 means the runner-up is essentially as
+    /// strong as the pick (UI should warn). `f64::INFINITY` when no
+    /// runner-up exists. Surfaced from `AlignmentReport::discrimination`.
+    pub peak_to_second_ratio: f64,
+    /// Primary peak / median correlation over the valid-overlap region.
+    /// "How exceptional is the chosen lag." `f64::INFINITY` for
+    /// degenerate inputs.
+    pub peak_to_noise: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +135,8 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
             method: "chroma".to_string(),
             warning: Some("Empty audio".to_string()),
             candidates: Vec::new(),
+            peak_to_second_ratio: f64::INFINITY,
+            peak_to_noise: f64::INFINITY,
         };
     }
 
@@ -153,39 +164,43 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         /*max_alternates=*/ 10,
     );
 
-    let (mut lag, mut confidence, mut candidates) = match report {
-        Some(r) => {
-            // Primary stays whatever chroma+onset picked. Sample-level
-            // Pearson re-ranking was tried and made primaries WORSE on
-            // real music (raw audio inner product is too sensitive to
-            // amplitude/noise differences) — but the same scoring is a
-            // useful confidence reading on each surfaced candidate, so
-            // the UI's snap-to-alternate-match list can rank them.
-            let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
-                .chain(r.alternates.iter())
-                .map(|c| {
-                    let mut out = cand_to_out(c, opts.sr);
-                    let sample = sample_level_pearson(
-                        &ref_y,
-                        &query_y,
-                        c.offset_samples,
-                    );
-                    // Surface the higher of chroma-NCC and sample-NCC so
-                    // alts that look strong at the audio level are visibly
-                    // ranked higher in the snap UI.
-                    out.confidence = (sample as f64).max(c.ncc as f64);
-                    out
-                })
-                .collect();
-            let primary_lag = r.primary.offset_samples;
-            let primary_conf = r.primary.ncc as f64;
-            if let Some(p) = cands.get_mut(0) {
-                p.confidence = primary_conf;
+    let (mut lag, mut confidence, mut candidates, peak_to_second, peak_to_noise) =
+        match report {
+            Some(r) => {
+                // Primary stays whatever chroma+onset picked. Sample-level
+                // Pearson re-ranking was tried and made primaries WORSE on
+                // real music (raw audio inner product is too sensitive to
+                // amplitude/noise differences) — but the same scoring is a
+                // useful confidence reading on each surfaced candidate, so
+                // the UI's snap-to-alternate-match list can rank them.
+                let mut cands: Vec<MatchCandidateOut> = std::iter::once(&r.primary)
+                    .chain(r.alternates.iter())
+                    .map(|c| {
+                        let mut out = cand_to_out(c, opts.sr);
+                        let sample =
+                            sample_level_pearson(&ref_y, &query_y, c.offset_samples);
+                        // Surface the higher of chroma-NCC and sample-NCC so
+                        // alts that look strong at the audio level are visibly
+                        // ranked higher in the snap UI.
+                        out.confidence = (sample as f64).max(c.ncc as f64);
+                        out
+                    })
+                    .collect();
+                let primary_lag = r.primary.offset_samples;
+                let primary_conf = r.primary.ncc as f64;
+                if let Some(p) = cands.get_mut(0) {
+                    p.confidence = primary_conf;
+                }
+                (
+                    primary_lag,
+                    primary_conf,
+                    cands,
+                    r.discrimination.peak_to_second_ratio as f64,
+                    r.discrimination.peak_to_noise as f64,
+                )
             }
-            (primary_lag, primary_conf, cands)
-        }
-        None => (0, 0.0, Vec::new()),
-    };
+            None => (0, 0.0, Vec::new(), f64::INFINITY, f64::INFINITY),
+        };
     let mut method = "ncc+onset".to_string();
     let mut drift = 1.0f64;
     let mut warning: Option<String> = None;
@@ -246,6 +261,8 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         method,
         warning,
         candidates,
+        peak_to_second_ratio: peak_to_second,
+        peak_to_noise,
     }
 }
 

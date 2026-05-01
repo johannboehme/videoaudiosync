@@ -1,0 +1,15 @@
+# Real-music bench corpus. All entries are explicitly Creative Commons or
+# public domain on archive.org. fetch_corpus.sh resolves each URL with
+# yt-dlp + ffmpeg and caches a 30-s f32le @ 22050 Hz mono clip.
+#
+# Add more entries by appending lines below. Format: TAB-separated.
+# name<TAB>genre<TAB>url<TAB>start_s<TAB>duration_s
+#
+# Why TSV, not CSV: track titles routinely contain commas and quotes.
+classical	classical	https://archive.org/details/4BocetosSinfonicos	5	30
+jazz	jazz	https://archive.org/details/jamendo-151803	10	30
+rock	rock	https://archive.org/details/instrum_201606	10	30
+hiphop	hiphop	https://archive.org/details/jamendo-130113	10	30
+ambient	ambient	https://archive.org/details/intercepted-signal	10	30
+folk	folk	https://archive.org/details/BangBangNewYorkliveAcousticRobertKunin	5	30
+electronic	electronic	https://archive.org/details/SaschaMullerInTechnoWeTrust	30	30
