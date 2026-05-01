@@ -156,4 +156,38 @@ describe("useInstallProgress", () => {
 
     expect(result.current.visible).toBe(false);
   });
+
+  it("auto-dismisses after maxWaitMs even if offlineReady never flips", () => {
+    // Real-world failure: dev mode + a fresh origin → no SW ever registers,
+    // so offlineReady never becomes true and sw.ready hangs (devOptions in
+    // vite-plugin-pwa is disabled). Without an upper bound the overlay would
+    // gate the UI forever (the user's "neu laden hilft auch nicht").
+    setSw(makeSw({ controller: null }));
+
+    const { result } = renderHook(() =>
+      useInstallProgress(false, { maxWaitMs: 30_000 }),
+    );
+    expect(result.current.visible).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(29_999);
+    });
+    expect(result.current.visible).toBe(true);
+
+    act(() => {
+      vi.advanceTimersByTime(2);
+    });
+    expect(result.current.visible).toBe(false);
+  });
+
+  it("respects an explicit `disabled: true` option (caller bypass)", () => {
+    setSw(makeSw({ controller: null }));
+
+    const { result } = renderHook(() =>
+      useInstallProgress(false, { disabled: true }),
+    );
+
+    expect(result.current.visible).toBe(false);
+    expect(result.current.slowMode).toBe(false);
+  });
 });

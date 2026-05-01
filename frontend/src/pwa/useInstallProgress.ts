@@ -5,7 +5,24 @@ interface InstallProgress {
   slowMode: boolean;
 }
 
+interface InstallProgressOptions {
+  /** Hard upper bound — once this many ms have elapsed since the install
+   *  would otherwise be gating the UI, the overlay auto-dismisses regardless
+   *  of `offlineReady` / `sw.ready` / `controllerchange`. Acts as a final
+   *  safety net for SW failure modes the lifecycle hooks can't observe. The
+   *  SW continues installing in the background, so losing the overlay
+   *  doesn't lose the install. Defaults to 120 s. */
+  maxWaitMs?: number;
+  /** Force-disable. Caller has decided the overlay should not gate the UI
+   *  at all — e.g. dev mode (`vite-plugin-pwa` doesn't register a worker
+   *  there, so `sw.ready` would hang and `offlineReady` never flips). */
+  disabled?: boolean;
+}
+
 const SLOW_MODE_THRESHOLD_MS = 90_000;
+// 120 s leaves the slow-mode warning (90 s) about 30 s of breathing room
+// to actually be readable before the hard dismiss takes the overlay away.
+const DEFAULT_MAX_WAIT_MS = 120_000;
 
 function hasNoControllerAtMount(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -14,10 +31,16 @@ function hasNoControllerAtMount(): boolean {
   return sw.controller === null;
 }
 
-export function useInstallProgress(offlineReady: boolean): InstallProgress {
-  // Captured once at mount. A repeat-visitor whose SW already controls the
-  // page must never see the overlay, even if some later effect briefly
-  // observes a null controller (e.g. during a page-cache restore).
+export function useInstallProgress(
+  offlineReady: boolean,
+  options: InstallProgressOptions = {},
+): InstallProgress {
+  const { maxWaitMs = DEFAULT_MAX_WAIT_MS, disabled = false } = options;
+
+  // Initialised at mount: a repeat-visitor whose SW already controls the
+  // page must never see the overlay. The flag is later cleared once the
+  // SW becomes observably ready (see effect below) — covers the repeat-
+  // visit case where `controller` is briefly null at mount.
   const [installInProgress, setInstallInProgress] = useState<boolean>(
     hasNoControllerAtMount,
   );
@@ -61,7 +84,10 @@ export function useInstallProgress(offlineReady: boolean): InstallProgress {
     };
   }, [installInProgress]);
 
-  const visible = installInProgress && !offlineReady;
+  const [maxWaitElapsed, setMaxWaitElapsed] = useState(false);
+
+  const visible =
+    !disabled && installInProgress && !offlineReady && !maxWaitElapsed;
 
   const [slowMode, setSlowMode] = useState(false);
   useEffect(() => {
@@ -69,6 +95,18 @@ export function useInstallProgress(offlineReady: boolean): InstallProgress {
     const id = setTimeout(() => setSlowMode(true), SLOW_MODE_THRESHOLD_MS);
     return () => clearTimeout(id);
   }, [visible]);
+
+  // Hard auto-dismiss timer — armed once at mount when an install would
+  // otherwise gate the UI. Read maxWaitMs lazily so the dependency array
+  // can stay [] and the timer doesn't restart on every render.
+  useEffect(() => {
+    if (disabled) return;
+    if (!installInProgress) return;
+    if (offlineReady) return;
+    const id = setTimeout(() => setMaxWaitElapsed(true), maxWaitMs);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return { visible, slowMode };
 }
