@@ -112,7 +112,11 @@ export async function quickRender(input: QuickRenderInput): Promise<QuickRenderR
       frameRate: Math.round(video.info.fps),
     },
     audio: {
-      codec: "aac",
+      // Use whatever codec the encoder actually produced. On most
+      // browsers that's AAC (the requested default), but iOS Safari
+      // falls back to Opus inside `encodeAudioFromPcm` — passing
+      // "aac" here would mismatch the chunks and emit a silent track.
+      codec: encoded.muxerCodec,
       numberOfChannels: encoded.numberOfChannels,
       sampleRate: encoded.sampleRate,
     },
