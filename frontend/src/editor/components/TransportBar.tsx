@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useEditorStore } from "../store";
 import { effectiveAudioStartS } from "../selectors/timing";
 import { useRegisterShortcut } from "../shortcuts/useRegisterShortcut";
+import { useIsNarrowViewport } from "../use-is-narrow";
 import { ChunkyButton } from "./ChunkyButton";
 import { TransportClock } from "./TransportClock";
 import {
@@ -29,6 +30,13 @@ export function TransportBar() {
   const loop = useEditorStore((s) => s.playback.loop);
   const setLoop = useEditorStore((s) => s.setLoop);
   const seek = useEditorStore((s) => s.seek);
+  // Phone-sized viewports get an aggressively compacted transport bar:
+  // every button drops to size="sm" (h-9, 36 px touch target) and IN /
+  // OUT / LOOP lose their text label so the row fits in 2 stacked
+  // rows instead of the previous 4 on a 280-px-wide Galaxy Fold.
+  const isNarrow = useIsNarrowViewport();
+  const btnSize = isNarrow ? "sm" : "md";
+  const playSize = isNarrow ? "md" : "lg";
 
   const fps = meta?.fps && meta.fps > 0 ? meta.fps : 30;
   const duration = meta?.duration ?? 0;
@@ -141,22 +149,22 @@ export function TransportBar() {
   });
 
   return (
-    // gap-y-2 keeps the rows comfortably spaced once the row wraps onto
-    // multiple lines on narrow screens (Galaxy Fold folded ≈ 280 px).
-    <div className="flex items-center gap-x-3 gap-y-2 flex-wrap">
-      <div className="flex items-center gap-1 flex-wrap">
+    // Mobile collapses gap-y to 1 (4 px) so two rows feel like one
+    // compact block; desktop keeps the original spacing.
+    <div className={`flex items-center flex-wrap ${isNarrow ? "gap-x-1 gap-y-1" : "gap-x-3 gap-y-2"}`}>
+      <div className={`flex items-center flex-wrap ${isNarrow ? "gap-0.5" : "gap-1"}`}>
         <ChunkyButton
           variant="secondary"
-          size="md"
+          size={btnSize}
           onClick={() => seek(trim.in)}
           aria-label="Jump to in point"
         >
           <SkipBackIcon />
         </ChunkyButton>
-        {audioStartS > 0 && (
+        {audioStartS > 0 && !isNarrow && (
           <ChunkyButton
             variant="secondary"
-            size="md"
+            size={btnSize}
             onClick={() => seek(effectiveStart)}
             aria-label="Jump to audio start"
           >
@@ -165,7 +173,7 @@ export function TransportBar() {
         )}
         <ChunkyButton
           variant="secondary"
-          size="md"
+          size={btnSize}
           onClick={() => step(-1 / fps)}
           aria-label="Previous frame"
         >
@@ -173,15 +181,19 @@ export function TransportBar() {
         </ChunkyButton>
         <ChunkyButton
           variant="primary"
-          size="lg"
+          size={playSize}
           onClick={() => setPlaying(!isPlaying)}
           aria-label={isPlaying ? "Pause" : "Play"}
         >
-          {isPlaying ? <PauseIcon width={20} height={20} /> : <PlayIcon width={20} height={20} />}
+          {isPlaying ? (
+            <PauseIcon width={isNarrow ? 16 : 20} height={isNarrow ? 16 : 20} />
+          ) : (
+            <PlayIcon width={isNarrow ? 16 : 20} height={isNarrow ? 16 : 20} />
+          )}
         </ChunkyButton>
         <ChunkyButton
           variant="secondary"
-          size="md"
+          size={btnSize}
           onClick={() => step(1 / fps)}
           aria-label="Next frame"
         >
@@ -189,7 +201,7 @@ export function TransportBar() {
         </ChunkyButton>
         <ChunkyButton
           variant="secondary"
-          size="md"
+          size={btnSize}
           onClick={() => seek(trim.out)}
           aria-label="Jump to out point"
         >
@@ -201,22 +213,24 @@ export function TransportBar() {
        *  the same row; on narrow widths the row wraps, so hide it. */}
       <div className="hidden sm:block h-8 w-px bg-rule mx-1" />
 
-      <div className="flex items-center gap-1 flex-wrap">
+      <div className={`flex items-center flex-wrap ${isNarrow ? "gap-0.5" : "gap-1"}`}>
         <ChunkyButton
           variant="secondary"
           size="sm"
           onClick={() => setTrim({ in: currentTime, out: trim.out })}
           iconLeft={<InIcon />}
+          aria-label="Set in-point at the playhead"
         >
-          IN
+          {!isNarrow && "IN"}
         </ChunkyButton>
         <ChunkyButton
           variant="secondary"
           size="sm"
           onClick={() => setTrim({ in: trim.in, out: currentTime })}
           iconLeft={<OutIcon />}
+          aria-label="Set out-point at the playhead"
         >
-          OUT
+          {!isNarrow && "OUT"}
         </ChunkyButton>
         <ChunkyButton
           variant={loop ? "primary" : "secondary"}
@@ -224,15 +238,16 @@ export function TransportBar() {
           size="sm"
           onClick={() => setLoop(loop ? null : { start: currentTime, end: Math.min(duration, currentTime + 2) })}
           iconLeft={<LoopIcon />}
+          aria-label={loop ? "Disable loop" : "Loop a 2-second region from the playhead"}
         >
-          LOOP
+          {!isNarrow && "LOOP"}
         </ChunkyButton>
       </div>
 
-      {/* `ml-auto` only kicks in on sm+ so the clock floats right next to
-       *  the IN/OUT/LOOP group on desktop; on narrow widths it wraps to a
-       *  natural row of its own and centers visually with the rest. */}
-      <TransportClock className="sm:ml-auto" />
+      {/* Clock: hidden on phones — the timeline ruler shows the same
+       *  master time, and the bezel here was eating an entire row.
+       *  Desktop still floats it to the right of the IN/OUT/LOOP group. */}
+      {!isNarrow && <TransportClock className="sm:ml-auto" />}
     </div>
   );
 }
