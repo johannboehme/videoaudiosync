@@ -9,7 +9,14 @@ export function InstallProgressOverlay() {
     offlineReady: [offlineReady],
   } = useRegisterSW({});
 
-  const { visible, slowMode } = useInstallProgress(offlineReady);
+  // Dev mode never registers a SW (vite.config.ts: devOptions.enabled =
+  // false), so `offlineReady` would never flip — without disabling here
+  // the overlay would gate the UI forever on every dev visit. Prod also
+  // gets a hard timeout inside the hook so a stuck install can't trap
+  // users either.
+  const { visible, slowMode } = useInstallProgress(offlineReady, {
+    disabled: import.meta.env.DEV,
+  });
   const counter = useFakeFfCounter(visible);
   if (!visible) return null;
 
@@ -24,7 +31,7 @@ export function InstallProgressOverlay() {
         <div className="px-6 pt-5 pb-3 border-b border-rule">
           <span className="label block">First Install</span>
           <span className="font-display text-[15px] font-semibold text-ink leading-tight block">
-            Installiere TK-1
+            Installing TK-1
           </span>
         </div>
 
@@ -32,13 +39,13 @@ export function InstallProgressOverlay() {
 
         <div className="px-6 py-4 space-y-2">
           <p className="text-[13px] leading-snug text-ink-2">
-            Spulen {APPROX_BUNDLE_SIZE} Render-Engine vor — danach öffnet die
-            App beim nächsten Start sofort, auch ohne Internet.
+            Spooling {APPROX_BUNDLE_SIZE} of render engine ahead — once done,
+            the app opens instantly on next launch, even offline.
           </p>
           {slowMode && (
             <p className="text-[12px] leading-snug text-ink-2 border-l-2 border-warn pl-3">
-              Falls das hängt: Seite neu laden — die App funktioniert auch
-              ohne Offline-Cache.
+              If this hangs: reload the page — the app also works without an
+              offline cache.
             </p>
           )}
         </div>
