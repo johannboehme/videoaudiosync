@@ -10,12 +10,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, "..", "..", ".github", "screenshots");
 await mkdir(outDir, { recursive: true });
 
-const fixtures = resolve(here, "..", "public", "__test_fixtures__");
-const audioPath = join(fixtures, "studio-mp3.mp3");
+// README screenshots use a separate fixture set with real-looking
+// performance footage and a short instrumental track, instead of the
+// solid-colour synthetic clips the test suite uses. See ATTRIBUTION.md
+// in the fixture dir for sources and licenses.
+const fixtures = resolve(here, "..", "public", "__readme_fixtures__");
+const audioPath = join(fixtures, "studio.mp3");
 const videoPaths = [
-  join(fixtures, "video-720p.mp4"),
-  join(fixtures, "video-1080p.mp4"),
-  join(fixtures, "video-portrait-1080.mp4"),
+  join(fixtures, "take-1.mp4"),
+  join(fixtures, "take-2.mp4"),
+  join(fixtures, "take-3.mp4"),
 ];
 
 const base = process.env.VAS_BASE_URL ?? "http://localhost:5173";
