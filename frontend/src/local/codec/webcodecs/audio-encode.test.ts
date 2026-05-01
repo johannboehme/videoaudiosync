@@ -13,6 +13,17 @@ interface MockEncoderState {
   description?: Uint8Array;
   /** When set, fire the error callback with this on the first encode(). */
   errorOnFirstEncode?: Error;
+  /** Per-codec overrides. Useful for "AAC silently emits 0, Opus works". */
+  perCodec?: Partial<
+    Record<
+      string,
+      {
+        emitChunks?: number;
+        errorOnFirstEncode?: Error;
+        configureThrows?: Error;
+      }
+    >
+  >;
 }
 
 function installMockWebCodecs(state: MockEncoderState, supportedCodecs: Set<string>) {
@@ -31,25 +42,30 @@ function installMockWebCodecs(state: MockEncoderState, supportedCodecs: Set<stri
     private err: (e: Error) => void;
     private firedFirst = false;
     private firedDescription = false;
+    private codec = "";
     constructor(init: { output: MockAudioEncoder["out"]; error: MockAudioEncoder["err"] }) {
       this.out = init.output;
       this.err = init.error;
     }
-    configure(_cfg: unknown) {
-      /* noop */
+    configure(cfg: { codec: string }) {
+      this.codec = cfg.codec;
+      const override = state.perCodec?.[cfg.codec];
+      if (override?.configureThrows) throw override.configureThrows;
     }
     encode(_d: unknown) {
-      if (state.errorOnFirstEncode && !this.firedFirst) {
+      const override = state.perCodec?.[this.codec];
+      const errorOnFirst = override?.errorOnFirstEncode ?? state.errorOnFirstEncode;
+      if (errorOnFirst && !this.firedFirst) {
         this.firedFirst = true;
-        this.err(state.errorOnFirstEncode);
+        this.err(errorOnFirst);
         return;
       }
       this.firedFirst = true;
-      // Don't actually emit on every encode — emit a fixed number of
-      // chunks matching `state.emitChunks` total.
     }
     async flush() {
-      for (let i = 0; i < state.emitChunks; i++) {
+      const override = state.perCodec?.[this.codec];
+      const emitChunks = override?.emitChunks ?? state.emitChunks;
+      for (let i = 0; i < emitChunks; i++) {
         const meta = !this.firedDescription
           ? {
               decoderConfig: {
@@ -133,7 +149,7 @@ describe("encodeAudioFromPcm — failure modes that used to ship a silent track"
     expect(result.chunks.length).toBe(3);
   });
 
-  it("throws clearly when neither codec is supported", async () => {
+  it("throws aggregated error when both codecs are unsupported", async () => {
     installMockWebCodecs({ emitChunks: 1 }, new Set());
     const pcm = new Float32Array(48000);
     await expect(
@@ -142,7 +158,7 @@ describe("encodeAudioFromPcm — failure modes that used to ship a silent track"
         sampleRate: 48000,
         codec: "aac",
       }),
-    ).rejects.toThrow(/cannot encode AAC or Opus/);
+    ).rejects.toThrow(/failed for both AAC and OPUS/);
   });
 
   it("throws when the encoder fires an async error mid-stream", async () => {
@@ -194,5 +210,50 @@ describe("encodeAudioFromPcm — failure modes that used to ship a silent track"
     expect(result.codec).toBe("mp4a.40.2");
     expect(result.chunks.length).toBe(5);
     expect(result.description).toBeDefined();
+  });
+
+  it("falls back to Opus when AAC PASSES the probe but emits 0 chunks (Android Chrome MediaCodec sim)", async () => {
+    // Real-world failure mode the user hit: probe says AAC is fine,
+    // configure succeeds, but the underlying MediaCodec encoder on the
+    // device just doesn't deliver chunks — we shipped a registered-but-
+    // empty audio track. This test pins the try-then-fallback fix.
+    installMockWebCodecs(
+      {
+        emitChunks: 0, // default for any codec without a per-codec entry
+        perCodec: {
+          "mp4a.40.2": { emitChunks: 0 }, // AAC silently broken
+          opus: { emitChunks: 4 }, // Opus works
+        },
+      },
+      new Set(["mp4a.40.2", "opus"]),
+    );
+    const pcm = new Float32Array(48000);
+    const result = await encodeAudioFromPcm(pcm, {
+      numberOfChannels: 1,
+      sampleRate: 48000,
+      codec: "aac",
+    });
+    expect(result.muxerCodec).toBe("opus");
+    expect(result.chunks.length).toBe(4);
+  });
+
+  it("falls back to AAC when Opus configure throws (mirror case)", async () => {
+    installMockWebCodecs(
+      {
+        emitChunks: 3,
+        perCodec: {
+          opus: { configureThrows: new Error("opus configure: NotSupportedError") },
+        },
+      },
+      new Set(["mp4a.40.2", "opus"]),
+    );
+    const pcm = new Float32Array(48000);
+    const result = await encodeAudioFromPcm(pcm, {
+      numberOfChannels: 1,
+      sampleRate: 48000,
+      codec: "opus",
+    });
+    expect(result.muxerCodec).toBe("aac");
+    expect(result.chunks.length).toBe(3);
   });
 });
