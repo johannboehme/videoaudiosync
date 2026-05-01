@@ -19,7 +19,7 @@ services:
         VITE_IMPRESSUM_EMAIL: "${VITE_IMPRESSUM_EMAIL:-}"
         VITE_DSGVO_AUTHORITY_NAME: "${VITE_DSGVO_AUTHORITY_NAME:-}"
         VITE_DSGVO_AUTHORITY_ADDRESS: "${VITE_DSGVO_AUTHORITY_ADDRESS:-}"
-    container_name: videoaudiosync
+    container_name: tk-1
     restart: unless-stopped
     # The container only serves the static SPA bundle; no /data volume,
     # no env secrets — everything user-state lives in the browser (OPFS +

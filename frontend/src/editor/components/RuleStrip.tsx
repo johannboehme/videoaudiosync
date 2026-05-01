@@ -55,3 +55,23 @@ export function RegistrationMark({ className = "" }: { className?: string }) {
     </svg>
   );
 }
+
+// Sibling of RegistrationMark with an active REC dot at the centre.
+// Used as the TK-1 wordmark glyph: black calibration crosshair + hot-red LED.
+export function RecMark({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      className={`block w-4 h-4 ${className}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1"
+    >
+      <line x1="0" y1="8" x2="16" y2="8" />
+      <line x1="8" y1="0" x2="8" y2="16" />
+      <circle cx="8" cy="8" r="5.5" />
+      <circle cx="8" cy="8" r="3" fill="#FF5722" stroke="none" />
+    </svg>
+  );
+}

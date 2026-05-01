@@ -1,18 +1,18 @@
-# Video / Audio Sync
+# TK-1 — Take One
 
-A small, opinionated video editor for musicians who want to *play the
-edit*, not configure one.
+**Take 1.** A small, opinionated multi-cam music video editor for
+musicians who want to *play the edit*, not configure one.
 
 You record yourself playing the song on your phone (or your Ray-Bans, or
 three phones on tripods, or whatever) and you also have the clean studio
-render of the song as MP3/WAV. Drop both in the browser. The app aligns
+render of the song as MP3/WAV. Drop both in the browser. TK-1 aligns
 every camera angle to the studio audio, opens a multi-track editor, and
 renders an MP4 you can post.
 
 No upload, no account, no waiting room. Everything happens in the browser
 tab in front of you.
 
-**Live demo:** <https://sync.johannboehme.de>
+**Live demo:** <https://tk-1.app>
 
 <p align="center">
   <img src=".github/screenshots/01-upload.png" alt="Drop the song. Drop your videos. Build the cut." width="900">
@@ -359,8 +359,8 @@ Bootstrap on a fresh server (Debian / Ubuntu):
 ```bash
 sudo apt-get update && sudo apt-get install -y \
   docker.io docker-compose-plugin nginx certbot python3-certbot-nginx
-git clone https://github.com/<you>/videoaudiosync.git ~/videoaudiosync
-cd ~/videoaudiosync
+git clone https://github.com/<you>/tk-1.git ~/tk-1
+cd ~/tk-1
 cp .env.example .env && $EDITOR .env       # ← imprint config (above)
 sudo cp deploy/nginx-vhost.conf /etc/nginx/sites-available/<your-host>
 sudo ln -s /etc/nginx/sites-available/<your-host> /etc/nginx/sites-enabled/
