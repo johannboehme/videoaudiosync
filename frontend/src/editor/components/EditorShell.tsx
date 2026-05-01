@@ -46,9 +46,12 @@ export function EditorShell({
   // When the FX compartment is pulled out, the timeline's top corners
   // go flat — the compartment merges with the timeline as a single
   // "drawer pulled out of the timeline" silhouette.
+  // Mobile drops the timeline-wrapper padding from 12 → 6 px so the
+  // header strip and lane stack sit nearly flush with the surrounding
+  // chrome — every saved row matters on a 280-px-wide phone.
   const timelineWrapperClass = fxPanelOpen
-    ? "shrink-0 bg-paper-hi rounded-b-lg border border-rule shadow-panel p-3"
-    : "shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3";
+    ? "shrink-0 bg-paper-hi rounded-b-lg border border-rule shadow-panel p-1.5 sm:p-3"
+    : "shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-1.5 sm:p-3";
 
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
@@ -125,21 +128,25 @@ export function EditorShell({
        *  flagged as too short on a Galaxy Fold) we let the column scroll
        *  vertically. Video is capped at 40 vh so the timeline always
        *  appears above the fold on common portrait phones. */}
-      <div className="flex-1 lg:hidden flex flex-col gap-3 px-3 pb-3 overflow-y-auto overflow-x-hidden min-h-0">
+      {/* Mobile column: tighter gap + padding so the preview, transport,
+       *  timeline header and timeline cluster close enough that the
+       *  user can keep eyes on the preview while their thumbs reach
+       *  the transport / FX / timeline buttons. */}
+      <div className="flex-1 lg:hidden flex flex-col gap-1.5 px-2 pb-2 overflow-y-auto overflow-x-hidden min-h-0">
         <div
           className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden"
           style={{ maxHeight: "40vh" }}
         >
           <div className="absolute inset-0">{videoArea}</div>
         </div>
-        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-3">
+        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-1.5">
           {transport}
         </div>
         {fxPanel}
         <div className={`${timelineWrapperClass} overflow-x-hidden`}>
           {timeline}
         </div>
-        <ChunkyButton variant="primary" size="lg" fullWidth onClick={() => setSheetOpen(true)}>
+        <ChunkyButton variant="primary" size="md" fullWidth onClick={() => setSheetOpen(true)}>
           OPEN PANELS
         </ChunkyButton>
         <BottomSheet open={sheetOpen} onOpenChange={setSheetOpen}>

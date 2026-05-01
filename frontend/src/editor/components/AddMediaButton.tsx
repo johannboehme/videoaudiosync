@@ -64,25 +64,25 @@ export function AddMediaButton({ jobId, compact = false }: Props) {
     }
   };
 
+  // 64-px lane-header column on phones: MATCH shrinks to LED-only
+  // (no "match" label) and + drops from 44 → 22 px so both fit
+  // side-by-side with a 4 px gap. Wider viewports keep the labelled
+  // MATCH chip and the full-width +.
+  const plusW = compact ? 22 : PLUS_W;
   return (
     <div
       className={[
-        "flex items-center w-full",
-        // Compact: just centre the "+" inside the 64 px column. The
-        // MATCH toggle is hidden — it stays at its default `on`, which
-        // is what users want for the common case. Power users can still
-        // toggle it on a wider viewport.
+        "flex items-center w-full gap-1",
         compact ? "justify-center px-1" : "justify-between pl-2 pr-2",
       ].join(" ")}
       data-testid="add-media-bar"
     >
-      {!compact && (
-        <MatchTab
-          on={matchAudio}
-          onChange={setMatchAudio}
-          disabled={busy}
-        />
-      )}
+      <MatchTab
+        on={matchAudio}
+        onChange={setMatchAudio}
+        disabled={busy}
+        compact={compact}
+      />
 
       <motion.button
         type="button"
@@ -93,7 +93,7 @@ export function AddMediaButton({ jobId, compact = false }: Props) {
         title="Add media (video or image)"
         className="relative shrink-0 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
         style={{
-          width: PLUS_W,
+          width: plusW,
           height: PLUS_H,
           transform: busy ? "translateY(1px)" : undefined,
         }}
@@ -151,17 +151,19 @@ function MatchTab({
   on,
   onChange,
   disabled,
+  compact = false,
 }: {
   on: boolean;
   onChange: (next: boolean) => void;
   disabled: boolean;
+  compact?: boolean;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
-      aria-label="Match audio for incoming video clips"
+      aria-label={`Match audio for incoming video clips: ${on ? "on" : "off"}`}
       disabled={disabled}
       onClick={() => onChange(!on)}
       title={
@@ -170,19 +172,23 @@ function MatchTab({
           : "MATCH off — incoming videos go in unsynced (toggle to enable matching)"
       }
       className={[
-        "inline-flex items-center gap-1 px-1.5 select-none rounded",
+        "inline-flex items-center select-none rounded shrink-0",
+        // Compact: a square LED chip — 22 × 24 with just the dot.
+        // Wider viewports keep the labelled chip with the "match" caption.
+        compact ? "justify-center px-1" : "gap-1 px-1.5",
         "transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
         "active:translate-y-[1px]",
       ].join(" ")}
       style={{
         height: PLUS_H,
+        width: compact ? 22 : undefined,
         ...(on ? MATCH_ON : MATCH_OFF),
       }}
       data-testid="add-media-match-toggle"
     >
       <span
         aria-hidden
-        className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+        className={`inline-block rounded-full shrink-0 ${compact ? "w-2 h-2" : "w-1.5 h-1.5"}`}
         style={{
           background: on ? "#FF5722" : "#9A8F80",
           boxShadow: on
@@ -191,12 +197,14 @@ function MatchTab({
           opacity: on ? 1 : 0.55,
         }}
       />
-      <span
-        className="font-display tracking-label uppercase text-[9px] font-semibold leading-none"
-        style={{ color: on ? "#1A1816" : "#5C544A" }}
-      >
-        match
-      </span>
+      {!compact && (
+        <span
+          className="font-display tracking-label uppercase text-[9px] font-semibold leading-none"
+          style={{ color: on ? "#1A1816" : "#5C544A" }}
+        >
+          match
+        </span>
+      )}
     </button>
   );
 }

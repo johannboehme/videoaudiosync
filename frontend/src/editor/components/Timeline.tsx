@@ -1186,15 +1186,14 @@ export function Timeline({
 
   return (
     <div ref={wrapRef} className="w-full select-none">
-      {/* Top header row: BPM-LCD + cassette snap-buttons on the left,
-          view-range readout on the right. On narrow phones the row wraps
-          and the zoom readout drops to its own line so nothing has to
-          truncate or overflow. */}
-      <div className="flex items-center gap-x-4 gap-y-2 px-1 mb-2 flex-wrap">
+      {/* DESKTOP / TABLET header — hidden below sm. The big BPM bezel,
+       *  cassette snap-key plate, and labelled BOTH/CUTS/FX segmented
+       *  control are all here. Wraps onto a second line on a Galaxy
+       *  Fold-folded phone and used to eat 3 entire rows of vertical
+       *  space, so we hide the whole thing on `<sm` and replace it
+       *  with `<MobileTimelineHeader />` below. */}
+      <div className="hidden sm:flex items-center gap-x-4 gap-y-2 px-1 mb-2 flex-wrap">
         <BpmReadout />
-        {/* SnapModeButtons can scroll horizontally inside its own plate;
-            we hand it a min-w-0 wrapper here so it doesn't blow out the
-            timeline-header row width. */}
         <div className="min-w-0 flex-shrink">
           <SnapModeButtons />
         </div>
@@ -1221,6 +1220,11 @@ export function Timeline({
             {viewStart.toFixed(1)}s — {viewEnd.toFixed(1)}s
           </span>
         </div>
+      </div>
+      {/* MOBILE header — single ~24-px-tall row with all the same
+       *  controls but stripped of every label, stencil and bezel. */}
+      <div className="flex sm:hidden">
+        <MobileTimelineHeader zoomPercent={zoomPercent} />
       </div>
 
       <div className="rounded-md overflow-hidden border border-rule shadow-panel bg-paper-hi-deep">
@@ -1939,6 +1943,139 @@ function ActiveMatchReadout({
           %
         </span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One-row, ~22-px-tall timeline header for phone-sized viewports.
+ *
+ * Replaces the full BPM bezel + cassette snap-key plate + labelled
+ * BOTH/CUTS/FX segmented control + view-range readout that wraps onto
+ * 3 rows on a Galaxy-Fold-folded screen. Same store surface (snap
+ * mode, strip mode, lock toggle) but stripped of every label,
+ * stencil and bezel — every interaction is a single tap on a small
+ * pill. BPM/SIG are render-only here (rare on mobile; users edit on
+ * desktop or via the SidePanel sync tab).
+ */
+const MOBILE_SNAP_MODES: { mode: SnapMode; label: string }[] = [
+  { mode: "off", label: "·" },
+  { mode: "match", label: "M" },
+  { mode: "1", label: "1" },
+  { mode: "1/2", label: "½" },
+  { mode: "1/4", label: "¼" },
+  { mode: "1/8", label: "⅛" },
+  { mode: "1/16", label: "16" },
+];
+
+function MobileTimelineHeader({ zoomPercent }: { zoomPercent: number }) {
+  const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value);
+  const sig = useEditorStore((s) => effectiveBeatsPerBar(s.jobMeta));
+  const snapMode = useEditorStore((s) => s.ui.snapMode);
+  const setSnapMode = useEditorStore((s) => s.setSnapMode);
+  const programStripMode = useEditorStore((s) => s.ui.programStripMode);
+  const setProgramStripMode = useEditorStore((s) => s.setProgramStripMode);
+  const lanesLocked = useEditorStore((s) => s.ui.lanesLocked);
+  const setLanesLocked = useEditorStore((s) => s.setLanesLocked);
+  const hasBpm = useEditorStore((s) => Boolean(s.jobMeta?.bpm));
+
+  const stripBtn = (
+    label: string,
+    value: typeof programStripMode,
+    title: string,
+  ) => {
+    const active = programStripMode === value;
+    return (
+      <button
+        key={value}
+        type="button"
+        title={title}
+        aria-label={title}
+        aria-pressed={active}
+        onClick={() => setProgramStripMode(value)}
+        className={[
+          "h-5 w-5 rounded-[3px] flex items-center justify-center font-display text-[9px] tracking-label uppercase border border-black/30",
+          active
+            ? "bg-ink text-paper-hi"
+            : "bg-paper-hi text-ink-2",
+        ].join(" ")}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div className="w-full flex items-center gap-1 px-0.5 mb-1 text-[10px]">
+      {/* BPM · SIG — read-only on mobile. Tappable hit-area can land
+       *  here in a future pass; for now the auto-detected BPM is
+       *  almost always right and editing happens on desktop. */}
+      <span
+        className="shrink-0 font-mono tabular text-ink-2"
+        style={{ fontSize: 10 }}
+        title="BPM · time signature (edit on a wider viewport)"
+      >
+        {bpm ? Math.round(bpm) : "—"}·{sig}/4
+      </span>
+
+      {/* Snap-mode mini strip — horizontal-scrollable so all 7 fit on
+       *  a 280-px screen. No LED, no stencil — just the divisions. */}
+      <div
+        className="flex items-center gap-0.5 overflow-x-auto no-native-scrollbar shrink min-w-0"
+        role="group"
+        aria-label="Snap mode"
+      >
+        {MOBILE_SNAP_MODES.map(({ mode, label }) => {
+          const active = snapMode === mode;
+          const disabled = mode !== "off" && mode !== "match" && !hasBpm;
+          return (
+            <button
+              key={mode}
+              type="button"
+              title={`Snap: ${mode}`}
+              aria-pressed={active}
+              disabled={disabled}
+              onClick={() => setSnapMode(mode)}
+              className={[
+                "h-5 min-w-[18px] px-1 rounded-[3px] flex items-center justify-center",
+                "font-mono text-[9px] tracking-tight border border-black/30 shrink-0",
+                "disabled:opacity-30",
+                active
+                  ? "bg-ink text-paper-hi"
+                  : "bg-paper-hi text-ink-2",
+              ].join(" ")}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Strip-mode (BOTH/CUTS/FX) → single icons B / C / F. */}
+      <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Program strip mode">
+        {stripBtn("B", "both", "Show cuts and FX")}
+        {stripBtn("C", "cuts", "Show cuts only")}
+        {stripBtn("F", "fx", "Show FX only")}
+      </div>
+
+      {/* Lock toggle — same role as the cassette LOCK key on desktop. */}
+      <button
+        type="button"
+        aria-label={lanesLocked ? "Unlock lanes" : "Lock lanes"}
+        title={lanesLocked ? "Lanes locked — tap to drag clips" : "Lanes unlocked — tap to lock"}
+        onClick={() => setLanesLocked(!lanesLocked)}
+        className={[
+          "h-5 w-5 rounded-[3px] flex items-center justify-center text-[10px] leading-none",
+          "border border-black/30 shrink-0",
+          lanesLocked ? "bg-paper-hi text-ink-2" : "bg-ink text-paper-hi",
+        ].join(" ")}
+      >
+        {lanesLocked ? "🔒" : "🔓"}
+      </button>
+
+      <span className="ml-auto shrink-0 font-mono tabular text-ink-3" style={{ fontSize: 10 }}>
+        {zoomPercent}%
+      </span>
     </div>
   );
 }
