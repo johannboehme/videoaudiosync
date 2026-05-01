@@ -37,6 +37,7 @@ import {
   effectiveBarOffsetBeats,
 } from "../selectors/timing";
 import { BarsHeader } from "./timeline/BarsHeader";
+import { useIsNarrowViewport } from "../use-is-narrow";
 import { MASTER_AUDIO_ID } from "../types";
 
 interface CamAssetInfo {
@@ -128,7 +129,11 @@ type DragKind =
 
 const HANDLE_HIT = 14;
 const TARGET_TILE_W = 64;
-const HEADER_W = 156;
+/** Default lane-header column width on desktop. The narrow-viewport
+ *  variant (`HEADER_W_COMPACT`) is used on phone-sized screens — see
+ *  LaneHeader.tsx for the matching compact body. */
+const HEADER_W_DEFAULT = 156;
+const HEADER_W_COMPACT = 64;
 const SCROLLBAR_H = 14;
 
 export function Timeline({
@@ -139,6 +144,11 @@ export function Timeline({
   videoLaneHeight = 48,
   onDeleteClip,
 }: Props) {
+  // Phone-sized viewports get a 64 px lane-header column instead of the
+  // default 156 px — without this the header eats over half the timeline
+  // canvas on a 280–390 px wide screen.
+  const isNarrow = useIsNarrowViewport();
+  const HEADER_W = isNarrow ? HEADER_W_COMPACT : HEADER_W_DEFAULT;
   const wrapRef = useRef<HTMLDivElement>(null);
   // Lane-stack vertical scroll state — drives the custom fader-thumb.
   const laneStackRef = useRef<HTMLDivElement>(null);
@@ -277,6 +287,10 @@ export function Timeline({
   const canvasH = audioBand.bottom;
 
   // ---- Resize observer ----
+  // Re-runs when HEADER_W flips between desktop (156) and compact (64)
+  // so a viewport-width change re-derives canvasWidth from the new
+  // header column width — otherwise the canvas drifts ~92 px wider or
+  // narrower than the actual lane area until the next browser resize.
   useEffect(() => {
     if (!wrapRef.current) return;
     const ro = new ResizeObserver((entries) => {
@@ -285,7 +299,7 @@ export function Timeline({
     });
     ro.observe(wrapRef.current);
     return () => ro.disconnect();
-  }, []);
+  }, [HEADER_W]);
 
   // Re-measure the lane-stack scroll geometry whenever the cam count
   // changes — adding / removing lanes shifts scrollHeight, and the
@@ -1232,7 +1246,7 @@ export function Timeline({
             className="shrink-0 flex items-center justify-end border-r border-b border-rule bg-paper-hi"
             style={{ width: HEADER_W, height: tapeHeightForMode(programStripMode) }}
           >
-            {jobMeta?.id && <AddMediaButton jobId={jobMeta.id} />}
+            {jobMeta?.id && <AddMediaButton jobId={jobMeta.id} compact={isNarrow} />}
           </div>
           <div className="flex-1 relative" style={{ width: canvasWidth }}>
             <ProgramStrip
@@ -1392,15 +1406,18 @@ export function Timeline({
                 preparing={preparingCamIds.has(clip.id)}
                 onDelete={() => onDeleteClip?.(clip.id)}
                 height={videoLaneHeight}
+                compact={isNarrow}
               />
             ))}
-            {/* MASTER · AUDIO header */}
+            {/* MASTER · AUDIO header — narrower padding + abbreviated
+             *  label on phone-sized viewports so the header stays inside
+             *  the 64 px column. */}
             <div
-              className="shrink-0 flex items-center px-3 border-r border-t border-rule bg-paper-hi"
+              className={`shrink-0 flex items-center border-r border-t border-rule bg-paper-hi ${isNarrow ? "px-1.5" : "px-3"}`}
               style={{ height: audioLaneHeight }}
             >
-              <span className="font-mono text-[9px] tracking-label uppercase text-ink-2">
-                MASTER · AUDIO
+              <span className="font-mono text-[9px] tracking-label uppercase text-ink-2 truncate">
+                {isNarrow ? "MASTER" : "MASTER · AUDIO"}
               </span>
             </div>
           </div>
@@ -1415,7 +1432,22 @@ export function Timeline({
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
               onWheel={onWheel}
-              style={{ cursor: hoverCursor, touchAction: "none", display: "block" }}
+              // Block the system context menu so a long-press
+              // (hold-to-erase, hold-to-paint cut, etc.) on Android
+              // Chrome / iOS Safari doesn't pop the platform "save
+              // image / select / share" callout that hijacks the
+              // gesture and aborts the user's edit. `touchAction:
+              // none` already disables scroll/zoom; adding the
+              // callout suppression closes the last gap.
+              onContextMenu={(e) => e.preventDefault()}
+              style={{
+                cursor: hoverCursor,
+                touchAction: "none",
+                display: "block",
+                WebkitTouchCallout: "none",
+                WebkitUserSelect: "none",
+                userSelect: "none",
+              }}
             />
           </div>
         </div>

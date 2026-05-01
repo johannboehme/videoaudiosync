@@ -91,6 +91,26 @@ body,
   display: none;
 }
 
+/* `.no-long-press` — apply to any container whose pointer gestures
+ * include a long-press (the editor at large: FX pads, TAKE buttons,
+ * cut/FX markers on the timeline canvas). Suppresses the platform
+ * "save image / select / share" callout that Android Chrome and iOS
+ * Safari pop on long-press, which would otherwise hijack the gesture
+ * and abort the user's hold-to-paint or hold-to-erase. We deliberately
+ * scope the user-select / touch-callout suppression to canvases and
+ * buttons (the long-press surfaces) — leaving inputs and contenteditable
+ * regions untouched so the BPM editor and filename inputs still let the
+ * user select / paste text. The companion `oncontextmenu` preventDefault
+ * on each surface closes the desktop right-click path.
+ */
+.no-long-press canvas,
+.no-long-press button,
+.no-long-press [role="button"] {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* Reduce motion respectfully */
 @media (prefers-reduced-motion: reduce) {
   *,

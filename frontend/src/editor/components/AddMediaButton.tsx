@@ -14,6 +14,10 @@ import { useEditorStore } from "../store";
 
 interface Props {
   jobId: string;
+  /** Compact mode for ~64 px lane-header columns on phones: drop the
+   *  MATCH toggle (the user can't see what it does at this size; the
+   *  default is on, which is what 99 % of users want). */
+  compact?: boolean;
 }
 
 const ACCEPT = "video/*,image/*";
@@ -23,7 +27,7 @@ const ACCEPT = "video/*,image/*";
 const PLUS_W = 44;
 const PLUS_H = 24;
 
-export function AddMediaButton({ jobId }: Props) {
+export function AddMediaButton({ jobId, compact = false }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [matchAudio, setMatchAudio] = useState(true);
@@ -62,14 +66,23 @@ export function AddMediaButton({ jobId }: Props) {
 
   return (
     <div
-      className="flex items-center justify-between w-full pl-2 pr-2"
+      className={[
+        "flex items-center w-full",
+        // Compact: just centre the "+" inside the 64 px column. The
+        // MATCH toggle is hidden — it stays at its default `on`, which
+        // is what users want for the common case. Power users can still
+        // toggle it on a wider viewport.
+        compact ? "justify-center px-1" : "justify-between pl-2 pr-2",
+      ].join(" ")}
       data-testid="add-media-bar"
     >
-      <MatchTab
-        on={matchAudio}
-        onChange={setMatchAudio}
-        disabled={busy}
-      />
+      {!compact && (
+        <MatchTab
+          on={matchAudio}
+          onChange={setMatchAudio}
+          disabled={busy}
+        />
+      )}
 
       <motion.button
         type="button"

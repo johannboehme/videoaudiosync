@@ -238,11 +238,18 @@ export function ProgramStrip({
           // In "both" mode, leave room for the FX layer + 1 px etched divider.
           bottom: mode === "both" ? stripHeight - splitMidY : contentBottom,
           touchAction: onClearCuts ? "none" : undefined,
+          WebkitTouchCallout: "none",
+          WebkitUserSelect: "none",
+          userSelect: "none",
         }}
         onPointerDown={onClearCuts ? cutsLP.start : undefined}
         onPointerUp={onClearCuts ? cutsLP.cancel : undefined}
         onPointerCancel={onClearCuts ? cutsLP.cancel : undefined}
         onPointerLeave={onClearCuts ? cutsLP.cancel : undefined}
+        // Block the long-press callout — the 3-s hold-to-clear-all-cuts
+        // gesture would otherwise be hijacked by the platform context
+        // menu on Android Chrome / iOS Safari.
+        onContextMenu={(e) => e.preventDefault()}
       >
         {segments.map((seg, i) => {
           const x1 = tToX(seg.startS);
@@ -488,11 +495,15 @@ export function ProgramStrip({
             top: fxLayerTop,
             height: fxLayerHeight,
             touchAction: onClearFx ? "none" : undefined,
+            WebkitTouchCallout: "none",
+            WebkitUserSelect: "none",
+            userSelect: "none",
           }}
           onPointerDown={onClearFx ? fxLP.start : undefined}
           onPointerUp={onClearFx ? fxLP.cancel : undefined}
           onPointerCancel={onClearFx ? fxLP.cancel : undefined}
           onPointerLeave={onClearFx ? fxLP.cancel : undefined}
+          onContextMenu={(e) => e.preventDefault()}
         >
           <FxStripLayer
             fx={fx}
