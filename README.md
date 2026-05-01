@@ -23,15 +23,12 @@ the render both run in the browser tab.
 The visual language and the workflow are both shamelessly inspired
 by Teenage Engineering. The OP-1, the OP-Z, the Pocket Operators:
 devices that pick one job and design every surface around being
-*operated*, not configured. The brass-plate LCDs, the chunky cam-pad
-keys, the tap-or-hold semantics, the quantize-on-hold preview. They're
-here because this editor should feel like a sampler.
+*operated*, not configured. This editor wants to feel the same
+way: a sampler for music videos.
 
-The expected loop is: hit `Space`, watch the song play, tap
-`1`/`2`/`3` to switch cams in real-time like you're punching pads,
-hold a pad over the chorus to drop a vignette, hit `Q` to glance at
-how everything looks quantized to the beat grid, release. Then play
-it back and adjust.
+The expected loop: drop everything in, hit play, perform your
+cam-switches and effects live as the song plays, then quantize the
+cuts to the beat. Listen back and tweak.
 
 Most "shortform video tools" are timeline editors with a phone
 preset. Most "pro NLEs" put a six-pane workspace, a project file,
@@ -55,19 +52,15 @@ Written in Rust, compiled to WASM, runs inside the page.
 
 ### Snap to the bar, or to where the take actually is
 
-Beat detection runs on the master audio and you get a real beat
+Beat detection runs on the master audio and gives you a real beat
 grid: 4/4 by default, configurable, with a bar-1 pickup so the grid
-lines up with the *song* and not with sample 0.
+lines up with the *song* and not with sample 0. Quantize down to
+sixteenth notes, up to whole bars.
 
-When you drag a clip on the timeline, snap goes to the grid (whole,
-half, quarter, eighth, sixteenth) or to the audio-match positions
-where the take itself plays a downbeat. So you're not snapping to
-"the nearest beat"; you're snapping to "the place where the take
-actually plays the downbeat."
-
-Hold `Q` to live-preview the whole timeline quantized to the active
-grid. Release to commit, `Esc` to cancel. You can re-time a whole
-edit in about a second.
+When you drag a clip on the timeline, snap goes to the grid or to
+the audio-match positions where the take itself plays a downbeat.
+So you're not snapping to "the nearest beat"; you're snapping to
+"the place where the take actually plays the downbeat."
 
 <p align="center">
   <img src=".github/screenshots/04-editor-sync.png" alt="Editor with sync tuner, match lane, multi-cam timeline" width="900">
@@ -102,13 +95,12 @@ are placeholder visuals while their renderers come online; the pad
 mechanics, the timeline model and the eraser already work on every
 kind today.
 
-### Output frame is whatever you brought
+### Output frame
 
-The output frame grows to fit whatever cams are active. Drop a
-portrait phone clip next to a landscape one and the canvas widens
-to hold both; rotate one of them 90° and the frame snaps to the new
-shape. There's no master video and no resolution dialog, just a
-long-side cap from your output preset (Web, Archive, Mobile, Custom).
+The output frame fits whatever cams you've dropped in: portrait next
+to landscape just widens the canvas. Render to a destination preset
+(Web, Archive, Mobile) or open the Custom panel for explicit
+resolution and bitrate. The output story is still being polished.
 
 ### Browser is the runtime
 
@@ -200,8 +192,14 @@ from a CDN — `@fontsource-variable/*` bundles them locally.
 
 ## Browser support
 
-- **Chrome, Edge, Brave, Arc:** fully native via WebCodecs.
-- **Firefox, Safari:** falls back to ffmpeg.wasm where needed.
+- **Chrome, Edge, Brave, Arc** on desktop and Android: fully native
+  via WebCodecs.
+- **Firefox, Safari** (incl. iOS Safari 17.4+): falls back to
+  ffmpeg.wasm for codecs that aren't native.
+
+It runs on mobile too. The on-screen TAKE buttons do what the keys
+do on desktop, so you can drop a couple of takes on your phone,
+sync, perform the cuts and render, all from there.
 
 The app needs cross-origin isolation (COOP/COEP) for
 SharedArrayBuffer and threaded codecs.
