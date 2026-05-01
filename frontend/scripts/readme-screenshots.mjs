@@ -30,6 +30,25 @@ const ctx = await browser.newContext({
   viewport: { width: 1440, height: 900 },
   deviceScaleFactor: 1,
 });
+
+// The first-install PWA overlay sits on top of every page until the service
+// worker reports offlineReady. In dev that never fires (PWA is gated off);
+// in preview it can take ~minutes to download the precache. Either way it
+// blocks our automation, and we don't want it in the README anyway.
+await ctx.addInitScript(() => {
+  const css = '[aria-label*="Installing TK-1"]{display:none !important}';
+  const apply = () => {
+    const s = document.createElement("style");
+    s.textContent = css;
+    (document.head ?? document.documentElement).appendChild(s);
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", apply, { once: true });
+  } else {
+    apply();
+  }
+});
+
 const page = await ctx.newPage();
 
 async function shot(path, { wait = 600 } = {}) {
