@@ -44,8 +44,32 @@ Each stresses a different part of the pipeline:
 
 | Genre | Stress |
 |-------|--------|
-| Classical / sustained orchestral | Weak onset envelopes — exposes whether `chroma`-only tracking holds when the onset-fusion path has nothing to contribute. |
-| Electronic / techno / loop-driven | Strong periodic onsets every quarter note — classic false-beat-aligned-match failure mode. |
-| Hip-hop / kick-heavy | Onset dominates over harmonic content — checks the inverse of classical. |
-| Vocal / jazz | Fast spectral changes, formant-driven — checks time resolution. |
+| Classical / piano / sustained orchestral | Weak onset envelopes — exposes whether `chroma`-only tracking holds when the onset-fusion path has nothing to contribute. |
+| Techno / house / minimal loops | Strong periodic onsets every quarter note — classic false-beat-aligned-match failure mode for chroma+onset; PHAT is the only stage that can distinguish the true alignment. |
+| Hip-hop / kick-heavy / metal | Onset dominates over harmonic content — checks the inverse of classical. |
+| Reggae / funk / salsa / world | Off-beat / polyrhythmic patterns — checks that beat-grid-aligned alternates don't fool the matcher. |
+| Vocal / spoken / folk / jazz | Fast spectral changes, formant-driven — checks time resolution. |
 | Drone / ambient | Near-flat envelope — low-confidence stress test, should warn rather than fabricate a match. |
+| Country / rock / punk | "Normal" production references — should always be in the high-confidence regime. |
+
+## Known edge cases
+
+The bench has two scenarios that the matcher legitimately cannot resolve:
+
+- **`drone + noise+200ms`** — drone music has near-zero phase coherence
+  (continuous tones over a flat correlation surface), and adding white
+  noise to the reference further obliterates the only signal PHAT can
+  latch onto. PHAT correctly *rejects* this case (PNR < 6) and the
+  fallback path finds lag 0 because that's where the noise self-
+  correlates. This is the exact behavior we want — better to fail loudly
+  than fabricate a match — but the bench counts it as a top-1 miss.
+- **`house-loop +500ms`** — pure 4-on-the-floor DJ-set material whose
+  bar-level pattern is mathematically near-identical at every-bar
+  shifts; the PSR is 1.01 (knife-edge tie). PHAT picks one of several
+  equally-phase-coherent loop-aligned candidates, sometimes the wrong
+  one. Real multi-cam material almost never hits this — performances
+  vary at the second-to-second level even when the music is loopy.
+
+Both scenarios surface as low confidence (PSR ≈ 1.0, phat_pnr near
+the rejection floor), so the UI has all the information it needs to
+flag them as ambiguous.

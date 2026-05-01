@@ -227,28 +227,72 @@ pub fn sync_audio_pcm(ref_pcm: &[f32], query_pcm: &[f32], opts: SyncOptions) -> 
         }
     }
 
-    // Tier 2: GCC-PHAT sample-level refinement. Only meaningful when
-    // the chroma stage already locked onto roughly the right place
-    // (within ±0.5 s of truth) AND the input is plausibly same-source.
-    // The phat_refine function returns None — leaving us with the
-    // chroma lag — when PNR is below the trust threshold (cover
-    // version, different performance, narrowband material). This is
-    // the discriminator the chroma+onset stage cannot provide on
-    // beat-aligned-impostor inputs (real-music bench: hiphop / jazz
-    // pos-2000ms): on those, chroma's wrong pick has no phase
-    // coherence at sample level, so PHAT either snaps to the true
-    // lag or rejects with low PNR.
+    // Tier 2: GCC-PHAT sample-level refinement. Whitening makes the
+    // cross-spectrum carry phase only, so the IFFT peaks like a delta
+    // function at the true sample lag for same-source pairs — orders
+    // of magnitude sharper than chroma+onset and the only stage
+    // capable of telling beat-aligned impostors apart on repetitive
+    // material (techno / house / hip-hop loops where every kick lines
+    // up at every alternate).
+    //
+    // Multi-seed: chroma+onset's argmax can land on an onset-boosted
+    // beat-shifted lag while the *true* lag sits one row down in the
+    // alternates list with a slightly higher chroma-only NCC. We run
+    // PHAT against the primary AND the top-K alternates and keep the
+    // result with the highest PNR — PHAT's PNR contrast between right
+    // and wrong seed is so extreme (real-music bench: 2.3e8 vs 50
+    // for the house-loop +100 ms case) that this is unambiguous.
     let mut phat_pnr = 0.0_f64;
     if confidence >= opts.confidence_threshold {
-        if let Some(refined) = phat_refine(&ref_y, &query_y, opts.sr, lag) {
-            // Sanity check: PHAT should not move the seed by more
-            // than ±1 s. Larger jumps indicate a far-side phase peak
-            // we shouldn't trust.
-            if (refined.offset_samples - lag).abs() <= opts.sr as i64 {
-                lag = refined.offset_samples;
-                phat_pnr = refined.pnr as f64;
-                method.push_str("+phat");
+        let primary_phat = phat_refine(&ref_y, &query_y, opts.sr, lag);
+        // When the primary's PHAT peak is unambiguous (PNR ≥ 100), the
+        // chroma seed was right and there's nothing to gain from
+        // probing alternates — trying them on perfectly periodic
+        // material (e.g. a 2.5 s-period synthetic test fixture) just
+        // introduces ties between equally-phase-coherent shifts. We
+        // only multi-seed when the primary's phase coherence looks
+        // shaky, which is exactly where chroma+onset's onset-boost may
+        // have walked the picker off the true lag (real-music bench:
+        // house-loop pos-100ms — primary PNR ≈ 50, alt[0] PNR ≈ 2e8).
+        const PHAT_TRUST_PNR: f32 = 100.0;
+        let primary_strong = primary_phat
+            .as_ref()
+            .map(|r| r.pnr >= PHAT_TRUST_PNR)
+            .unwrap_or(false);
+
+        let best = if primary_strong {
+            primary_phat
+        } else {
+            let mut best = primary_phat;
+            // candidates[0] mirrors the primary; skip(1) picks up
+            // genuine alternates. 4 alternates is enough to break the
+            // beat-shifted-impostor pattern without burning an FFT on
+            // tail entries we'll never trust.
+            for c in candidates.iter().skip(1).take(4) {
+                let cand_lag = (c.offset_ms / 1000.0 * opts.sr as f64).round() as i64;
+                // Skip near-duplicates of seeds we've already tried.
+                let too_close = best
+                    .as_ref()
+                    .map(|p| (p.offset_samples - cand_lag).abs() <= opts.sr as i64 / 10)
+                    .unwrap_or(false)
+                    || (cand_lag - lag).abs() <= opts.sr as i64 / 10;
+                if too_close {
+                    continue;
+                }
+                if let Some(r) = phat_refine(&ref_y, &query_y, opts.sr, cand_lag) {
+                    best = match best {
+                        None => Some(r),
+                        Some(prev) if r.pnr > prev.pnr => Some(r),
+                        Some(prev) => Some(prev),
+                    };
+                }
             }
+            best
+        };
+        if let Some(r) = best {
+            lag = r.offset_samples;
+            phat_pnr = r.pnr as f64;
+            method.push_str("+phat");
         }
     }
 
