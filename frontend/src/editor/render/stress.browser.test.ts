@@ -82,6 +82,7 @@ function makeStressDescriptor(): FrameDescriptor {
       kind: "vignette" as const,
       inS: 0,
       params: { intensity: 0.5 + i * 0.15, falloff: 0.4 + i * 0.2 },
+      wetness: 1,
     });
   }
   return { tMaster: 0, output: { w: W, h: H }, layers, fx };

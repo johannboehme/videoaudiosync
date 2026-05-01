@@ -288,7 +288,16 @@ export class PreviewRuntime {
 
 function defaultReadSnapshot(): EditorStoreSnapshot {
   const s = useEditorStore.getState();
-  return { clips: s.clips, cuts: s.cuts, fx: s.fx, exportSpec: s.exportSpec };
+  return {
+    clips: s.clips,
+    cuts: s.cuts,
+    fx: s.fx,
+    exportSpec: s.exportSpec,
+    fxHolds: s.fxHolds,
+    selectedFxKind: s.selectedFxKind,
+    fxDefaults: s.fxDefaults,
+    fxEnvelopes: s.fxEnvelopes,
+  };
 }
 
 function defaultReadPlayback(): { currentTime: number; isPlaying: boolean } {

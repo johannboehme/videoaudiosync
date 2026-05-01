@@ -57,6 +57,9 @@ export interface PunchFx {
   /** Kind-spezifische Parameter. Optional — falls fehlend, nutzen die
    *  Renderer die `defaultParams` aus der FxDefinition. */
   params?: Record<string, number>;
+  /** ADSR-Hüllkurve für Wet/Dry-Crossfade über die Region-Dauer.
+   *  Optional — fehlt → INSTANT_ENVELOPE (Bit-Parity zu Pre-V1). */
+  envelope?: import("./envelope").ADSREnvelope;
 }
 
 /** Minimal-Snapshot, der einer FxDefinition reicht, um zu rendern.

@@ -82,18 +82,35 @@ above it, and number keys.
 ### Punch-in FX, on a pad bank
 
 A separate FX rail above the cam lanes, with seven pads: vignette,
-wear, echo, rgb, tape, zoom, uv. Tap a pad to stamp a one-beat FX
-at the playhead; hold it to paint under your finger as the song
-plays. FX stack — they don't replace each other.
+wear, echo, rgb, tape, zoom, uv — each one a real shipping renderer
+(Canvas2D + WebGL2 backends, parity-checked). Hold a pad while the
+song plays to paint that effect under your finger; release to drop
+the tail. FX stack — they don't replace each other.
 
-`X` is the eraser. Hold it to wipe FX under the playhead; combine
-with a pad key (`X+V`, `X+W`, ...) to wipe only that kind. The same
-eraser also splits and trims clips on the cam lanes.
+Below the rail sits a hardware-style panel: a CRT-green screen,
+two TE-orange/cobalt encoders, and the seven pads again. The
+encoders are the kind's two parameters (depth/edge, decay/drift,
+trail/mix, …) and are live: turning a knob during playback or
+preview reflects in the rendered frame immediately, no re-trigger.
 
-Vignette has the shipping renderer right now. The other six pads
-are placeholder visuals while their renderers come online; the pad
-mechanics, the timeline model and the eraser already work on every
-kind today.
+Each FX gets an ADSR envelope on top of its parameters. Two small
+plastic buttons next to the screen flip it between the parameter
+read-out and an envelope editor — drag the four phosphor knots on
+the curve to shape attack, decay, sustain and release. The release
+tail plays out properly when you let go: hold a pad for a beat,
+release, and the effect fades over the release time you dialed in.
+
+While paused, the pads switch to **audition mode**: clicking (or
+hitting the keybind) latches a live preview of that kind on the
+playing frame, so you can dial DEPTH and EDGE with the encoders
+and watch the result without committing anything to the timeline.
+Click again to drop the latch, click another pad to swap.
+
+`X` is the eraser. While playing it wipes FX under the playhead;
+combine with a pad key (`X+V`, `X+W`, …) to wipe only that kind.
+While paused, holding `X` for three seconds clears the program
+strip wholesale — fx-only, cuts-only, or both, depending on the
+strip mode. Same red sweep-bar as holding the strip with a finger.
 
 ### Output frame
 

@@ -275,6 +275,12 @@ export class WebGL2Backend implements CompositorBackend {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         def.drawWebGL2(this.drawCtx, punch, fxW, fxH, d.tMaster);
+        // No envelope mix-pass here — the descriptor builder has
+        // scaled this fx's params by ADSR wetness via def.applyWetness,
+        // so the draw above already renders at the right intensity.
+        // See the matching note in canvas2d-backend.ts for why a
+        // generic alpha-blend over source is wrong for displacement
+        // effects (zoom, rgb, wear, …).
       }
       this.currentProgram = null;
     }

@@ -225,6 +225,7 @@ export function Timeline({
   const fxHolds = useEditorStore((s) => s.fxHolds);
   const programStripMode = useEditorStore((s) => s.ui.programStripMode);
   const setProgramStripMode = useEditorStore((s) => s.setProgramStripMode);
+  const xClearProgress = useEditorStore((s) => s.ui.xClearProgress);
   // FX edits via timeline are gone — the lane is read-only now. All
   // mutation goes through the live-hold + erase API in the store.
   const liveFxIds = useMemo(() => {
@@ -1334,6 +1335,7 @@ export function Timeline({
               liveFxIds={liveFxIds}
               onClearCuts={clearCuts}
               onClearFx={clearAllFx}
+              externalClearProgress={xClearProgress}
             />
           </div>
         </div>

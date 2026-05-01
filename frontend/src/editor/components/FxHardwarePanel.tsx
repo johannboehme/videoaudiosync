@@ -29,12 +29,14 @@ import {
   PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
 } from "react";
 import { useEditorStore } from "../store";
 import { fxCatalog, defaultTapLengthS } from "../fx/catalog";
 import type { FxKind, FxParamDef } from "../fx/types";
+import { INSTANT_ENVELOPE, type ADSREnvelope } from "../fx/envelope";
 import { useIsNarrowViewport } from "../use-is-narrow";
 
 interface PadDef {
@@ -266,6 +268,10 @@ function Tab({
 function PadBody({ narrow = false }: { narrow?: boolean }) {
   const selectedFxKind = useEditorStore((s) => s.selectedFxKind);
   const def = fxCatalog[selectedFxKind];
+  // Local-only state — no persistence and no need for cross-component
+  // sync, so we keep it out of the Zustand store. Re-mounted with the
+  // panel itself, which is fine.
+  const [screenMode, setScreenMode] = useState<ScreenMode>("params");
 
   return (
     <div className="relative w-full h-full" style={MECHANISM_BODY}>
@@ -289,8 +295,9 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
         // `mt-auto`) and tighten paddings to py-1.5 so the panel
         // body shrinks from 286 → 256 px on mobile.
         <div className="relative h-full flex flex-col gap-1.5 px-2 py-1.5">
-          <div className="flex items-center gap-2 shrink-0">
-            <Lcd kind={selectedFxKind} />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <ScreenModeColumn mode={screenMode} setMode={setScreenMode} />
+            <Lcd kind={selectedFxKind} mode={screenMode} />
             {def.params && (
               <div className="flex items-end gap-2 self-center ml-auto">
                 <Encoder
@@ -313,10 +320,11 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
           </div>
         </div>
       ) : (
-        <div className="relative h-full flex items-center gap-3 px-5">
-          <Lcd kind={selectedFxKind} />
+        <div className="relative h-full flex items-center gap-2 pl-2 pr-5">
+          <ScreenModeColumn mode={screenMode} setMode={setScreenMode} />
+          <Lcd kind={selectedFxKind} mode={screenMode} />
           {def.params && (
-            <div className="flex items-end gap-3 self-center">
+            <div className="flex items-end gap-3 self-center ml-1">
               <Encoder
                 kind={selectedFxKind}
                 param={def.params[0]}
@@ -340,6 +348,8 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
     </div>
   );
 }
+
+type ScreenMode = "params" | "env";
 
 // — Pad ————————————————————————————————————————————————————
 
@@ -391,10 +401,47 @@ function FxPad({ pad }: { pad: PadDef }) {
     // out of sync and cancel sibling pointers.
     setSelectedFxKind(pad.kind);
     const s = useEditorStore.getState();
+
+    // Audition mode (paused playback): clicks LATCH the preview.
+    // Clicking a pad while a different preview is active swaps to the
+    // new kind. Clicking the same pad again drops the preview. This
+    // frees the user's mouse to drag encoders / ADSR knots while the
+    // effect sits on the live frame — without it, the effect would
+    // disappear the moment the pointer lifts off the pad.
+    if (!s.playback.isPlaying) {
+      // Find any existing preview-mode hold (only one preview at a
+      // time — keeps the LCD readout and live override unambiguous).
+      let existingSlot: string | null = null;
+      let existingKind: FxKind | null = null;
+      for (const [slot, h] of Object.entries(s.fxHolds)) {
+        if (h.mode === "preview") {
+          existingSlot = slot;
+          existingKind = h.kind;
+          break;
+        }
+      }
+      if (existingSlot != null && existingKind === pad.kind) {
+        // Same pad → toggle off.
+        endFxHold(existingSlot);
+        return;
+      }
+      if (existingSlot != null) {
+        // Different pad → drop the prior preview before latching new.
+        endFxHold(existingSlot);
+      }
+      const t = s.snapMasterTime(s.playback.currentTime);
+      beginFxHold(pad.slotKey, pad.kind, t);
+      return;
+    }
+
+    // Playback running → record-mode (press-and-hold).
     const t = s.snapMasterTime(s.playback.currentTime);
     beginFxHold(pad.slotKey, pad.kind, t);
   }
   function handleUp() {
+    // While paused, the hold latches — only end on the next click.
+    const s = useEditorStore.getState();
+    if (!s.playback.isPlaying) return;
     endFxHold(pad.slotKey);
   }
   // Tap-feedback transform replaces framer-motion's `whileTap`. Framer
@@ -467,7 +514,42 @@ function FxPad({ pad }: { pad: PadDef }) {
 
 // — LCD ————————————————————————————————————————————————————
 
-function Lcd({ kind }: { kind: FxKind }) {
+function Lcd({ kind, mode }: { kind: FxKind; mode: ScreenMode }) {
+  return (
+    <div
+      aria-hidden
+      className="relative flex flex-col justify-between leading-tight"
+      style={LCD_STYLE}
+    >
+      {/* horizontal scan-line overlay — sells the "phosphor" feel.
+       *  Sits ABOVE the per-mode content so both PARAMS and ENV inherit
+       *  the same scanlines without each view re-implementing them. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 2px)",
+          mixBlendMode: "multiply",
+          borderRadius: 2,
+          zIndex: 2,
+        }}
+      />
+      {/* Mode-keyed remount so the CRT-glitch keyframe re-fires on each
+       *  switch — the screen doesn't fade, it briefly twitches like an
+       *  80er Röhrenmonitor that just got its sync signal swapped. */}
+      <div
+        key={mode}
+        className="relative flex flex-col h-full vas-crt-glitch"
+        style={{ zIndex: 1 }}
+      >
+        {mode === "params" ? <LcdParamsView kind={kind} /> : <LcdEnvelopeView kind={kind} />}
+      </div>
+    </div>
+  );
+}
+
+function LcdParamsView({ kind }: { kind: FxKind }) {
   const def = fxCatalog[kind];
   const bpm = useEditorStore((s) => s.jobMeta?.bpm?.value ?? null);
   const tapLen = defaultTapLengthS(kind, bpm);
@@ -485,77 +567,60 @@ function Lcd({ kind }: { kind: FxKind }) {
     : null;
 
   return (
-    <div
-      aria-hidden
-      className="relative flex flex-col justify-between leading-tight"
-      style={LCD_STYLE}
-    >
-      {/* horizontal scan-line overlay — sells the "phosphor" feel */}
+    <div className="flex flex-col h-full justify-between px-2 py-1.5">
       <div
-        aria-hidden
-        className="absolute inset-0 pointer-events-none"
+        className="flex items-baseline justify-between"
+        style={{ ...LCD_TEXT_DIM, fontSize: 7, letterSpacing: 1.4 }}
+      >
+        <span>VAS · FX</span>
+        <span>{tapLen.toFixed(2)}S</span>
+      </div>
+      <div
         style={{
-          background:
-            "repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 2px)",
-          mixBlendMode: "multiply",
-          borderRadius: 2,
+          fontFamily:
+            '"JetBrains Mono Variable", ui-monospace, monospace',
+          fontSize: 22,
+          letterSpacing: 2,
+          lineHeight: 1,
+          fontWeight: 700,
+          ...LCD_TEXT,
         }}
-      />
-      <div className="relative flex flex-col h-full justify-between px-2 py-1.5">
+      >
+        {def.label}
+      </div>
+      {params && v1 !== null && v2 !== null ? (
         <div
-          className="flex items-baseline justify-between"
-          style={{ ...LCD_TEXT_DIM, fontSize: 7, letterSpacing: 1.4 }}
-        >
-          <span>VAS · FX</span>
-          <span>{tapLen.toFixed(2)}S</span>
-        </div>
-        <div
+          className="flex justify-between items-baseline"
           style={{
             fontFamily:
               '"JetBrains Mono Variable", ui-monospace, monospace',
-            fontSize: 22,
-            letterSpacing: 2,
-            lineHeight: 1,
-            fontWeight: 700,
+            fontSize: 9,
+            letterSpacing: 0.5,
             ...LCD_TEXT,
           }}
         >
-          {def.label}
+          <span>
+            <span style={LCD_HOT_DOT}>●</span>{" "}
+            {params[0].label} {fmt(params[0], v1)}
+          </span>
+          <span>
+            <span style={LCD_COBALT_DOT}>●</span>{" "}
+            {params[1].label} {fmt(params[1], v2)}
+          </span>
         </div>
-        {params && v1 !== null && v2 !== null ? (
-          <div
-            className="flex justify-between items-baseline"
-            style={{
-              fontFamily:
-                '"JetBrains Mono Variable", ui-monospace, monospace',
-              fontSize: 9,
-              letterSpacing: 0.5,
-              ...LCD_TEXT,
-            }}
-          >
-            <span>
-              <span style={LCD_HOT_DOT}>●</span>{" "}
-              {params[0].label} {fmt(params[0], v1)}
-            </span>
-            <span>
-              <span style={LCD_COBALT_DOT}>●</span>{" "}
-              {params[1].label} {fmt(params[1], v2)}
-            </span>
-          </div>
-        ) : (
-          <div
-            style={{
-              ...LCD_TEXT_DIM,
-              fontSize: 8,
-              letterSpacing: 1,
-              fontFamily:
-                '"JetBrains Mono Variable", ui-monospace, monospace',
-            }}
-          >
-            NO PARAMS
-          </div>
-        )}
-      </div>
+      ) : (
+        <div
+          style={{
+            ...LCD_TEXT_DIM,
+            fontSize: 8,
+            letterSpacing: 1,
+            fontFamily:
+              '"JetBrains Mono Variable", ui-monospace, monospace',
+          }}
+        >
+          NO PARAMS
+        </div>
+      )}
     </div>
   );
 }
@@ -1063,6 +1128,806 @@ function Divider() {
       }}
     />
   );
+}
+
+// — Screen-Mode Switch (PARAMS / ENV) ——————————————————————
+
+/**
+ * Two stacked plastic buttons, sit-in-the-bezel style — like the CH▲/CH▼
+ * pair on an 80er VHS-Player wedged next to the screen. Switches the LCD
+ * between PARAMS view (encoder readout) and ENV view (draggable ADSR
+ * curve). Local-only state — no Zustand. */
+function ScreenModeColumn({
+  mode,
+  setMode,
+}: {
+  mode: ScreenMode;
+  setMode: (m: ScreenMode) => void;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-1 self-center shrink-0">
+      <ScreenModeButton
+        active={mode === "params"}
+        label="P"
+        onClick={() => setMode("params")}
+        ariaLabel="Show parameters"
+      />
+      <ScreenModeButton
+        active={mode === "env"}
+        label="E"
+        onClick={() => setMode("env")}
+        ariaLabel="Show envelope"
+      />
+    </div>
+  );
+}
+
+function ScreenModeButton({
+  active,
+  label,
+  onClick,
+  ariaLabel,
+}: {
+  active: boolean;
+  label: "P" | "E";
+  onClick: () => void;
+  ariaLabel: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={ariaLabel}
+      className="relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
+      style={{
+        width: 14,
+        height: 11,
+        borderRadius: 2,
+        background: "linear-gradient(180deg,#2C2925 0%,#1A1815 100%)",
+        border: "1px solid rgba(0,0,0,0.7)",
+        boxShadow: active
+          ? "inset 0 2px 3px rgba(0,0,0,0.6)"
+          : "inset 0 1px 0 rgba(255,255,255,0.07), inset 0 -1px 1px rgba(0,0,0,0.55), 0 1px 1px rgba(0,0,0,0.4)",
+        transform: active ? "translateY(1px)" : "translateY(0)",
+        transition: "transform 50ms, box-shadow 80ms",
+        cursor: "pointer",
+      }}
+    >
+      {/* Touch-target extender — 24×24 invisible hit-rect for fingers. */}
+      <span
+        aria-hidden
+        className="absolute"
+        style={{ left: -5, right: -5, top: -7, bottom: -7 }}
+      />
+      {/* Phosphor LED — same green as the LCD text so it reads as
+       *  "wired into the screen" rather than as an unrelated knob. */}
+      <span
+        aria-hidden
+        className="absolute"
+        style={{
+          top: 1.5,
+          right: 1.5,
+          width: 3,
+          height: 3,
+          borderRadius: "50%",
+          background: active ? "#9FE08E" : "#1F2A1E",
+          boxShadow: active
+            ? "0 0 4px rgba(159,224,142,0.85), 0 0 1px #9FE08E"
+            : "inset 0 0 1px rgba(0,0,0,0.6)",
+        }}
+      />
+      <span
+        aria-hidden
+        className="absolute leading-none"
+        style={{
+          left: 3,
+          top: 2,
+          fontSize: 7,
+          fontFamily:
+            '"JetBrains Mono Variable", ui-monospace, monospace',
+          fontWeight: 700,
+          color: "rgba(245,240,225,0.55)",
+          textShadow: "0 1px 0 rgba(0,0,0,0.6)",
+        }}
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
+// — LCD ENV mode (ADSR-Editor) ——————————————————————————————
+
+/** Bounds for the four draggable ADSR knots, in absolute seconds /
+ *  level. Constraints match musical/instrument intuition: sub-2 s
+ *  attacks, sub-3 s releases, sustain ∈ [0, 1]. */
+const ADSR_MAX_A_S = 2.0;
+const ADSR_MAX_D_S = 2.0;
+const ADSR_MAX_R_S = 3.0;
+/** Horizontal seconds-mapped scale for the curve. The curve compresses
+ *  at long durations — we anchor visual full-width to ~5 s of total
+ *  duration so the typical defaults (a few hundred ms) land in the
+ *  left half of the plot, leaving headroom for big releases. */
+const ADSR_TOTAL_VIS_S = 5.0;
+
+function LcdEnvelopeView({ kind }: { kind: FxKind }) {
+  const userEnv = useEditorStore((s) => s.fxEnvelopes[kind]);
+  const def = fxCatalog[kind];
+  const env: ADSREnvelope =
+    userEnv ?? def?.defaultEnvelope ?? INSTANT_ENVELOPE;
+
+  // No header — like the OP-1, the screen is just the envelope curve.
+  // LCD is 158×78; py-1.5 = 6 px on each side gives 66 px of plot height.
+  // px-2 = 8 px gives 142 px of plot width.
+  const PLOT_W = 142;
+  const PLOT_H = 66;
+  const xPerS = PLOT_W / ADSR_TOTAL_VIS_S;
+
+  const geom = computeAdsrGeom(env, PLOT_W, PLOT_H, xPerS);
+
+  const [active, setActive] = useState<AdsrAxis | null>(null);
+
+  const setEnv = useEditorStore((s) => s.setFxEnvelope);
+  const resetEnv = useEditorStore((s) => s.resetFxEnvelope);
+
+  // Stable per-instance suffix so multiple ENV-views (split panels,
+  // tests) can't collide on SVG ids. crypto.randomUUID would be cleanest
+  // but isn't available in jsdom; useId is React-built-in and stable.
+  const uid = useId();
+  const clipId = `vas-env-clip-${uid.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+
+  const curve = buildAdsrPath(geom);
+  const filledCurve = `${curve} L${geom.rx},${PLOT_H} L0,${PLOT_H} Z`;
+
+  return (
+    <div className="flex flex-col h-full px-2 py-1.5 justify-center">
+      <svg
+        viewBox={`0 0 ${PLOT_W} ${PLOT_H}`}
+        width="100%"
+        height={PLOT_H}
+        preserveAspectRatio="none"
+        style={{ display: "block" }}
+      >
+        <defs>
+          <filter id="vas-crt-glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="0.7" />
+          </filter>
+        </defs>
+        {/* Background trace — the full envelope curve, dim. Reads as the
+         *  "future" portion when there's an active hold. */}
+        <path
+          d={curve}
+          stroke="#9FE08E"
+          strokeWidth="1.0"
+          strokeOpacity={0.32}
+          fill="none"
+          filter="url(#vas-crt-glow)"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {/* Scope playhead — fills under the curve up to the current
+         *  envelope position, brightens the traced segment, and rides
+         *  a glow ball at the leading edge. No-op when no pad is held. */}
+        <EnvelopePlayhead
+          kind={kind}
+          env={env}
+          geom={geom}
+          plotH={PLOT_H}
+          curve={curve}
+          filledCurve={filledCurve}
+          clipId={clipId}
+        />
+        <AdsrNode
+          axis="A"
+          cx={geom.ax}
+          cy={geom.ay}
+          active={active === "A"}
+          setActive={setActive}
+          env={env}
+          kind={kind}
+          plotW={PLOT_W}
+          plotH={PLOT_H}
+          xPerS={xPerS}
+          setEnv={setEnv}
+          resetEnv={resetEnv}
+        />
+        <AdsrNode
+          axis="D"
+          cx={geom.dx}
+          cy={geom.dy}
+          active={active === "D"}
+          setActive={setActive}
+          env={env}
+          kind={kind}
+          plotW={PLOT_W}
+          plotH={PLOT_H}
+          xPerS={xPerS}
+          setEnv={setEnv}
+          resetEnv={resetEnv}
+        />
+        <AdsrNode
+          axis="S"
+          cx={geom.sx}
+          cy={geom.sy}
+          active={active === "S"}
+          setActive={setActive}
+          env={env}
+          kind={kind}
+          plotW={PLOT_W}
+          plotH={PLOT_H}
+          xPerS={xPerS}
+          setEnv={setEnv}
+          resetEnv={resetEnv}
+        />
+        {/* R = release-end visual marker. Always at the bottom-right
+         *  corner — non-interactive. Drag the S knot to change release
+         *  time (or vertical drag for sustain level). */}
+        <circle
+          cx={geom.rx}
+          cy={geom.ry}
+          r={2.5}
+          fill="#9FE08E"
+          opacity={0.85}
+          filter="url(#vas-crt-glow)"
+          pointerEvents="none"
+        />
+      </svg>
+    </div>
+  );
+}
+
+/** Bezier "knee" — distance the control points are pulled along the
+ *  tangent. 0.7 gives the sharp-then-plateau exponential feel of the
+ *  OP-1's envelope. */
+const ADSR_BEZIER_K = 0.7;
+
+interface AdsrGeom {
+  // Anchors (P0..P4 along the curve).
+  ax: number;
+  ay: number;
+  dx: number;
+  dy: number;
+  sx: number;
+  sy: number;
+  rx: number;
+  ry: number;
+  // Bezier control points for each curved phase.
+  attackC1: { x: number; y: number };
+  attackC2: { x: number; y: number };
+  decayC1: { x: number; y: number };
+  decayC2: { x: number; y: number };
+  releaseC1: { x: number; y: number };
+  releaseC2: { x: number; y: number };
+}
+
+function computeAdsrGeom(
+  env: ADSREnvelope,
+  plotW: number,
+  plotH: number,
+  xPerS: number,
+): AdsrGeom {
+  const ax = clamp(env.attackS * xPerS, 0, plotW);
+  const ay = 0;
+  const dx = clamp(ax + env.decayS * xPerS, ax, plotW);
+  const dy = (1 - env.sustain) * plotH;
+  const rxStart = clamp(plotW - env.releaseS * xPerS, 0, plotW);
+  const sx = Math.max(dx, rxStart);
+  const sy = dy;
+  const rx = plotW;
+  const ry = plotH;
+  const K = ADSR_BEZIER_K;
+  return {
+    ax,
+    ay,
+    dx,
+    dy,
+    sx,
+    sy,
+    rx,
+    ry,
+    attackC1: { x: 0, y: plotH - K * (plotH - ay) },
+    attackC2: { x: ax - K * (ax - 0), y: ay },
+    decayC1: { x: ax, y: ay + K * (dy - ay) },
+    decayC2: { x: dx - K * (dx - ax), y: dy },
+    releaseC1: { x: sx, y: sy + K * (ry - sy) },
+    releaseC2: { x: rx - K * (rx - sx), y: ry },
+  };
+}
+
+/** Build an OP-1-style cubic-Bezier ADSR path string from the geometry
+ *  computed by `computeAdsrGeom`. Sustain stays a straight horizontal
+ *  segment so the level reads unambiguously. */
+function buildAdsrPath(g: AdsrGeom): string {
+  const plotH = g.ry;
+  return [
+    `M0,${plotH}`,
+    `C${g.attackC1.x},${g.attackC1.y} ${g.attackC2.x},${g.attackC2.y} ${g.ax},${g.ay}`,
+    `C${g.decayC1.x},${g.decayC1.y} ${g.decayC2.x},${g.decayC2.y} ${g.dx},${g.dy}`,
+    `L${g.sx},${g.sy}`,
+    `C${g.releaseC1.x},${g.releaseC1.y} ${g.releaseC2.x},${g.releaseC2.y} ${g.rx},${g.ry}`,
+  ].join(" ");
+}
+
+/** Cubic-Bezier evaluator. */
+function bezierAt(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
+  u: number,
+): { x: number; y: number } {
+  const v = 1 - u;
+  const v2 = v * v;
+  const u2 = u * u;
+  return {
+    x: v2 * v * p0.x + 3 * v2 * u * p1.x + 3 * v * u2 * p2.x + u2 * u * p3.x,
+    y: v2 * v * p0.y + 3 * v2 * u * p1.y + 3 * v * u2 * p2.y + u2 * u * p3.y,
+  };
+}
+
+/** Wallclock cap on the sustain-hop sweep. The hop runs at fixed speed
+ *  regardless of how long the release time is — keeps it feeling snappy
+ *  for big releases (no slow-motion crawl) and crisp for short releases
+ *  (no missed-it-already blink). */
+const ADSR_HOP_MAX_S = 0.08;
+/** Hop also can't take more than this fraction of the release window —
+ *  so very short releases keep at least some bezier-trace time. */
+const ADSR_SUSTAIN_HOP_FRAC = 0.5;
+
+/** Phase of the rendered indicator. `sustain-hop` is the visual sweep
+ *  across the horizontal sustain segment after release — the audio is
+ *  already in release fade, but the dot still has to cross to (sx, sy)
+ *  before tracing the release bezier. */
+type AdsrPhase =
+  | "attack"
+  | "decay"
+  | "sustain"
+  | "sustain-hop"
+  | "release";
+
+/** Sample the bezier-traced envelope curve at envelope-local time
+ *  `localT`. Returns the (x, y) point ON the visible curve so the
+ *  indicator stays glued to the path. `holding` pins us at the sustain
+ *  knee while the user is still pressing the pad. */
+function curvePointAtTime(
+  env: ADSREnvelope,
+  localT: number,
+  geom: AdsrGeom,
+  plotH: number,
+  holding: boolean,
+): { x: number; y: number; phase: AdsrPhase } {
+  const A = env.attackS;
+  const D = env.decayS;
+  const R = env.releaseS;
+  const origin = { x: 0, y: plotH };
+  const aP3 = { x: geom.ax, y: geom.ay };
+  const dP3 = { x: geom.dx, y: geom.dy };
+  const sP0 = { x: geom.sx, y: geom.sy };
+  const rP3 = { x: geom.rx, y: geom.ry };
+
+  if (localT < A && A > 0) {
+    const u = clamp01v(localT / A);
+    return { ...bezierAt(origin, geom.attackC1, geom.attackC2, aP3, u), phase: "attack" };
+  }
+  if (localT < A + D && D > 0) {
+    const u = clamp01v((localT - A) / D);
+    return { ...bezierAt(aP3, geom.decayC1, geom.decayC2, dP3, u), phase: "decay" };
+  }
+  if (holding) {
+    return { x: geom.dx, y: geom.dy, phase: "sustain" };
+  }
+
+  // Released. Two visual sub-phases share the R-second window:
+  //   sustain-hop: ADSR_SUSTAIN_HOP_FRAC × R wiping (dx, dy) → (sx, sy)
+  //   release:     remainder running the release bezier → (rx, ry)
+  // This gives the dot a chance to cross the sustain plateau visibly
+  // instead of teleporting from D-knee to S-knee. The audio's release
+  // fade (linear in envelopeAt) starts immediately at the same moment;
+  // the visual here is purely a stylised reading of "the voice was
+  // released and is now winding down across the path".
+  if (R <= 0) {
+    return { x: geom.rx, y: geom.ry, phase: "release" };
+  }
+  const localPostAD = localT - (A + D);
+  const hopDur = Math.min(ADSR_HOP_MAX_S, R * ADSR_SUSTAIN_HOP_FRAC);
+  if (localPostAD < hopDur) {
+    const t = hopDur > 0 ? localPostAD / hopDur : 1;
+    const easedT = easeOutCubic(t);
+    return {
+      x: geom.dx + (geom.sx - geom.dx) * easedT,
+      y: geom.dy + (geom.sy - geom.dy) * easedT,
+      phase: "sustain-hop",
+    };
+  }
+  const releaseDur = R - hopDur;
+  const u = clamp01v((localPostAD - hopDur) / Math.max(releaseDur, 1e-6));
+  return { ...bezierAt(sP0, geom.releaseC1, geom.releaseC2, rP3, u), phase: "release" };
+}
+
+const clamp01v = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Ease-out cubic for the sustain-hop sweep. Front-loaded (fast at the
+ *  start, settles toward the S-knee) — feels like a real "snap to next
+ *  position" instead of a uniform glide. Lets the comet trail feel
+ *  punchy at the leading edge. */
+function easeOutCubic(t: number): number {
+  const v = 1 - t;
+  return 1 - v * v * v;
+}
+
+/**
+ * Scope-style live indicator on the ADSR curve. While a pad/key is held
+ * (persistent or preview), the curve segment the envelope has already
+ * "played through" lights up bright with a translucent fill underneath,
+ * the unplayed segment stays dim, and a glowing ball rides the bezier
+ * at the leading edge. After release, the trail keeps tracing through
+ * the release tail until it reaches the floor.
+ *
+ * Time source:
+ *   - Persistent hold (playback running): `playback.currentTime - inS`
+ *   - Preview hold (playback paused): a RAF-driven synthetic timer that
+ *     starts when the preview latches, so the trace still ramps through
+ *     attack → decay → sustain even with the playhead frozen.
+ *   - No hold for `kind`: hidden, returns null.
+ */
+function EnvelopePlayhead({
+  kind,
+  env,
+  geom,
+  plotH,
+  curve,
+  filledCurve,
+  clipId,
+}: {
+  kind: FxKind;
+  env: ADSREnvelope;
+  geom: AdsrGeom;
+  plotH: number;
+  curve: string;
+  filledCurve: string;
+  clipId: string;
+}) {
+  const fxHolds = useEditorStore((s) => s.fxHolds);
+  const fx = useEditorStore((s) => s.fx);
+  const currentTime = useEditorStore((s) => s.playback.currentTime);
+
+  // Pick the active hold for this kind (persistent beats preview).
+  let activeHold:
+    | { mode: "persistent" | "preview"; startS: number }
+    | null = null;
+  for (const h of Object.values(fxHolds)) {
+    if (h.kind !== kind) continue;
+    if (h.mode === "persistent") {
+      activeHold = h;
+      break;
+    }
+    if (!activeHold) activeHold = h;
+  }
+
+  // No hold → check for any active fx of this kind in the timeline.
+  // Lets the indicator keep tracing through the release tail once the
+  // user has let go: the fx's outS was extended by R, so the release
+  // bezier still has time to play out.
+  let releasedFx: { inS: number; outS: number } | null = null;
+  if (!activeHold) {
+    for (const f of fx) {
+      if (f.kind !== kind) continue;
+      if (f.inS <= currentTime && currentTime < f.outS) {
+        releasedFx = { inS: f.inS, outS: f.outS };
+        break;
+      }
+    }
+  }
+
+  // Preview-mode synthetic timer — drives the indicator through
+  // attack → decay even though playback isn't advancing.
+  const [previewT, setPreviewT] = useState(0);
+  const previewMode = activeHold?.mode === "preview";
+  useEffect(() => {
+    if (!previewMode) {
+      setPreviewT(0);
+      return;
+    }
+    const start = performance.now();
+    let frame = 0;
+    const tick = () => {
+      setPreviewT((performance.now() - start) / 1000);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [previewMode]);
+
+  // Pulse RAF — keeps the dot animating while it parks in sustain.
+  const [pulse, setPulse] = useState(0);
+  const visible = !!activeHold || !!releasedFx;
+  useEffect(() => {
+    if (!visible) return;
+    let frame = 0;
+    const start = performance.now();
+    const tick = () => {
+      setPulse((performance.now() - start) / 1000);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [visible]);
+
+  if (!activeHold && !releasedFx) return null;
+
+  const isHeld = !!activeHold;
+  let localT: number;
+  if (activeHold) {
+    localT =
+      activeHold.mode === "preview"
+        ? previewT
+        : Math.max(0, currentTime - activeHold.startS);
+  } else {
+    // Released — drive the hop + release animation off "time since
+    // release was triggered" rather than "time since fx started".
+    // Held capsules can have any localT (e.g. 5 s after a long hold);
+    // feeding that straight into curvePointAtTime makes the post-A+D
+    // arithmetic blow past hop+release on the very first frame and
+    // teleport to the release-end point. We re-anchor: pretend the
+    // playhead is just past A+D, and grow from there at real-time.
+    const f = releasedFx as { inS: number; outS: number };
+    const releaseStartMaster = f.outS - env.releaseS;
+    const releaseElapsed = Math.max(0, currentTime - releaseStartMaster);
+    localT = env.attackS + env.decayS + releaseElapsed;
+  }
+
+  // While held (persistent or preview audition): pin at sustain knee.
+  // Otherwise: traverse sustain-hop then release-bezier.
+  const pt = curvePointAtTime(env, localT, geom, plotH, isHeld);
+
+  // Sustain-pulse modulation — small radius oscillation while parked.
+  const inSustain = pt.phase === "sustain";
+  const pulseScale = inSustain ? 1 + 0.15 * Math.sin(pulse * 2 * Math.PI * 1.4) : 1;
+  const dotR = 2.4 * pulseScale;
+  const haloR = 6.5 * pulseScale;
+
+  // Comet trail during the sustain-hop sweep — a fading line from the
+  // sustain start (dx, dy) to the current dot position. Phosphor-tube
+  // afterimage, makes the jump read as a deliberate dash instead of a
+  // teleport. Brightest at the head, fading toward the tail.
+  const showHopTrail = pt.phase === "sustain-hop";
+  const trailGradId = `${clipId}-trail`;
+
+  return (
+    <g pointerEvents="none">
+      <defs>
+        <clipPath id={clipId}>
+          <rect x={0} y={0} width={Math.max(0, pt.x)} height={plotH} />
+        </clipPath>
+        {showHopTrail && (
+          <linearGradient
+            id={trailGradId}
+            gradientUnits="userSpaceOnUse"
+            x1={geom.dx}
+            y1={geom.dy}
+            x2={pt.x}
+            y2={pt.y}
+          >
+            <stop offset="0%" stopColor="#9FE08E" stopOpacity={0} />
+            <stop offset="60%" stopColor="#9FE08E" stopOpacity={0.6} />
+            <stop offset="100%" stopColor="#E8FFD9" stopOpacity={1} />
+          </linearGradient>
+        )}
+      </defs>
+      {/* Past-trace area-fill — translucent green under the curve up to
+       *  the indicator's x. Reads as "energy already deposited". */}
+      <path
+        d={filledCurve}
+        fill="#9FE08E"
+        fillOpacity={0.18}
+        stroke="none"
+        clipPath={`url(#${clipId})`}
+        filter="url(#vas-crt-glow)"
+      />
+      {/* Past-trace bright stroke — the played portion is rendered
+       *  bright on top of the dim background curve. */}
+      <path
+        d={curve}
+        stroke="#9FE08E"
+        strokeWidth="1.6"
+        fill="none"
+        clipPath={`url(#${clipId})`}
+        filter="url(#vas-crt-glow)"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      {/* Sustain-hop comet trail. Lit only while crossing the plateau
+       *  between the D-knee and the S-knee — the phosphor "dash" that
+       *  carries the playhead from one end of sustain to the other.
+       *  Stacked layers (wide soft halo → mid → bright spine) give the
+       *  trail a real "bloom" instead of a flat line. */}
+      {showHopTrail && (
+        <>
+          <line
+            x1={geom.dx}
+            y1={geom.dy}
+            x2={pt.x}
+            y2={pt.y}
+            stroke="#9FE08E"
+            strokeOpacity={0.45}
+            strokeWidth={5}
+            strokeLinecap="round"
+            filter="url(#vas-crt-glow)"
+          />
+          <line
+            x1={geom.dx}
+            y1={geom.dy}
+            x2={pt.x}
+            y2={pt.y}
+            stroke={`url(#${trailGradId})`}
+            strokeWidth={2.6}
+            strokeLinecap="round"
+            filter="url(#vas-crt-glow)"
+          />
+          <line
+            x1={geom.dx}
+            y1={geom.dy}
+            x2={pt.x}
+            y2={pt.y}
+            stroke="#FFFFFF"
+            strokeOpacity={0.7}
+            strokeWidth={0.8}
+            strokeLinecap="round"
+          />
+        </>
+      )}
+      {/* Faint vertical scope line dropping from the indicator down to
+       *  the floor. Sells the oscilloscope-readout feel without
+       *  overwhelming the curve itself. */}
+      <line
+        x1={pt.x}
+        x2={pt.x}
+        y1={pt.y + 1}
+        y2={plotH}
+        stroke="#9FE08E"
+        strokeOpacity={0.22}
+        strokeWidth={0.6}
+      />
+      {/* Glow ball rides the leading edge. Halo + bright core. The halo
+       *  blooms during sustain-hop for a real "comet head" feel — the
+       *  trail's brightest point should also be its biggest. */}
+      <circle
+        cx={pt.x}
+        cy={pt.y}
+        r={showHopTrail ? haloR * 2.0 : haloR}
+        fill="#9FE08E"
+        opacity={showHopTrail ? 0.5 : 0.18}
+        filter="url(#vas-crt-glow)"
+      />
+      <circle
+        cx={pt.x}
+        cy={pt.y}
+        r={showHopTrail ? dotR * 1.6 : dotR}
+        fill="#FFFFFF"
+        filter="url(#vas-crt-glow)"
+      />
+      {/* Bright pinpoint core — only visible during the hop, makes the
+       *  comet head pop out of its halo. */}
+      {showHopTrail && (
+        <circle
+          cx={pt.x}
+          cy={pt.y}
+          r={dotR * 0.6}
+          fill="#FFFFFF"
+        />
+      )}
+    </g>
+  );
+}
+
+type AdsrAxis = "A" | "D" | "S";
+
+interface AdsrNodeProps {
+  axis: AdsrAxis;
+  cx: number;
+  cy: number;
+  active: boolean;
+  setActive: (a: AdsrAxis | null) => void;
+  env: ADSREnvelope;
+  kind: FxKind;
+  plotW: number;
+  plotH: number;
+  xPerS: number;
+  setEnv: (kind: FxKind, partial: Partial<ADSREnvelope>) => void;
+  resetEnv: (kind: FxKind) => void;
+}
+
+/**
+ * One draggable phosphor knot on the ADSR curve. PointerDown captures
+ * the pointer; pointer-move updates the relevant envelope axis with
+ * shift-fine sensitivity (6×) matching the encoder convention. Double-
+ * click resets the whole envelope to the kind's default.
+ */
+function AdsrNode(props: AdsrNodeProps) {
+  const { axis, cx, cy, active, setActive, env, kind, plotH, xPerS } = props;
+  const startRef = useRef<{ x: number; y: number; env: ADSREnvelope } | null>(
+    null,
+  );
+
+  const onPointerDown = (e: ReactPointerEvent<SVGGElement>) => {
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    startRef.current = { x: e.clientX, y: e.clientY, env: { ...env } };
+    setActive(axis);
+    e.stopPropagation();
+  };
+  const onPointerMove = (e: ReactPointerEvent<SVGGElement>) => {
+    const start = startRef.current;
+    if (!start) return;
+    const sens = e.shiftKey ? 6 : 1;
+    const dxPx = (e.clientX - start.x) / sens;
+    const dyPx = (e.clientY - start.y) / sens;
+    const dS = dxPx / xPerS;
+    const dLevel = -dyPx / plotH; // up = larger sustain
+
+    if (axis === "A") {
+      const next = clamp(start.env.attackS + dS, 0, ADSR_MAX_A_S);
+      props.setEnv(kind, { attackS: next });
+    } else if (axis === "D") {
+      const nextD = clamp(start.env.decayS + dS, 0, ADSR_MAX_D_S);
+      const nextS = clamp(start.env.sustain + dLevel, 0, 1);
+      props.setEnv(kind, { decayS: nextD, sustain: snapDetent(nextS) });
+    } else if (axis === "S") {
+      // X-drag = release time (move S left → larger releaseS, since
+      // sx = PLOT_W - releaseS*xPerS). Y-drag = sustain level (linked
+      // with the D knot).
+      const nextR = clamp(start.env.releaseS - dS, 0, ADSR_MAX_R_S);
+      const nextS = clamp(start.env.sustain + dLevel, 0, 1);
+      props.setEnv(kind, { releaseS: nextR, sustain: snapDetent(nextS) });
+    }
+  };
+  const onPointerUp = (e: ReactPointerEvent<SVGGElement>) => {
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    startRef.current = null;
+    setActive(null);
+  };
+  const onDoubleClick = (e: ReactPointerEvent<SVGGElement>) => {
+    e.stopPropagation();
+    props.resetEnv(kind);
+  };
+
+  const r = active ? 3.5 : 2.5;
+  return (
+    <g
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onDoubleClick={onDoubleClick}
+      style={{ cursor: "grab", touchAction: "none" }}
+    >
+      {/* Larger invisible hit-target — fingers on touch screens need
+       *  >= 14×14, the visible knot is just 5–7 px. */}
+      <circle cx={cx} cy={cy} r={9} fill="transparent" pointerEvents="all" />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={r}
+        fill="#9FE08E"
+        filter="url(#vas-crt-glow)"
+        opacity={active ? 1 : 0.85}
+        pointerEvents="none"
+      />
+    </g>
+  );
+}
+
+/** Soft detent at sustain = 0 / 0.5 / 1.0 within ±2 % — same UX language
+ *  as the encoder's bipolar centre detent. */
+function snapDetent(v: number): number {
+  if (Math.abs(v - 0) < 0.02) return 0;
+  if (Math.abs(v - 0.5) < 0.02) return 0.5;
+  if (Math.abs(v - 1) < 0.02) return 1;
+  return v;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 // — Constants & styles ————————————————————————————————————

@@ -29,7 +29,9 @@ import {
 } from "./selectors/timing";
 import type { Cut } from "../storage/jobs-db";
 import type { FxKind, PunchFx } from "./fx/types";
-import { defaultTapLengthS } from "./fx/catalog";
+import { defaultTapLengthS, fxCatalog } from "./fx/catalog";
+import type { ADSREnvelope } from "./fx/envelope";
+import { INSTANT_ENVELOPE } from "./fx/envelope";
 
 export interface BpmInfo {
   /** BPM (detected or user-overridden). */
@@ -126,6 +128,12 @@ export interface UiSlice {
   /** Whether the FX hardware-pad panel is slid out (desktop). On mobile
    *  the panel ignores this and stays always-open. */
   fxPanelOpen: boolean;
+  /** 0..1 progress of the keyboard-driven X-hold-to-clear gesture
+   *  (only active while paused — during playback X erases under the
+   *  playhead instead). ProgramStrip mirrors this onto whichever lanes
+   *  are visible per `programStripMode`, sharing the visual treatment
+   *  with the pointer-driven long-press. `null` when idle. */
+  xClearProgress: number | null;
 }
 
 /** One live punch-in hold per slot key. The slotKey identifies the trigger
@@ -133,11 +141,25 @@ export interface UiSlice {
  *  Multiple holds may exist simultaneously — polyphony is intentional and
  *  what makes P-FX feel like a step-sequencer / synth, not a switch. */
 export interface FxHoldEntry {
-  /** ID of the FX whose outS is currently being live-extended. */
+  /** Persistent: hold writes a real PunchFx to fx[] and grows outS while
+   *  held — recorded onto the timeline.
+   *
+   *  Preview: hold renders the effect over the live preview at full
+   *  strength (sustain=1, no envelope) BUT does NOT write to fx[]. Used
+   *  while playback is paused so the user can audition / tweak params
+   *  with both encoders without polluting the timeline with 1-frame
+   *  capsules. */
+  mode: "persistent" | "preview";
+  /** Kind being held. In persistent mode mirrors the new fx's kind; in
+   *  preview mode there's no fx so this is the only place the kind lives. */
+  kind: FxKind;
+  /** ID of the FX whose outS is currently being live-extended. Empty
+   *  string for `mode: "preview"` — no fx is written. */
   fxId: string;
   /** Master-time when this hold started (already snapped by the caller). */
   startS: number;
-  /** Snapshot of fx[] at hold-start; used by cancel to revert. */
+  /** Snapshot of fx[] at hold-start; used by cancel to revert. Empty
+   *  array for preview mode (nothing to revert). */
   priorFx: PunchFx[];
 }
 
@@ -258,6 +280,13 @@ interface EditorState {
    *  In-memory only in V1 — Persistenz über jobs.db kommt sobald wir
    *  entscheiden ob das per-Job (Edit) oder global (User-Pref) lebt. */
   fxDefaults: Partial<Record<FxKind, Record<string, number>>>;
+
+  /** Per-Kind ADSR-Hüllkurve — wird beim `beginFxHold` in die neu
+   *  geschriebene PunchFx eingefroren, parallel zu `fxDefaults`. Wenn ein
+   *  Eintrag fehlt, fällt das Bake auf `fxCatalog[kind].defaultEnvelope`
+   *  (oder INSTANT_ENVELOPE) zurück. In-memory only — gleiche Persistenz-
+   *  Frage wie fxDefaults. */
+  fxEnvelopes: Partial<Record<FxKind, ADSREnvelope>>;
 
   /** Master-audio playback gain. 1.0 = source level (default), 0 = muted,
    *  2.0 = +6 dB. Applied by `useAudioMaster` to the master `<audio>`
@@ -473,8 +502,20 @@ interface EditorState {
    *  min/max in catalog). Called from the encoder's drag handler. */
   setFxDefault(kind: FxKind, paramId: string, value: number): void;
 
+  /** Patch the ADSR envelope default for `kind` — partial update so the
+   *  ADSR-Editor can drag a single point without re-sending the whole
+   *  envelope. Missing fields keep their prior value. */
+  setFxEnvelope(kind: FxKind, partial: Partial<ADSREnvelope>): void;
+  /** Reset envelope for `kind` back to the catalog's defaultEnvelope
+   *  (or INSTANT_ENVELOPE if none). Used by double-click on ADSR knots. */
+  resetFxEnvelope(kind: FxKind): void;
+
   setProgramStripMode(mode: UiSlice["programStripMode"]): void;
   setFxPanelOpen(open: boolean): void;
+  /** Update the X-hold-to-clear progress (0..1, or null to clear).
+   *  Editor.tsx writes this from a RAF timer while X is held during
+   *  pause; ProgramStrip mirrors it onto whichever lanes are visible. */
+  setXClearProgress(progress: number | null): void;
 }
 
 const TRIM_EPS = 0.05; // seconds — minimum trim window length
@@ -505,6 +546,7 @@ const initialUi: UiSlice = {
   // Closed by default on every form factor. The pull-tab is the
   // discovery affordance; users tap it to expand the pad bank.
   fxPanelOpen: false,
+  xClearProgress: null,
 };
 
 const FX_MIN_WINDOW_S = 0.05;
@@ -715,6 +757,7 @@ export const useEditorStore = create<EditorState>()(
     fxHolds: {},
     selectedFxKind: "vignette",
     fxDefaults: {},
+    fxEnvelopes: {},
     audioVolume: 1.0,
 
     reset() {
@@ -738,6 +781,7 @@ export const useEditorStore = create<EditorState>()(
         fxHolds: {},
         selectedFxKind: "vignette",
         fxDefaults: {},
+        fxEnvelopes: {},
         audioVolume: 1.0,
       });
     },
@@ -793,6 +837,7 @@ export const useEditorStore = create<EditorState>()(
         fxHolds: {},
         selectedFxKind: "vignette",
         fxDefaults: {},
+        fxEnvelopes: {},
         audioVolume:
           typeof opts?.audioVolume === "number" && opts.audioVolume >= 0
             ? Math.min(4, opts.audioVolume)
@@ -879,7 +924,29 @@ export const useEditorStore = create<EditorState>()(
       set({ playback: { ...get().playback, currentTime: t } });
     },
     setPlaying(playing) {
-      set({ playback: { ...get().playback, isPlaying: playing } });
+      const s = get();
+      if (s.playback.isPlaying === playing) return;
+      // Latched preview holds (created via pad-click while paused) only
+      // make sense while the playhead is frozen. The moment playback
+      // starts, drop them — otherwise the descriptor would synthesise a
+      // transient FX every frame on top of any persistent recording.
+      let nextHolds = s.fxHolds;
+      if (playing) {
+        let dropped = false;
+        const filtered: Record<string, FxHoldEntry> = {};
+        for (const [slot, h] of Object.entries(s.fxHolds)) {
+          if (h.mode === "preview") {
+            dropped = true;
+            continue;
+          }
+          filtered[slot] = h;
+        }
+        if (dropped) nextHolds = filtered;
+      }
+      set({
+        playback: { ...s.playback, isPlaying: playing },
+        fxHolds: nextHolds,
+      });
     },
     setLoop(loop) {
       const { trim } = get();
@@ -1545,6 +1612,26 @@ export const useEditorStore = create<EditorState>()(
       // addFx → fxHolds update. Each one fired every store subscriber
       // synchronously inside the hot keydown handler.
       const s = get();
+
+      // Audition mode: while playback is paused the pad just overlays
+      // the effect on the live frame so the user can dial in DEPTH/EDGE
+      // with full visual feedback. NOTHING is written to fx[] — no 1-px
+      // capsule on the timeline, no clobber, no priorFx snapshot needed.
+      if (!s.playback.isPlaying) {
+        const prior = s.fxHolds[slotKey];
+        const nextHolds: Record<string, FxHoldEntry> = { ...s.fxHolds };
+        if (prior) delete nextHolds[slotKey];
+        nextHolds[slotKey] = {
+          mode: "preview",
+          kind,
+          fxId: "",
+          startS,
+          priorFx: [],
+        };
+        set({ fxHolds: nextHolds });
+        return;
+      }
+
       const bpm = s.jobMeta?.bpm?.value ?? null;
       const lengthS = defaultTapLengthS(kind, bpm);
 
@@ -1562,34 +1649,57 @@ export const useEditorStore = create<EditorState>()(
       // skipped via liveIds.
       const liveIds = new Set<string>();
       for (const [k, h] of Object.entries(s.fxHolds)) {
-        if (k !== slotKey) liveIds.add(h.fxId);
+        if (k !== slotKey && h.fxId) liveIds.add(h.fxId);
       }
       const outS = Math.max(startS + lengthS, startS + FX_MIN_WINDOW_S);
-      const clobbered = clobberSameKindOverlapping(
-        baselineFx,
-        kind,
-        startS,
-        outS,
-        liveIds,
-      );
 
-      // Append the new live FX inline — same logic as addFx() but lifted
-      // here so we don't pay another set() round-trip. Bake whatever the
-      // panel encoders are currently showing into the new capsule so
-      // it's frozen at write-time (Recording Head — what was on the
-      // knobs at the moment of the press is what gets recorded).
+      // Bake what the panel encoders are currently showing into the new
+      // capsule so it's frozen at write-time (Recording Head — what was
+      // on the knobs at the moment of the press is what gets recorded).
+      // Same freeze logic for the ADSR envelope. Computed before clobber
+      // so the clobber pass can see the full footprint of the new fx
+      // including its release tail.
       const id = makeFxId();
       const userDefaults = s.fxDefaults[kind];
       const params =
         userDefaults && Object.keys(userDefaults).length > 0
           ? { ...userDefaults }
           : undefined;
-      const newFx: PunchFx = { id, kind, inS: startS, outS, params };
+      const userEnv = s.fxEnvelopes[kind];
+      const catalogEnv = fxCatalog[kind]?.defaultEnvelope;
+      const envelope: ADSREnvelope = userEnv ?? catalogEnv ?? INSTANT_ENVELOPE;
+      // Clobber sees the new fx's eventual footprint (incl. release
+      // tail) so a rapid same-spot retrigger erases the previous fx in
+      // full instead of leaving a release-tail stub behind. Also tape-
+      // splits inside an old fx land at the new fx's actual end, not
+      // its zero-width head.
+      const clobberEndS = outS + envelope.releaseS;
+      const clobbered = clobberSameKindOverlapping(
+        baselineFx,
+        kind,
+        startS,
+        clobberEndS,
+        liveIds,
+      );
+      const newFx: PunchFx = {
+        id,
+        kind,
+        inS: startS,
+        outS,
+        params,
+        envelope: { ...envelope },
+      };
       const nextFx = [...clobbered, newFx];
 
       const nextHolds: Record<string, FxHoldEntry> = { ...s.fxHolds };
       if (prior) delete nextHolds[slotKey];
-      nextHolds[slotKey] = { fxId: id, startS, priorFx };
+      nextHolds[slotKey] = {
+        mode: "persistent",
+        kind,
+        fxId: id,
+        startS,
+        priorFx,
+      };
 
       set({ fx: nextFx, fxHolds: nextHolds });
     },
@@ -1597,6 +1707,9 @@ export const useEditorStore = create<EditorState>()(
       const s = get();
       const hold = s.fxHolds[slotKey];
       if (!hold) return;
+      // Preview holds don't have an fx to grow — the renderer overlays
+      // the effect at full strength while held, no timeline state.
+      if (hold.mode === "preview") return;
       const liveFx = s.fx.find((f) => f.id === hold.fxId);
       if (!liveFx) return;
       // Push outS *past* the playhead by HOLD_OVERSHOOT_S so the FX stays
@@ -1632,6 +1745,14 @@ export const useEditorStore = create<EditorState>()(
       const cur = get().fxHolds;
       const hold = cur[slotKey];
       if (!hold) return;
+      // Preview hold: no fx to finalise — just drop the entry. The
+      // overlay disappears on the next render tick.
+      if (hold.mode === "preview") {
+        const next = { ...cur };
+        delete next[slotKey];
+        set({ fxHolds: next });
+        return;
+      }
       // Snap the committed out-edge to the active grid. The in-edge was
       // snapped at beginFxHold; mirroring that on release means tap and
       // hold both produce on-grid ranges. Falls back to the live outS
@@ -1645,8 +1766,18 @@ export const useEditorStore = create<EditorState>()(
         // currentTime again — the latter may have advanced past our last
         // observation, and during tests there's often no playback at all.
         const releaseS = Math.max(fx.inS, fx.outS - FX_HOLD_OVERSHOOT_S);
-        const snapped = get().snapMasterTime(releaseS);
-        const finalOut = Math.max(fx.inS + FX_MIN_WINDOW_S, snapped);
+        const snappedRelease = get().snapMasterTime(releaseS);
+        // Synth-voice release: the region must extend BEYOND the user's
+        // release moment by `envelope.releaseS` seconds so the release
+        // phase actually has time to fade. Without the tail, `outS` lands
+        // at the snapped release moment and the playhead is past the
+        // region instantly — effect cuts off hard. Snap stays at the
+        // user-perceived moment; only the tail is appended (off-grid).
+        const releaseTailS = fx.envelope?.releaseS ?? 0;
+        const finalOut = Math.max(
+          fx.inS + FX_MIN_WINDOW_S,
+          snappedRelease + releaseTailS,
+        );
         if (Math.abs(finalOut - fx.outS) > 1e-6) {
           set({
             fx: get().fx.map((f) =>
@@ -1664,6 +1795,11 @@ export const useEditorStore = create<EditorState>()(
       if (!hold) return;
       const next = { ...get().fxHolds };
       delete next[slotKey];
+      if (hold.mode === "preview") {
+        // Nothing was written to fx[] — just drop the hold record.
+        set({ fxHolds: next });
+        return;
+      }
       // Revert: drop only the fx this hold introduced. Other live holds
       // keep their fx (we don't full-revert to priorFx, that would clobber
       // simultaneously-held FX from other slots).
@@ -1672,13 +1808,19 @@ export const useEditorStore = create<EditorState>()(
     },
     cancelAllFxHolds() {
       const holds = get().fxHolds;
-      const liveIds = new Set(Object.values(holds).map((h) => h.fxId));
+      const liveIds = new Set(
+        Object.values(holds)
+          .filter((h) => h.mode === "persistent")
+          .map((h) => h.fxId),
+      );
       const fxNext = get().fx.filter((f) => !liveIds.has(f.id));
       set({ fx: fxNext, fxHolds: {} });
     },
     eraseFxAt(t, kinds) {
       const liveIds = new Set(
-        Object.values(get().fxHolds).map((h) => h.fxId),
+        Object.values(get().fxHolds)
+          .filter((h) => h.mode === "persistent")
+          .map((h) => h.fxId),
       );
       const matchKind = (k: FxKind): boolean =>
         kinds === "all" ? true : kinds.includes(k);
@@ -1731,6 +1873,11 @@ export const useEditorStore = create<EditorState>()(
     setFxPanelOpen(open) {
       set({ ui: { ...get().ui, fxPanelOpen: open } });
     },
+    setXClearProgress(progress) {
+      const cur = get().ui.xClearProgress;
+      if (cur === progress) return;
+      set({ ui: { ...get().ui, xClearProgress: progress } });
+    },
     setSelectedFxKind(kind) {
       if (get().selectedFxKind === kind) return;
       set({ selectedFxKind: kind });
@@ -1745,6 +1892,37 @@ export const useEditorStore = create<EditorState>()(
           [kind]: { ...sub, [paramId]: value },
         },
       });
+    },
+    setFxEnvelope(kind, partial) {
+      const cur = get().fxEnvelopes;
+      const baseline =
+        cur[kind] ?? fxCatalog[kind]?.defaultEnvelope ?? INSTANT_ENVELOPE;
+      const next: ADSREnvelope = {
+        attackS: partial.attackS ?? baseline.attackS,
+        decayS: partial.decayS ?? baseline.decayS,
+        sustain: partial.sustain ?? baseline.sustain,
+        releaseS: partial.releaseS ?? baseline.releaseS,
+      };
+      // Skip the set when nothing actually changed — keeps zustand
+      // subscribers (and the RAF preview) idle on no-op drags.
+      const prev = cur[kind];
+      if (
+        prev &&
+        prev.attackS === next.attackS &&
+        prev.decayS === next.decayS &&
+        prev.sustain === next.sustain &&
+        prev.releaseS === next.releaseS
+      ) {
+        return;
+      }
+      set({ fxEnvelopes: { ...cur, [kind]: next } });
+    },
+    resetFxEnvelope(kind) {
+      const cur = get().fxEnvelopes;
+      if (!(kind in cur)) return;
+      const next = { ...cur };
+      delete next[kind];
+      set({ fxEnvelopes: next });
     },
   })),
 );

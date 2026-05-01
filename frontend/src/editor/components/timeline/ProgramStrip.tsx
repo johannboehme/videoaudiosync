@@ -93,6 +93,11 @@ interface Props {
    *  by ProgramStrip itself; the parent only commits the deletion. */
   onClearCuts?: () => void;
   onClearFx?: () => void;
+  /** Optional 0..1 progress from the keyboard-driven X-hold-to-clear
+   *  gesture. Mirrored onto whichever lanes the current `mode` shows
+   *  so the user gets the same red sweep regardless of whether they
+   *  held the strip with a finger or held X with the keyboard. */
+  externalClearProgress?: number | null;
 }
 
 const EMPTY_LIVE_FX_IDS: ReadonlySet<string> = new Set();
@@ -114,6 +119,7 @@ export function ProgramStrip({
   liveFxIds = EMPTY_LIVE_FX_IDS,
   onClearCuts,
   onClearFx,
+  externalClearProgress = null,
 }: Props) {
   // Long-press timers per strip — independent so a hold on the cuts
   // strip doesn't show a phantom red fill on the FX strip and vice versa.
@@ -520,22 +526,41 @@ export function ProgramStrip({
        *  user holds. Sit ABOVE the lanes so the user sees the timer
        *  visually walking across. Pointer-events:none so they don't
        *  swallow the still-active long-press handlers underneath. */}
-      {showCuts && cutsLP.progress !== null && (
-        <ClearProgressOverlay
-          progress={cutsLP.progress}
-          top={contentTop}
-          bottom={mode === "both" ? stripHeight - splitMidY : contentBottom}
-          label="DELETE ALL CUTS"
-        />
-      )}
-      {showFx && fxLP.progress !== null && (
-        <ClearProgressOverlay
-          progress={fxLP.progress}
-          top={fxLayerTop}
-          bottom={stripHeight - (fxLayerTop + fxLayerHeight)}
-          label="DELETE ALL FX"
-        />
-      )}
+      {(() => {
+        // Combine the per-strip pointer-driven progress with the
+        // shared keyboard-driven `externalClearProgress`. The keyboard
+        // hold targets whichever lanes the current `mode` shows, so we
+        // route it onto the cuts lane when cuts are visible, the fx
+        // lane when fx is visible, or both lanes in "both" mode.
+        const cutsProgress =
+          showCuts
+            ? Math.max(cutsLP.progress ?? -1, externalClearProgress ?? -1)
+            : -1;
+        const fxProgress =
+          showFx
+            ? Math.max(fxLP.progress ?? -1, externalClearProgress ?? -1)
+            : -1;
+        return (
+          <>
+            {cutsProgress >= 0 && (
+              <ClearProgressOverlay
+                progress={cutsProgress}
+                top={contentTop}
+                bottom={mode === "both" ? stripHeight - splitMidY : contentBottom}
+                label="DELETE ALL CUTS"
+              />
+            )}
+            {fxProgress >= 0 && (
+              <ClearProgressOverlay
+                progress={fxProgress}
+                top={fxLayerTop}
+                bottom={stripHeight - (fxLayerTop + fxLayerHeight)}
+                label="DELETE ALL FX"
+              />
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

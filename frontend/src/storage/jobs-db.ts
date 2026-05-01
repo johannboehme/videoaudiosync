@@ -247,6 +247,14 @@ export interface PunchFxRecord {
   inS: number;
   outS: number;
   params?: Record<string, number>;
+  /** ADSR-Hüllkurve. Optional — fehlt bei Pre-V1-Records, dann rendern
+   *  die FX wie bisher (hard-edge an inS/outS, kein Crossfade). */
+  envelope?: {
+    attackS: number;
+    decayS: number;
+    sustain: number;
+    releaseS: number;
+  };
 }
 
 const DB_NAME = "videoaudiosync";

@@ -84,6 +84,13 @@ export interface FrameFx {
   /** Already merged with the FX kind's `defaultParams` so the backend
    *  doesn't need to know about defaults. */
   params: Record<string, number>;
+  /** ADSR-sampled wet/dry mix factor ∈ [0, 1] for THIS frame.
+   *   - 1 → render the FX at full strength (no source rebound)
+   *   - 0 → no effect (skip)
+   *   - 0..1 → backend rebinds the pre-FX source over the FX result with
+   *     alpha (1 - wetness) to softly fade in/out. The descriptor builder
+   *     samples the envelope so backends stay envelope-agnostic. */
+  wetness: number;
 }
 
 /**
