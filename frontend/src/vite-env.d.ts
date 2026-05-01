@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+/// <reference types="vite-plugin-pwa/react" />
 
 // Per-instance build-time env vars (see .env.example at repo root).
 interface ImportMetaEnv {

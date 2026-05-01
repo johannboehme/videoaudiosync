@@ -80,6 +80,14 @@ body,
   50% { opacity: 1; transform: scaleY(1); }
 }
 
+/* PWA install-overlay rotating crosshair — runs while the service worker
+ * precaches the offline bundle. Workbox can't report real progress so a
+ * steady-rotation cue lets the user see "still working". */
+@keyframes vas-install-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Hide native scrollbar but keep scrolling functional. Used by the
  * timeline lane stack: native scroll handles wheel/touch/keyboard,
  * a custom fader-style thumb is rendered as an overlay. */

@@ -1,6 +1,7 @@
 /// <reference types="vitest" />
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { VitePWA } from "vite-plugin-pwa";
 
 // COOP/COEP-Header sind Pflicht für SharedArrayBuffer und damit für
 // WASM-Threads und ffmpeg.wasm. Sie werden im Dev-Server (hier) und im
@@ -17,7 +18,48 @@ export default defineConfig({
   // truth for both `npm run dev` (here) and the Docker build (which reads
   // the same .env to populate VITE_* build args).
   envDir: "..",
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: "autoUpdate",
+      injectRegister: "auto",
+      workbox: {
+        globPatterns: ["**/*.{js,css,html,svg,ico,woff2,wasm}"],
+        // Precache ffmpeg-core (~62 MB für UMD+ESM Varianten); je File ~31 MB,
+        // Workbox-Default-Limit ist 2 MiB → muss hoch.
+        globIgnores: ["**/__test_fixtures__/**"],
+        maximumFileSizeToCacheInBytes: 64 * 1024 * 1024,
+        navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/^\/ffmpeg-core/],
+      },
+      manifest: {
+        name: "TK-1 — Take One",
+        short_name: "TK-1",
+        description:
+          "Multi-cam music video editor — audio is master, every angle aligns.",
+        theme_color: "#FAF6EC",
+        background_color: "#FAF6EC",
+        display: "standalone",
+        start_url: "/",
+        scope: "/",
+        lang: "en",
+        icons: [
+          { src: "/pwa-icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "/pwa-icon-512.png", sizes: "512x512", type: "image/png" },
+          {
+            src: "/pwa-icon-maskable-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          },
+          { src: "/favicon.svg", sizes: "any", type: "image/svg+xml" },
+        ],
+      },
+      // SW im Dev aus — sonst kollidiert er mit Vite-HMR und der COOP/COEP-
+      // Iteration. Verifikation läuft über `npm run build && npm run preview`.
+      devOptions: { enabled: false },
+    }),
+  ],
   optimizeDeps: {
     include: ["mp4box", "mp4-muxer", "idb"],
     // ffmpeg.wasm spawns its own worker via
