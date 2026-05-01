@@ -32,7 +32,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { motion } from "framer-motion";
 import { useEditorStore } from "../store";
 import { fxCatalog, defaultTapLengthS } from "../fx/catalog";
 import type { FxKind, FxParamDef } from "../fx/types";
@@ -319,12 +318,19 @@ function FxPad({ pad }: { pad: PadDef }) {
 
   function handleDown(e: ReactPointerEvent<HTMLButtonElement>) {
     e.preventDefault();
-    e.stopPropagation();
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
+    // We deliberately don't `setPointerCapture` here — capture works
+    // fine for one finger but on Android Chrome routes additional
+    // touch pointers in unpredictable ways, swallowing the second
+    // pad's pointerdown so multi-touch chords (V + W to overlay
+    // vignette + wear) silently drop one of the two. Without capture,
+    // each finger's pointerdown lands on the pad it touched, both
+    // store entries get added, both pads light up.
+    //
+    // We also drop `e.stopPropagation()` for the same reason: when
+    // the FX panel is wrapped in a container with its own pointer
+    // listener (e.g. the editor's no-long-press handler), stopping
+    // propagation can leave the container's "active touch" tracker
+    // out of sync and cancel sibling pointers.
     setSelectedFxKind(pad.kind);
     const s = useEditorStore.getState();
     const t = s.snapMasterTime(s.playback.currentTime);
@@ -333,9 +339,16 @@ function FxPad({ pad }: { pad: PadDef }) {
   function handleUp() {
     endFxHold(pad.slotKey);
   }
+  // Tap-feedback transform replaces framer-motion's `whileTap`. Framer
+  // installs document-level pointer listeners to drive that animation,
+  // and on Android Chrome those listeners interfere with sibling pads'
+  // multi-touch routing (the second pad's pointerdown gets eaten by
+  // framer's "this tap is for the first pad" tracker). Pure CSS scale
+  // sidesteps the issue and looks identical.
+  const pressScale = heldByThisSlot ? 0.94 : 1;
 
   return (
-    <motion.button
+    <button
       type="button"
       onPointerDown={handleDown}
       onPointerUp={handleUp}
@@ -344,8 +357,6 @@ function FxPad({ pad }: { pad: PadDef }) {
       // and on Android Chrome the platform "save / share" menu used to
       // hijack the gesture and abort the FX hold.
       onContextMenu={(e) => e.preventDefault()}
-      whileTap={{ scale: 0.94 }}
-      transition={{ duration: 0.05, ease: "easeOut" }}
       aria-label={`Trigger ${def.label}`}
       title={`${def.label} — hold to play (${pad.letter})`}
       className="relative rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
@@ -355,6 +366,8 @@ function FxPad({ pad }: { pad: PadDef }) {
         WebkitUserSelect: "none",
         userSelect: "none",
         touchAction: "none",
+        transform: `scale(${pressScale})`,
+        transition: "transform 50ms ease-out",
       }}
     >
       {/* keyboard letter — top-left, small etched */}
@@ -390,7 +403,7 @@ function FxPad({ pad }: { pad: PadDef }) {
       >
         {def.label}
       </span>
-    </motion.button>
+    </button>
   );
 }
 
