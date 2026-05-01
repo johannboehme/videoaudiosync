@@ -293,6 +293,44 @@ export default function Editor() {
     /** FX kinds whose hotkey is currently held while X is also held. */
     const eraseKindFilter = new Set<FxKind>();
 
+    // X-during-pause runs a long-press-to-clear that mirrors the
+    // pointer gesture on the program strip. Owns its own RAF + start
+    // time refs so keyup / Escape can cancel cleanly without firing
+    // the clear callback.
+    const X_CLEAR_HOLD_MS = 3000;
+    let xClearStartT = 0;
+    let xClearRaf: number | null = null;
+    let xClearActive = false;
+    function cancelXClear() {
+      if (xClearRaf != null) {
+        cancelAnimationFrame(xClearRaf);
+        xClearRaf = null;
+      }
+      if (xClearActive) {
+        xClearActive = false;
+        useEditorStore.getState().setXClearProgress(null);
+      }
+    }
+    function commitXClear() {
+      const s = useEditorStore.getState();
+      const mode = s.ui.programStripMode;
+      if (mode === "fx" || mode === "both") s.clearAllFx();
+      if (mode === "cuts" || mode === "both") s.clearCuts();
+    }
+    function tickXClear() {
+      const elapsed = performance.now() - xClearStartT;
+      const t = elapsed / X_CLEAR_HOLD_MS;
+      if (t >= 1) {
+        xClearRaf = null;
+        xClearActive = false;
+        useEditorStore.getState().setXClearProgress(null);
+        commitXClear();
+        return;
+      }
+      useEditorStore.getState().setXClearProgress(t);
+      xClearRaf = requestAnimationFrame(tickXClear);
+    }
+
     let raf: number | null = null;
     function tick() {
       raf = null;
@@ -334,18 +372,35 @@ export default function Editor() {
           eraseHeld = false;
           eraseKindFilter.clear();
         }
+        if (xClearActive) {
+          e.preventDefault();
+          cancelXClear();
+        }
         return;
       }
 
-      // X-hotkey — erase modifier.
+      // X-hotkey:
+      //   - Playback running → erase-head modifier (existing behavior:
+      //     X+kind narrows scope; X alone wipes all kinds under the
+      //     150 ms window at the playhead while held).
+      //   - Paused → long-press-to-clear, mirroring the pointer-driven
+      //     hold gesture on the program strip. Mode-aware: clears cuts
+      //     in "cuts" mode, fx in "fx" mode, both in "both" mode.
       if (e.key === "x" || e.key === "X") {
         if (e.repeat) {
           e.preventDefault();
           return;
         }
         e.preventDefault();
-        eraseHeld = true;
-        ensureTick();
+        if (s.playback.isPlaying) {
+          eraseHeld = true;
+          ensureTick();
+        } else if (!xClearActive) {
+          xClearActive = true;
+          xClearStartT = performance.now();
+          useEditorStore.getState().setXClearProgress(0);
+          xClearRaf = requestAnimationFrame(tickXClear);
+        }
         return;
       }
 
@@ -383,6 +438,32 @@ export default function Editor() {
       // Recording-Head: jeder Press sets the selectedFxKind so the
       // panel's encoders + LCD point at the kind that was last triggered.
       s.setSelectedFxKind(kind);
+
+      // Audition mode (paused) → keybind LATCHES the preview, just like
+      // a mouse click on a pad. Same kind toggles off; different kind
+      // swaps. Lets the user dial encoders / ADSR with the mouse while
+      // the effect sits on the live frame.
+      if (!s.playback.isPlaying) {
+        let existingSlot: string | null = null;
+        let existingKind: FxKind | null = null;
+        for (const [slot, h] of Object.entries(s.fxHolds)) {
+          if (h.mode === "preview") {
+            existingSlot = slot;
+            existingKind = h.kind;
+            break;
+          }
+        }
+        if (existingSlot != null && existingKind === kind) {
+          s.endFxHold(existingSlot);
+          return;
+        }
+        if (existingSlot != null) s.endFxHold(existingSlot);
+        const t = s.snapMasterTime(s.playback.currentTime);
+        s.beginFxHold(slotKey, kind, t);
+        ensureTick();
+        return;
+      }
+
       const t = s.snapMasterTime(s.playback.currentTime);
       s.beginFxHold(slotKey, kind, t);
       ensureTick();
@@ -392,6 +473,7 @@ export default function Editor() {
       if (e.key === "x" || e.key === "X") {
         eraseHeld = false;
         eraseKindFilter.clear();
+        cancelXClear();
         return;
       }
       const kind = FX_HOTKEYS[e.key];
@@ -403,8 +485,11 @@ export default function Editor() {
         eraseKindFilter.delete(kind);
         return;
       }
+      // While paused, the hold latches — only the next click/key un-latches.
+      const s = useEditorStore.getState();
+      if (!s.playback.isPlaying) return;
       const slotKey = `key:${e.key.toUpperCase()}`;
-      useEditorStore.getState().endFxHold(slotKey);
+      s.endFxHold(slotKey);
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -425,6 +510,7 @@ export default function Editor() {
       window.removeEventListener("keyup", onKeyUp);
       unsub();
       if (raf !== null) cancelAnimationFrame(raf);
+      cancelXClear();
     };
   }, []);
 
@@ -843,7 +929,7 @@ export default function Editor() {
     id: "editor.fx-pad",
     keys: ["V", "W", "E", "R", "T", "Z", "U"],
     description:
-      "Hold a pad to record its FX under the playhead. V vignette · W wear · E echo · R rgb · T tape · Z zoom · U uv",
+      "While playing: hold a pad to record its FX under the playhead. While paused: tap to latch a live preview — turn the encoders to dial in DEPTH/EDGE; tap again or hit another pad to switch. V vignette · W wear · E echo · R rgb · T tape · Z zoom · U uv",
     group: "FX",
     icon: <VignetteIcon />,
   });
@@ -851,7 +937,7 @@ export default function Editor() {
     id: "editor.erase-fx",
     keys: ["X"],
     description:
-      "Hold to erase FX under the playhead. Combine with an FX pad (e.g. X+V) to limit the wipe to that kind",
+      "While playing: hold to erase FX under the playhead — combine with an FX pad (e.g. X+V) to restrict the wipe to that kind. While paused: hold 3 s to clear the program strip — clears cuts in cuts mode, fx in fx mode, both in both mode. Release or Esc cancels.",
     group: "FX",
     icon: <XIcon />,
   });

@@ -151,6 +151,20 @@ body,
   user-select: none;
 }
 
+/* CRT phosphor "settle" when the FX-panel screen switches between
+ * PARAMS / ENV modes. 80er-Röhrenmonitor-Trägheit — kurzer brightness
+ * bump + 1-2 px vertical jitter, total ~180 ms. Applied as one-shot via
+ * `key={mode}` remount on the LCD inner div. */
+@keyframes vas-crt-glitch {
+  0%   { transform: translateY(0);    filter: brightness(1.0); }
+  20%  { transform: translateY(-1px); filter: brightness(1.4); }
+  60%  { transform: translateY(0.5px);filter: brightness(0.9); }
+  100% { transform: translateY(0);    filter: brightness(1.0); }
+}
+.vas-crt-glitch {
+  animation: vas-crt-glitch 180ms ease-out;
+}
+
 /* Reduce motion respectfully */
 @media (prefers-reduced-motion: reduce) {
   *,

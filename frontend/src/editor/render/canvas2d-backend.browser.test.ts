@@ -207,7 +207,7 @@ describe("Canvas2DBackend — vignette FX pixel parity", () => {
     await b.init(canvas, { pixelW: 100, pixelH: 100 });
     b.drawFrame(
       descriptor([videoLayer()], [
-        { id: "f1", kind: "vignette", inS: 0, params: { intensity: 0.9, falloff: 0.9 } },
+        { id: "f1", kind: "vignette", inS: 0, params: { intensity: 0.9, falloff: 0.9 }, wetness: 1 },
       ]),
       new Map([["a", { kind: "image", bitmap }]]),
     );

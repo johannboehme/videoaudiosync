@@ -9,6 +9,7 @@ import type {
   CanvasLikeContext,
   WebGL2DrawContext,
 } from "./renderer-context";
+import type { ADSREnvelope } from "./envelope";
 import type { FxKind, FxParamDef, PunchFx } from "./types";
 
 export interface FxDefinition {
@@ -23,6 +24,11 @@ export interface FxDefinition {
    *  und schreibt in `fxDefaults` im Store. Optional damit alte Tests, die
    *  ad-hoc FxDefinition-Stubs bauen, nicht brechen. */
   params?: readonly [FxParamDef, FxParamDef];
+  /** ADSR-Default für neue Regionen. Wird beim `beginFxHold` in die
+   *  PunchFx eingefroren (modulo User-Override via `fxEnvelopes[kind]`).
+   *  Optional damit alte Tests Stubs ohne Envelope bauen können —
+   *  fehlend → INSTANT_ENVELOPE. */
+  defaultEnvelope?: ADSREnvelope;
   /** Default tap-length when the user just taps (no hold) and BPM is set.
    *  Multiplied by `60/bpm`. Falls back to `defaultLengthS` when BPM null. */
   defaultLengthBeats?: number;
@@ -65,6 +71,25 @@ export interface FxDefinition {
     h: number,
     t: number,
   ): void;
+
+  /** Apply the ADSR-sampled wetness (0..1) to this kind's params and
+   *  return the params the renderer should actually draw with. Each
+   *  effect knows best how to scale itself: a vignette dims its
+   *  intensity, a zoom shrinks its punch toward 1.0×, an RGB-split
+   *  collapses its split distance to zero. Generic alpha-blend over
+   *  the source doesn't work for displacement effects (zoom would
+   *  ghost a half-zoomed image over the original), so each kind ships
+   *  its own scaling here.
+   *
+   *  Contract: at wetness=1 the returned params equal the input
+   *  (full effect); at wetness=0 the params yield a no-op (effect
+   *  invisible / source pass-through). Optional — kinds without an
+   *  override fall back to leaving params untouched, which is fine
+   *  for tests that build ad-hoc FxDefinition stubs. */
+  applyWetness?(
+    params: Record<string, number>,
+    wetness: number,
+  ): Record<string, number>;
 }
 
 const VIGNETTE_DEFAULTS = {
@@ -86,6 +111,7 @@ function vignetteParams(fx: PunchFx): { intensity: number; falloff: number } {
 
 const VIGNETTE: FxDefinition = {
   kind: "vignette",
+  defaultEnvelope: { attackS: 0.05, decayS: 0, sustain: 1, releaseS: 0.3 },
   label: "VIGN",
   capsuleColor: "#1F4E5F",
   defaultParams: { ...VIGNETTE_DEFAULTS },
@@ -135,6 +161,12 @@ const VIGNETTE: FxDefinition = {
     ctx.setUniform1f("u_falloff", falloff);
     ctx.drawFullscreenQuad();
   },
+  // Vignette is a pure overlay — its alpha IS the intensity, so scaling
+  // intensity by wetness directly dims the corner darkness. Falloff
+  // (the gradient's geometry) stays put; only the strength fades.
+  applyWetness(params, wetness) {
+    return { ...params, intensity: (params.intensity ?? 0) * wetness };
+  },
 };
 
 // — Helpers für Bipolar-Params (LFO-Style) ——————————————————
@@ -161,21 +193,28 @@ const BEAT_STOPS_S: readonly number[] = [
 ];
 
 /** Resolve a bipolar 0..1 value to a period in seconds.
- *  - 0..0.49: free, period = (0.5 - v) * 2 → 0.02..1.0 s scaled
  *  - ~0.5:    "OFF" → returns Infinity (no LFO modulation)
- *  - >0.5:    snap to nearest of BEAT_STOPS_S
- *  Returns Infinity for OFF detent so callers can branch on isFinite. */
+ *  - 0..0.48: free side; near OFF = slowest, full left = fastest
+ *  - 0.52..1: synced side; near OFF = slowest beat (4×), far right = 1/16
+ *
+ *  TE convention: the OFF detent at 12 o'clock is the "do nothing" pose,
+ *  so the SLOWEST modulation lives one nudge away from OFF (it's the
+ *  closest thing to "barely doing anything"), and the fastest sits at
+ *  the extremes. Going far from centre = pushing harder. Returns
+ *  Infinity for OFF so callers can branch on isFinite. */
 function bipolarPeriodS(v: number): number {
   if (v >= 0.48 && v <= 0.52) return Infinity; // OFF detent
   if (v < 0.5) {
-    // Free: maps 0..0.48 → 2.0 s..0.04 s (shorter periods toward 0).
-    const t = v / 0.48; // 0..1
-    return 0.04 + (1 - t) * (2.0 - 0.04);
+    // Free: t=0 at full left (fastest), t=1 near OFF (slowest free).
+    const t = v / 0.48;
+    return 0.04 + t * (2.0 - 0.04);
   }
-  // Synced: 7 buckets evenly across 0.52..1.0
+  // Synced: 7 buckets evenly across 0.52..1.0. Near OFF maps to the
+  // slowest beat (4×), far right maps to 1/16. Indexing into
+  // BEAT_STOPS_S in reverse gives the TE-style "extreme = fast" layout.
   const tt = (v - 0.5) / 0.5; // 0..1
   const idx = Math.min(6, Math.max(0, Math.round(tt * 7 - 0.5)));
-  return BEAT_STOPS_S[idx];
+  return BEAT_STOPS_S[BEAT_STOPS_S.length - 1 - idx];
 }
 
 /** Compute the LFO phase 0..1 within the current period for a capsule
@@ -218,6 +257,7 @@ function wearParams(fx: PunchFx): { decay: number; drift: number } {
 
 const WEAR: FxDefinition = {
   kind: "wear",
+  defaultEnvelope: { attackS: 0.03, decayS: 0, sustain: 1, releaseS: 0.2 },
   label: "WEAR",
   // Faded sepia — sells the "old tape" vibe both on the LED and the
   // capsule colour without clashing with TAPE's amber.
@@ -318,6 +358,13 @@ const WEAR: FxDefinition = {
     ctx.setUniform2f("u_texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
     ctx.drawFullscreenQuad();
   },
+  // Wear's master amount is `decay` — every component (Y/C bleed,
+  // tracking-bar visibility, wobble depth, grain density, dropouts,
+  // tint) scales internally with it. Drift (LFO timing) keeps its
+  // direction; only the wear-amount fades with the envelope.
+  applyWetness(params, wetness) {
+    return { ...params, decay: (params.decay ?? 0) * wetness };
+  },
 };
 
 // — RGB — Chroma-Split (source-displacement) ————————————————
@@ -326,6 +373,7 @@ const RGB_DEFAULTS = { split: 0.4, angle: 0 } as const;
 
 const RGB: FxDefinition = {
   kind: "rgb",
+  defaultEnvelope: { attackS: 0.02, decayS: 0, sustain: 1, releaseS: 0.15 },
   label: "RGB",
   capsuleColor: "#E74C8B",
   defaultParams: { ...RGB_DEFAULTS },
@@ -369,6 +417,12 @@ const RGB: FxDefinition = {
     ctx.setUniform1f("u_split", split);
     ctx.setUniform1f("u_angle", angle);
     ctx.drawFullscreenQuad();
+  },
+  // RGB-split's "amount" is the channel-offset distance. At wetness=0
+  // split=0 → all channels overlap → identity image. Angle (direction)
+  // is preserved.
+  applyWetness(params, wetness) {
+    return { ...params, split: (params.split ?? 0) * wetness };
   },
 };
 
@@ -421,6 +475,7 @@ const ZOOM_DEFAULTS = { punch: 0.5, rate: 0.821 } as const;
 
 const ZOOM: FxDefinition = {
   kind: "zoom",
+  defaultEnvelope: { attackS: 0.04, decayS: 0, sustain: 1, releaseS: 0.25 },
   label: "ZOOM",
   capsuleColor: "#5BAA46",
   defaultParams: { ...ZOOM_DEFAULTS },
@@ -440,11 +495,8 @@ const ZOOM: FxDefinition = {
     const period = bipolarPeriodS(rate);
     const phase = lfoPhase(t, fx.inS, period);
     const pulse = Math.pow(1 - phase, 4);
-    const zoom = 1 + punch * 0.30 * pulse;
-    if (zoom <= 1.0001) {
-      // No visible pump this frame — pass-through (don't even allocate).
-      return;
-    }
+    const zoom = 1 + punch * 0.3 * pulse;
+    if (zoom <= 1.0001) return;
     const cx = w / 2;
     const cy = h / 2;
     const sw = w / zoom;
@@ -453,7 +505,6 @@ const ZOOM: FxDefinition = {
     const sy = cy - sh / 2;
     ctx.save();
     ctx.clearRect(0, 0, w, h);
-    // Crop a window around centre at sample-rate, scale up to fill.
     ctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
     ctx.restore();
   },
@@ -471,6 +522,20 @@ const ZOOM: FxDefinition = {
     ctx.setUniform1f("u_phase", phase);
     ctx.drawFullscreenQuad();
   },
+  // Zoom is a displacement effect — alpha-blending source over zoomed
+  // would ghost. Scale `punch` (the pulse magnitude) linearly with the
+  // envelope's wetness so each pulse's amplitude tracks the envelope
+  // proportionally: at wetness 0.5 the peak zoom is half. sqrt was
+  // flatter and made the release tail feel like the pulse "stays
+  // strong forever" before snapping off; linear matches the curve the
+  // user dialed in. `rate` (beat timing) is untouched so cadence
+  // doesn't slow down with the fade.
+  applyWetness(params, wetness) {
+    return {
+      ...params,
+      punch: (params.punch ?? 0) * Math.max(0, wetness),
+    };
+  },
 };
 
 // — UV — Blacklight Glow (source-derived bloom approximation) ——
@@ -479,6 +544,7 @@ const UV_DEFAULTS = { glow: 0.6, tint: 0.5 } as const;
 
 const UV: FxDefinition = {
   kind: "uv",
+  defaultEnvelope: { attackS: 0.1, decayS: 0, sustain: 1, releaseS: 0.4 },
   label: "UV",
   capsuleColor: "#3FA9F5",
   defaultParams: { ...UV_DEFAULTS },
@@ -535,6 +601,14 @@ const UV: FxDefinition = {
     ctx.setUniform2f("u_texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
     ctx.drawFullscreenQuad();
   },
+  // UV's `glow` is the intensity (bloom strength). `tint` is a colour
+  // selector — scaling it shifts the hue (tint=0.4 vs 0.2 are different
+  // colours, not different brightnesses), so a wetness ramp on tint
+  // would look like a rainbow chase instead of a fade. Only `glow`
+  // fades — the tint colour stays put as the lamp dims.
+  applyWetness(params, wetness) {
+    return { ...params, glow: (params.glow ?? 0) * wetness };
+  },
 };
 
 // — ECHO — Stateless Multi-Tap Trail ————————————————————————
@@ -543,6 +617,7 @@ const ECHO_DEFAULTS = { trail: 0.679, mix: 0.5 } as const;
 
 const ECHO: FxDefinition = {
   kind: "echo",
+  defaultEnvelope: { attackS: 0.08, decayS: 0, sustain: 1, releaseS: 0.4 },
   label: "ECHO",
   capsuleColor: "#9C5BD9",
   defaultParams: { ...ECHO_DEFAULTS },
@@ -596,6 +671,11 @@ const ECHO: FxDefinition = {
     ctx.setUniform1f("u_phase", phase);
     ctx.drawFullscreenQuad();
   },
+  // Echo's `mix` is its wet/dry — at mix=0 the additive trails vanish
+  // and only the source survives. Trail (LFO timing) keeps direction.
+  applyWetness(params, wetness) {
+    return { ...params, mix: (params.mix ?? 0) * wetness };
+  },
 };
 
 // — TAPE — Stateless Tape-Stop Approximation ————————————————
@@ -604,6 +684,7 @@ const TAPE_DEFAULTS = { bend: 0.679, warp: 0.5 } as const;
 
 const TAPE: FxDefinition = {
   kind: "tape",
+  defaultEnvelope: { attackS: 0, decayS: 0, sustain: 1, releaseS: 0 },
   label: "TAPE",
   capsuleColor: "#E5A100",
   defaultParams: { ...TAPE_DEFAULTS },
@@ -621,7 +702,13 @@ const TAPE: FxDefinition = {
     if (!source) return;
     const period = bipolarPeriodS(bend);
     // One-shot: tape decelerates over `period`, then stays stopped.
-    const phase = oneShotPhase(t, fx.inS, period);
+    // The envelope's wetness raises the phase floor — with a rectangle
+    // envelope (wetness=1 from t=0) the tape is already at full warp
+    // when the region starts, instead of waiting for `bend`'s slow
+    // ramp. With a soft attack, the floor rises gradually.
+    const oneShot = oneShotPhase(t, fx.inS, period);
+    const phaseFloor = clamp01(p.phaseFloor ?? 0);
+    const phase = Math.max(oneShot, phaseFloor);
     const warpScale = 0.5 + warp * 0.5;
     ctx.save();
     ctx.clearRect(0, 0, w, h);
@@ -682,13 +769,34 @@ const TAPE: FxDefinition = {
     const bend = clamp01(p.bend ?? TAPE_DEFAULTS.bend);
     const warp = clamp01(p.warp ?? TAPE_DEFAULTS.warp);
     const period = bipolarPeriodS(bend);
-    const phase = oneShotPhase(t, fx.inS, period);
+    const oneShot = oneShotPhase(t, fx.inS, period);
+    const phaseFloor = clamp01(p.phaseFloor ?? 0);
+    const phase = Math.max(oneShot, phaseFloor);
     ctx.setBlendMode("replace");
     ctx.useProgram("tape");
     ctx.bindSourceTexture("u_source");
     ctx.setUniform1f("u_warp", warp);
     ctx.setUniform1f("u_phase", phase);
     ctx.drawFullscreenQuad();
+  },
+  // Tape's visual stop is driven by `warp` (chroma + darken depth).
+  // At wetness=0 the warp collapses to 0 → no smear, no darkening,
+  // no chromatic split → identity image. Bend (which sets the one-shot
+  // ramp duration) is left alone so the timing the user dialed in
+  // still applies if/when wetness rises.
+  //
+  // We also pass wetness as a `phaseFloor` synthetic param: with a
+  // rectangle envelope (wetness=1 instantly) the tape phase jumps to
+  // full at t=0 instead of waiting for `bend`'s ramp — matches the
+  // user's mental model that "rectangle envelope = effect on now".
+  // With a soft envelope, the floor rises gradually; bend's one-shot
+  // can still overtake if it's faster.
+  applyWetness(params, wetness) {
+    return {
+      ...params,
+      warp: (params.warp ?? 0) * wetness,
+      phaseFloor: wetness,
+    };
   },
 };
 

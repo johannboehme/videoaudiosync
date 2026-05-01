@@ -661,6 +661,9 @@ describe("useEditorStore", () => {
   describe("punch-in fx", () => {
     beforeEach(() => {
       useEditorStore.getState().loadJob(baseJobMeta);
+      // Recording-mode requires playback to be running. Audition mode
+      // (paused) is exercised separately under "preview-mode holds".
+      useEditorStore.getState().setPlaying(true);
     });
 
     test("initial state has empty fx, no holds, default ui flags", () => {
@@ -812,21 +815,20 @@ describe("useEditorStore", () => {
     });
 
     describe("tape-overwrite (per-kind monophonic)", () => {
-      test("beginFxHold splits an existing same-kind fx around the default-tap window", () => {
+      test("beginFxHold splits an existing same-kind fx around the new fx's full footprint", () => {
         // Existing fx covering [1, 5]
         useEditorStore.getState().addFx("vignette", 1, 5);
-        // New hold begins at t=3 with default-tap len = FX_MIN_WINDOW_S
-        // (0.05s) → range [3, 3.05] strictly inside [1, 5]: prior
-        // splits into left [1,3] + right [3.05,5], plus the new live
-        // fx [3, 3.05]. Anything outside the live range stays —
-        // recording does NOT erase the future.
+        // New hold at t=3 occupies [3, 3.05 + R] (R = vignette default
+        // 0.3 s). Old [1, 5] splits into left [1, 3] + right [3.35, 5],
+        // and the new live fx is [3, 3.05] (the release tail extends
+        // on endFxHold, but the clobber pass already accounts for it).
         useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
         const fx = useEditorStore.getState().fx;
         expect(fx).toHaveLength(3);
         const left = fx.find((f) => f.inS === 1)!;
         expect(left.outS).toBeCloseTo(3, 6);
         const right = fx.find((f) => Math.abs(f.outS - 5) < 1e-6)!;
-        expect(right.inS).toBeCloseTo(3.05, 6);
+        expect(right.inS).toBeCloseTo(3.35, 6);
       });
 
       test("beginFxHold leaves fx outside the default-tap window untouched", () => {
@@ -860,7 +862,11 @@ describe("useEditorStore", () => {
         useEditorStore.getState().addFx("vignette", 0, 5);
         useEditorStore.getState().beginFxHold("key:F", "vignette", 3);
         const fx = useEditorStore.getState().fx;
-        // The existing fx got trimmed (same kind), proving the same-kind path.
+        // The existing fx got trimmed (same kind), proving the same-kind
+        // path runs. Trimmed-back to the new fx's start (3) — the new fx
+        // is at the front, its release tail extends to ~3.35 (vignette
+        // default R=0.3s) but since the existing fx started before the
+        // new one, only the front-trim case applies.
         const prior = fx.find((f) => f.inS === 0)!;
         expect(prior.outS).toBeCloseTo(3, 6);
       });

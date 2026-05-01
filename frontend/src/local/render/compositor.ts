@@ -21,6 +21,7 @@ import type { Visualizer } from "./visualizer/types";
 import type { PunchFx } from "../../editor/fx/types";
 import { activeFxAt } from "../../editor/fx/active";
 import { fxCatalog } from "../../editor/fx/catalog";
+import { envelopeAt, INSTANT_ENVELOPE } from "../../editor/fx/envelope";
 import { Canvas2DBackend } from "../../editor/render/canvas2d-backend";
 import type {
   FrameDescriptor,
@@ -183,12 +184,25 @@ export class Compositor {
     };
 
     const fxFrame: FrameFx[] = this.opts.fx
-      ? activeFxAt(this.opts.fx, t).map((fx) => ({
-          id: fx.id,
-          kind: fx.kind,
-          inS: fx.inS,
-          params: { ...fxCatalog[fx.kind].defaultParams, ...(fx.params ?? {}) },
-        }))
+      ? activeFxAt(this.opts.fx, t)
+          .map((fx) => {
+            const def = fxCatalog[fx.kind];
+            const env = fx.envelope ?? INSTANT_ENVELOPE;
+            const wetness = envelopeAt(env, fx.outS - fx.inS, t - fx.inS);
+            const merged = { ...def.defaultParams, ...(fx.params ?? {}) };
+            const params =
+              def.applyWetness && wetness < 1
+                ? def.applyWetness(merged, wetness)
+                : merged;
+            return {
+              id: fx.id,
+              kind: fx.kind,
+              inS: fx.inS,
+              params,
+              wetness,
+            };
+          })
+          .filter((f) => f.wetness > 0)
       : [];
 
     const descriptor: FrameDescriptor = {

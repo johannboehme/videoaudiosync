@@ -13,10 +13,11 @@
 import type { Clip, ExportSpec } from "../types";
 import { clipRangeS, isImageClip, normaliseRotation } from "../types";
 import type { Cut } from "../../storage/jobs-db";
-import type { PunchFx } from "../fx/types";
+import type { FxKind, PunchFx } from "../fx/types";
 import { activeCamAt, type CamRange } from "../cuts";
 import { activeFxAt } from "../fx/active";
 import { fxCatalog } from "../fx/catalog";
+import { envelopeAt, INSTANT_ENVELOPE, type ADSREnvelope } from "../fx/envelope";
 import { camSourceTimeS } from "../../local/timing/cam-time";
 import { resolveOutputDims } from "../output-frame";
 import type {
@@ -27,6 +28,16 @@ import type {
   OutputDims,
 } from "./frame-descriptor";
 
+/** Mirror of the FxHoldEntry shape from the store. Replicated locally
+ *  so the descriptor builder stays free of cross-imports back into the
+ *  Zustand slice. */
+export interface FxHoldSnapshot {
+  mode: "persistent" | "preview";
+  kind: FxKind;
+  fxId: string;
+  startS: number;
+}
+
 /** Minimal store-snapshot shape the builder needs. Lets tests construct
  *  inputs without instantiating the full Zustand store. */
 export interface EditorStoreSnapshot {
@@ -34,6 +45,21 @@ export interface EditorStoreSnapshot {
   cuts: readonly Cut[];
   fx: readonly PunchFx[];
   exportSpec: ExportSpec;
+  /** Active live holds keyed by slot — `mode: "preview"` entries are
+   *  synthesised into transient FrameFx (no timeline write). Optional so
+   *  test stubs and the export compositor can omit it. */
+  fxHolds?: Readonly<Record<string, FxHoldSnapshot>>;
+  /** The kind currently bound to the panel's encoders. While set, any
+   *  active fx of this kind has its `params`/`envelope` overridden with
+   *  the live encoder + ADSR-editor values, so encoder turns reflect in
+   *  the preview without re-recording. Optional. */
+  selectedFxKind?: FxKind | null;
+  /** Per-kind live encoder values (storage-range). When `selectedFxKind`
+   *  matches an active fx, this map provides the override params. */
+  fxDefaults?: Readonly<Partial<Record<FxKind, Record<string, number>>>>;
+  /** Per-kind live ADSR envelope values. Same override scope as
+   *  fxDefaults — only the selected kind's envelope is overridden. */
+  fxEnvelopes?: Readonly<Partial<Record<FxKind, ADSREnvelope>>>;
 }
 
 /**
@@ -50,7 +76,7 @@ export function buildPreviewFrameDescriptor(
   tMaster: number,
 ): FrameDescriptor {
   const output = computeOutputSnapped(snapshot.clips, snapshot.exportSpec.resolution);
-  const fxOut = buildFx(snapshot.fx, tMaster);
+  const fxOut = buildFx(snapshot, tMaster);
 
   if (!output) {
     return { tMaster, output: null, layers: [], fx: fxOut };
@@ -138,17 +164,91 @@ function buildPreviewLayers(
   ];
 }
 
-function buildFx(fx: readonly PunchFx[], tMaster: number): FrameFx[] {
-  const active = activeFxAt(fx, tMaster);
-  return active.map((f) => {
+function buildFx(
+  snapshot: EditorStoreSnapshot,
+  tMaster: number,
+): FrameFx[] {
+  const out: FrameFx[] = [];
+  const selectedKind = snapshot.selectedFxKind ?? null;
+  const overrideParams =
+    selectedKind != null ? snapshot.fxDefaults?.[selectedKind] : undefined;
+  const overrideEnv =
+    selectedKind != null ? snapshot.fxEnvelopes?.[selectedKind] : undefined;
+  const hasParamOverride = !!(
+    overrideParams && Object.keys(overrideParams).length > 0
+  );
+
+  // Currently-held PunchFx ids (persistent holds only — preview holds
+  // have no fxId). While held, envelope sampling skips the release phase
+  // so the effect sits at sustain level until the user lets go (synth-
+  // voice semantics). Without this the live-extended `outS` keeps the
+  // sample point inside the release window for the entire hold and the
+  // effect renders much weaker than its sustain level.
+  const heldIds = new Set<string>();
+  if (snapshot.fxHolds) {
+    for (const h of Object.values(snapshot.fxHolds)) {
+      if (h.mode === "persistent" && h.fxId) heldIds.add(h.fxId);
+    }
+  }
+
+  // Persistent: real PunchFx capsules on the timeline. ADSR-sampled.
+  for (const f of activeFxAt(snapshot.fx, tMaster)) {
     const def = fxCatalog[f.kind];
-    return {
+    const useOverride = selectedKind === f.kind;
+    const baseParams = f.params ?? {};
+    const merged: Record<string, number> = {
+      ...def.defaultParams,
+      ...(useOverride && hasParamOverride ? overrideParams : baseParams),
+    };
+    const env =
+      (useOverride ? overrideEnv : undefined) ??
+      f.envelope ??
+      INSTANT_ENVELOPE;
+    const holding = heldIds.has(f.id);
+    const wetness = envelopeAt(env, f.outS - f.inS, tMaster - f.inS, holding);
+    if (wetness <= 0) continue;
+    // Per-kind wetness application — each effect knows how to dim
+    // itself intelligently. Generic alpha-blend over source doesn't
+    // work for displacement effects (zoom would ghost), so the kinds
+    // ship their own scaling in `def.applyWetness`.
+    const params =
+      def.applyWetness && wetness < 1
+        ? def.applyWetness(merged, wetness)
+        : merged;
+    out.push({
       id: f.id,
       kind: f.kind,
       inS: f.inS,
-      params: { ...def.defaultParams, ...(f.params ?? {}) },
-    };
-  });
+      params,
+      wetness,
+    });
+  }
+
+  // Preview holds: while playback is paused, pad-presses overlay the
+  // effect at full strength on the live frame without writing anything
+  // to fx[]. Synthesised here as transient FrameFx with wetness=1 so the
+  // user can dial DEPTH/EDGE with full visual feedback.
+  if (snapshot.fxHolds) {
+    for (const hold of Object.values(snapshot.fxHolds)) {
+      if (hold.mode !== "preview") continue;
+      const def = fxCatalog[hold.kind];
+      if (!def) continue;
+      const live = snapshot.fxDefaults?.[hold.kind];
+      const params: Record<string, number> = {
+        ...def.defaultParams,
+        ...(live ?? {}),
+      };
+      out.push({
+        id: `preview:${hold.kind}:${hold.fxId || hold.startS}`,
+        kind: hold.kind,
+        inS: hold.startS,
+        params,
+        wetness: 1,
+      });
+    }
+  }
+
+  return out;
 }
 
 /** Letterbox/pillarbox fit — same shape as compositor.ts's helper but

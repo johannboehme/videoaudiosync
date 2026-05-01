@@ -175,6 +175,13 @@ export class Canvas2DBackend implements CompositorBackend {
         ctx.save();
         def.drawCanvas2D(ctx, punch, w, h, d.tMaster, source);
         ctx.restore();
+        // No mix-pass here. The descriptor builder already scaled this
+        // fx's params by ADSR wetness via `def.applyWetness`, so the
+        // draw above renders at the right intensity. A generic alpha
+        // crossfade between source and effected was wrong for
+        // displacement effects (zoom would ghost two superimposed
+        // images) — letting each kind dim itself in its own way
+        // produces correct pixels for all 7 kinds.
       }
     }
   }

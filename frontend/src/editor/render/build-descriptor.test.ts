@@ -305,3 +305,129 @@ describe("computeFitRect", () => {
     expect(computeFitRect(1920, 0, 1920, 1280)).toEqual({ x: 0, y: 0, w: 0, h: 0 });
   });
 });
+
+// ----------------------------------------------------------------------
+
+describe("buildPreviewFrameDescriptor — fx wetness + live override", () => {
+  const fx = (
+    id: string,
+    inS: number,
+    outS: number,
+    over: Partial<PunchFx> = {},
+  ): PunchFx => ({
+    id,
+    kind: "vignette",
+    inS,
+    outS,
+    ...over,
+  });
+
+  it("INSTANT envelope yields wetness=1 throughout the active range", () => {
+    const f = fx("a", 0, 1);
+    const d = buildPreviewFrameDescriptor(snap({ fx: [f] }), 0.5);
+    expect(d.fx).toHaveLength(1);
+    expect(d.fx[0].wetness).toBe(1);
+  });
+
+  it("samples envelope to a fractional wetness in the release phase", () => {
+    const f = fx("a", 0, 1, {
+      envelope: { attackS: 0, decayS: 0, sustain: 1, releaseS: 0.4 },
+    });
+    // releaseStart = 0.6 → at t=0.8 we are halfway through release
+    const d = buildPreviewFrameDescriptor(snap({ fx: [f] }), 0.8);
+    expect(d.fx[0].wetness).toBeCloseTo(0.5, 5);
+  });
+
+  it("drops fx whose wetness collapses to 0 at the very end of the region", () => {
+    const f = fx("a", 0, 1);
+    // INSTANT at t == outS is exclusive → 0 wetness → dropped
+    const d = buildPreviewFrameDescriptor(snap({ fx: [f] }), 1.0);
+    expect(d.fx).toHaveLength(0);
+  });
+
+  it("overrides params with fxDefaults when selectedFxKind matches", () => {
+    const f = fx("a", 0, 1, { params: { intensity: 0.2, falloff: 0.2 } });
+    const d = buildPreviewFrameDescriptor(
+      snap({
+        fx: [f],
+        selectedFxKind: "vignette",
+        fxDefaults: { vignette: { intensity: 0.9, falloff: 0.7 } },
+      }),
+      0.5,
+    );
+    expect(d.fx[0].params).toMatchObject({ intensity: 0.9, falloff: 0.7 });
+  });
+
+  it("does NOT override params when selectedFxKind is a different kind", () => {
+    const f = fx("a", 0, 1, { params: { intensity: 0.2, falloff: 0.2 } });
+    const d = buildPreviewFrameDescriptor(
+      snap({
+        fx: [f],
+        selectedFxKind: "wear",
+        fxDefaults: { vignette: { intensity: 0.9, falloff: 0.7 } },
+      }),
+      0.5,
+    );
+    expect(d.fx[0].params).toMatchObject({ intensity: 0.2, falloff: 0.2 });
+  });
+
+  it("overrides envelope with fxEnvelopes when selectedFxKind matches", () => {
+    const f = fx("a", 0, 1, {
+      envelope: { attackS: 0, decayS: 0, sustain: 1, releaseS: 0 }, // would be wetness=1
+    });
+    const d = buildPreviewFrameDescriptor(
+      snap({
+        fx: [f],
+        selectedFxKind: "vignette",
+        fxEnvelopes: {
+          vignette: { attackS: 0, decayS: 0, sustain: 0.5, releaseS: 0 },
+        },
+      }),
+      0.5,
+    );
+    // Override envelope has sustain=0.5 → wetness=0.5 in sustain phase
+    expect(d.fx[0].wetness).toBeCloseTo(0.5, 5);
+  });
+
+  it("synthesises preview holds with full wetness into the descriptor", () => {
+    const d = buildPreviewFrameDescriptor(
+      snap({
+        fxHolds: {
+          "key:F": {
+            mode: "preview",
+            kind: "vignette",
+            fxId: "",
+            startS: 1.5,
+          },
+        },
+        fxDefaults: { vignette: { intensity: 0.85, falloff: 0.6 } },
+      }),
+      0,
+    );
+    expect(d.fx).toHaveLength(1);
+    expect(d.fx[0].kind).toBe("vignette");
+    expect(d.fx[0].wetness).toBe(1);
+    expect(d.fx[0].params).toMatchObject({ intensity: 0.85, falloff: 0.6 });
+  });
+
+  it("ignores persistent holds in the synthesis pass (they're already in fx[])", () => {
+    const f = fx("real", 0, 1);
+    const d = buildPreviewFrameDescriptor(
+      snap({
+        fx: [f],
+        fxHolds: {
+          "key:F": {
+            mode: "persistent",
+            kind: "vignette",
+            fxId: "real",
+            startS: 0,
+          },
+        },
+      }),
+      0.5,
+    );
+    // Only the real fx, no synthesised duplicate
+    expect(d.fx).toHaveLength(1);
+    expect(d.fx[0].id).toBe("real");
+  });
+});
