@@ -6,6 +6,43 @@
 
 export type AudioEncodeCodec = "aac" | "opus";
 
+const CODEC_STRING: Record<AudioEncodeCodec, string> = {
+  aac: "mp4a.40.2",
+  opus: "opus",
+};
+
+/**
+ * Probe whether the runtime can encode this codec/format. The only
+ * authoritative signal is `AudioEncoder.isConfigSupported` — UA strings
+ * lie. iOS Safari ships AudioEncoder but historically only supports
+ * Opus encoding (no AAC); without a probe we'd silently produce a file
+ * with an audio track header but no audio data, which is exactly the
+ * "exported file has no audio" symptom phones hit.
+ *
+ * Returns `false` for any rejection (no AudioEncoder, codec name
+ * unknown, sample-rate / channel combo unsupported) so the caller can
+ * decide whether to fall back to a different codec.
+ */
+export async function isAudioCodecSupported(
+  codec: AudioEncodeCodec,
+  sampleRate: number,
+  numberOfChannels: number,
+  bitrateBps: number = 128_000,
+): Promise<boolean> {
+  if (typeof AudioEncoder === "undefined") return false;
+  try {
+    const r = await AudioEncoder.isConfigSupported({
+      codec: CODEC_STRING[codec],
+      sampleRate,
+      numberOfChannels,
+      bitrate: bitrateBps,
+    });
+    return r.supported === true;
+  } catch {
+    return false;
+  }
+}
+
 export interface EncodedAudioChunkRecord {
   type: "key" | "delta";
   timestampUs: number;
@@ -39,20 +76,58 @@ export interface AudioEncodeOptions {
 /**
  * Input PCM is laid out as INTERLEAVED frames: [L0, R0, L1, R1, ...].
  * For mono pass a Float32Array of length samples_per_channel.
+ *
+ * Codec resolution:
+ *   - If `opts.codec` is given and the runtime supports it, we use it.
+ *   - If it's given but unsupported (most common case: iOS Safari +
+ *     "aac"), we fall back to the OTHER codec automatically. The export
+ *     wrapper passes the resolved codec through to the muxer via
+ *     `result.muxerCodec`, so the MP4 stays internally consistent.
+ *   - If neither codec is supported we throw with a clear message that
+ *     names the runtime, so the failure surfaces in the UI instead of
+ *     producing a file with a registered audio track but zero data
+ *     chunks (the literal "exported file has no audio" bug).
+ *
+ * The encoder's async error callback used to `throw e` — that does
+ * nothing useful (it's swallowed by the WebCodecs error queue) and let
+ * mid-stream encode failures slip through silently. We now capture the
+ * error into a closure variable and re-throw after `flush()`.
  */
 export async function encodeAudioFromPcm(
   pcm: Float32Array,
   opts: AudioEncodeOptions,
 ): Promise<AudioEncodeResult> {
   const { numberOfChannels, sampleRate } = opts;
-  const codec: AudioEncodeCodec = opts.codec ?? "aac";
+  const requestedCodec: AudioEncodeCodec = opts.codec ?? "aac";
   const bitrateBps = opts.bitrateBps ?? 192_000;
+
+  // Resolve a codec the runtime can actually encode. Probe the requested
+  // codec first; if unsupported, try the other one before giving up.
+  let codec: AudioEncodeCodec | null = null;
+  if (await isAudioCodecSupported(requestedCodec, sampleRate, numberOfChannels, bitrateBps)) {
+    codec = requestedCodec;
+  } else {
+    const fallback: AudioEncodeCodec = requestedCodec === "aac" ? "opus" : "aac";
+    if (await isAudioCodecSupported(fallback, sampleRate, numberOfChannels, bitrateBps)) {
+      codec = fallback;
+    }
+  }
+  if (codec === null) {
+    throw new Error(
+      `AudioEncoder: this browser cannot encode AAC or Opus audio at ` +
+        `${sampleRate} Hz / ${numberOfChannels} ch. The exported file would ` +
+        `have a registered audio track with no data — refusing to render. ` +
+        `Try a desktop browser (Chrome / Edge / recent Safari) for now.`,
+    );
+  }
+
   // Opus's native frame is 960 samples (20 ms @ 48 kHz). AAC is 1024.
   const frameSize = opts.frameSize ?? (codec === "opus" ? 960 : 1024);
   const samplesPerChannel = pcm.length / numberOfChannels;
 
   const chunks: EncodedAudioChunkRecord[] = [];
   let description: Uint8Array | undefined;
+  let captured: Error | null = null;
 
   const encoder = new AudioEncoder({
     output: (chunk, metadata) => {
@@ -80,12 +155,16 @@ export async function encodeAudioFromPcm(
         }
       }
     },
+    // Throwing from inside this callback is a no-op — the WebCodecs
+    // pipeline simply swallows it, so any mid-stream encode error used
+    // to disappear and we'd silently return an under-filled (or empty)
+    // chunks array. Capture instead and re-throw after flush().
     error: (e) => {
-      throw e;
+      captured = e instanceof Error ? e : new Error(String(e));
     },
   });
 
-  const codecString = codec === "opus" ? "opus" : "mp4a.40.2";
+  const codecString = CODEC_STRING[codec];
   encoder.configure({
     codec: codecString,
     sampleRate,
@@ -118,6 +197,28 @@ export async function encodeAudioFromPcm(
 
   await encoder.flush();
   encoder.close();
+
+  if (captured) {
+    throw new Error(`AudioEncoder failed mid-stream: ${(captured as Error).message}`);
+  }
+
+  // Sanity-check: an encoder that "configured" successfully but emitted
+  // zero chunks is the exact "no audio in the file" failure mode we
+  // refuse to silently ship. Same for a missing decoder description —
+  // the muxer needs it to write `esds` / `dOps` for the audio track.
+  if (chunks.length === 0) {
+    throw new Error(
+      `AudioEncoder produced 0 chunks for ${pcm.length} PCM samples ` +
+        `(codec=${codecString}, sr=${sampleRate}, ch=${numberOfChannels}). ` +
+        `The export would have a silent audio track — aborting.`,
+    );
+  }
+  if (!description) {
+    throw new Error(
+      `AudioEncoder produced no decoder description for ${codecString}. ` +
+        `Cannot mux without it.`,
+    );
+  }
 
   return {
     chunks,
