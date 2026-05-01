@@ -31,12 +31,16 @@ export function TransportBar() {
   const setLoop = useEditorStore((s) => s.setLoop);
   const seek = useEditorStore((s) => s.seek);
   // Phone-sized viewports get an aggressively compacted transport bar:
-  // every button drops to size="sm" (h-9, 36 px touch target) and IN /
-  // OUT / LOOP lose their text label so the row fits in 2 stacked
-  // rows instead of the previous 4 on a 280-px-wide Galaxy Fold.
+  // every transport stepper + Play + IN/OUT/LOOP collapses to xs
+  // (h-8 ≈ 28 px wide icon-only, no min-w) so the entire 8-button
+  // block fits on ONE row at 280 px — vs the 2 we landed at last pass
+  // and the 4 the original design produced. Play keeps its primary
+  // (hot-orange) variant so it still reads as the main affordance
+  // even at the same physical size as the steppers.
   const isNarrow = useIsNarrowViewport();
-  const btnSize = isNarrow ? "sm" : "md";
-  const playSize = isNarrow ? "md" : "lg";
+  const btnSize = isNarrow ? "xs" : "md";
+  const playSize = isNarrow ? "xs" : "lg";
+  const trimSize = isNarrow ? "xs" : "sm";
 
   const fps = meta?.fps && meta.fps > 0 ? meta.fps : 30;
   const duration = meta?.duration ?? 0;
@@ -149,10 +153,19 @@ export function TransportBar() {
   });
 
   return (
-    // Mobile collapses gap-y to 1 (4 px) so two rows feel like one
-    // compact block; desktop keeps the original spacing.
-    <div className={`flex items-center flex-wrap ${isNarrow ? "gap-x-1 gap-y-1" : "gap-x-3 gap-y-2"}`}>
-      <div className={`flex items-center flex-wrap ${isNarrow ? "gap-0.5" : "gap-1"}`}>
+    // Mobile flattens the two button groups into a single flex row
+    // (no nested wrappers, no inter-group gap) so all 8 icons fit on
+    // ONE row at 280 px. Desktop keeps the wider gap + divider between
+    // transport and IN/OUT/LOOP groups via the wrapper structure
+    // below.
+    <div
+      className={
+        isNarrow
+          ? "flex items-center gap-0.5"
+          : "flex items-center gap-x-3 gap-y-2 flex-wrap"
+      }
+    >
+      <div className={`flex items-center ${isNarrow ? "contents" : "flex-wrap gap-1"}`}>
         <ChunkyButton
           variant="secondary"
           size={btnSize}
@@ -209,14 +222,16 @@ export function TransportBar() {
         </ChunkyButton>
       </div>
 
-      {/* The vertical divider is meaningful only when both groups sit on
-       *  the same row; on narrow widths the row wraps, so hide it. */}
+      {/* The vertical divider is meaningful only when both groups sit
+       *  on the same row visually distinct; on narrow widths we drop
+       *  it (along with the wrapper structure) so all 8 buttons sit
+       *  in one flat flex row. */}
       <div className="hidden sm:block h-8 w-px bg-rule mx-1" />
 
-      <div className={`flex items-center flex-wrap ${isNarrow ? "gap-0.5" : "gap-1"}`}>
+      <div className={`flex items-center ${isNarrow ? "contents" : "flex-wrap gap-1"}`}>
         <ChunkyButton
           variant="secondary"
-          size="sm"
+          size={trimSize}
           onClick={() => setTrim({ in: currentTime, out: trim.out })}
           iconLeft={<InIcon />}
           aria-label="Set in-point at the playhead"
@@ -225,7 +240,7 @@ export function TransportBar() {
         </ChunkyButton>
         <ChunkyButton
           variant="secondary"
-          size="sm"
+          size={trimSize}
           onClick={() => setTrim({ in: trim.in, out: currentTime })}
           iconLeft={<OutIcon />}
           aria-label="Set out-point at the playhead"
@@ -235,7 +250,7 @@ export function TransportBar() {
         <ChunkyButton
           variant={loop ? "primary" : "secondary"}
           pressed={!!loop}
-          size="sm"
+          size={trimSize}
           onClick={() => setLoop(loop ? null : { start: currentTime, end: Math.min(duration, currentTime + 2) })}
           iconLeft={<LoopIcon />}
           aria-label={loop ? "Disable loop" : "Loop a 2-second region from the playhead"}

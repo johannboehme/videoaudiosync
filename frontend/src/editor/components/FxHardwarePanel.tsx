@@ -61,12 +61,12 @@ const TAB_H = 12;
 const PAD_BODY_H = 110;
 const EXPANDED_H = TAB_H + PAD_BODY_H; // 122 — tab and pad body touch directly
 // On narrow viewports the LCD/encoders sit on top of a wrapped pad grid.
-// Worst case is fold-folded (~280 CSS px wide) where only 3 pads of 60 px
-// fit per row, so 7 pads → 3 rows (60 × 3 + gaps 12 = 192). Plus the
-// LCD/encoders header (~50) and inner padding (~24) we need ~270. The
-// Editor's mobile shell is scrollable so growing here doesn't squeeze
-// the timeline.
-const PAD_BODY_H_NARROW = 286;
+// Tight measurement at fold-folded (280 CSS px): 78 px LCD/encoder
+// row + 6 px gap + 3 rows of 60 px pads (192) + 2 × 4 px gaps + 12 px
+// inner py-1.5 = ~252 px. We round up to 256 for breathing room without
+// reintroducing the wasted middle gap the earlier 286 / mt-auto layout
+// produced.
+const PAD_BODY_H_NARROW = 256;
 const EXPANDED_H_NARROW = TAB_H + PAD_BODY_H_NARROW;
 const TAB_WIDTH = 110;
 
@@ -98,13 +98,21 @@ export function FxHardwarePanel() {
   const padBodyH = isNarrow ? PAD_BODY_H_NARROW : PAD_BODY_H;
   const expandedH = isNarrow ? EXPANDED_H_NARROW : EXPANDED_H;
 
+  // Negative margins on desktop pull the FX panel UP into the parent's
+  // gap-3 (12 px), so the pull-tab visually fills the gap between
+  // transport and timeline. On mobile the parent uses gap-2 (8 px) and
+  // the pull-tab needs visible breathing room from the snap-button
+  // strip that sits at the top of the timeline panel — so we drop the
+  // negative margins on phones and let the parent's gap render
+  // honestly above and below the FX tab.
+  const verticalPullIn = isNarrow ? 0 : -12;
   return (
     <div
       className="relative shrink-0 w-full select-none"
       style={{
         height: open ? expandedH : TAB_H,
-        marginTop: -12,
-        marginBottom: -12,
+        marginTop: verticalPullIn,
+        marginBottom: verticalPullIn,
         overflow: "visible",
         transition: "height 200ms ease-out",
       }}
@@ -226,15 +234,18 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
       />
 
       {narrow ? (
-        // Narrow phones: stack the LCD/encoders on top, then a 4-column
-        // pad grid below. Pads keep their full 60×60 hit area; the row
-        // grows the panel taller (PAD_BODY_H_NARROW) instead of squeezing
-        // the pads into unusable strips.
-        <div className="relative h-full flex flex-col gap-2 px-3 py-3">
-          <div className="flex items-center gap-3 shrink-0">
+        // Narrow phones: stack the LCD/encoders on top, then a wrapped
+        // pad grid below. The earlier version used `mt-auto` to push
+        // the pads to the bottom of a 286 px container, creating ~30
+        // px of wasted space between the encoder row and the pad bank.
+        // We now flow the pads directly under the encoders (no
+        // `mt-auto`) and tighten paddings to py-1.5 so the panel
+        // body shrinks from 286 → 256 px on mobile.
+        <div className="relative h-full flex flex-col gap-1.5 px-2 py-1.5">
+          <div className="flex items-center gap-2 shrink-0">
             <Lcd kind={selectedFxKind} />
             {def.params && (
-              <div className="flex items-end gap-3 self-center ml-auto">
+              <div className="flex items-end gap-2 self-center ml-auto">
                 <Encoder
                   kind={selectedFxKind}
                   param={def.params[0]}
@@ -248,7 +259,7 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
               </div>
             )}
           </div>
-          <div className="flex flex-wrap gap-1.5 justify-center mt-auto">
+          <div className="flex flex-wrap gap-1 justify-center">
             {PADS.map((p) => (
               <FxPad key={p.slotKey} pad={p} />
             ))}

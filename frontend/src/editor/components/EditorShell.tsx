@@ -48,9 +48,12 @@ export function EditorShell({
   // "drawer pulled out of the timeline" silhouette.
   // Mobile drops the timeline-wrapper padding from 12 → 6 px so the
   // header strip and lane stack sit nearly flush with the surrounding
-  // chrome — every saved row matters on a 280-px-wide phone.
+  // chrome — every saved row matters on a 280-px-wide phone. The
+  // "merged drawer" rounded-b-lg variant only kicks in on `sm:` —
+  // mobile keeps full rounding because the FX panel renders with a
+  // visible gap above the timeline (no fused silhouette).
   const timelineWrapperClass = fxPanelOpen
-    ? "shrink-0 bg-paper-hi rounded-b-lg border border-rule shadow-panel p-1.5 sm:p-3"
+    ? "shrink-0 bg-paper-hi rounded-lg sm:rounded-b-lg sm:rounded-t-none border border-rule shadow-panel p-1.5 sm:p-3"
     : "shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-1.5 sm:p-3";
 
   useEffect(() => {
@@ -128,18 +131,21 @@ export function EditorShell({
        *  flagged as too short on a Galaxy Fold) we let the column scroll
        *  vertically. Video is capped at 40 vh so the timeline always
        *  appears above the fold on common portrait phones. */}
-      {/* Mobile column: tighter gap + padding so the preview, transport,
-       *  timeline header and timeline cluster close enough that the
-       *  user can keep eyes on the preview while their thumbs reach
-       *  the transport / FX / timeline buttons. */}
-      <div className="flex-1 lg:hidden flex flex-col gap-1.5 px-2 pb-2 overflow-y-auto overflow-x-hidden min-h-0">
+      {/* Mobile column: tight gap (8 px) so the preview, transport,
+       *  FX tab and timeline cluster close enough that the user can
+       *  keep eyes on the preview while their thumbs reach the
+       *  transport / FX / timeline buttons. The 8 px also gives the
+       *  FX pull-tab visible separation from the snap-button strip
+       *  at the top of the timeline panel — without this the panels
+       *  felt fused together. */}
+      <div className="flex-1 lg:hidden flex flex-col gap-2 px-2 pb-2 overflow-y-auto overflow-x-hidden min-h-0">
         <div
           className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden"
           style={{ maxHeight: "40vh" }}
         >
           <div className="absolute inset-0">{videoArea}</div>
         </div>
-        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-1.5">
+        <div className="shrink-0 bg-paper-hi rounded-lg border border-rule shadow-panel p-1">
           {transport}
         </div>
         {fxPanel}
