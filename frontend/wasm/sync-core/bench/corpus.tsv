@@ -6,23 +6,23 @@
 # name<TAB>genre<TAB>url<TAB>start_s<TAB>duration_s
 #
 # Why TSV, not CSV: track titles routinely contain commas and quotes.
-classical	classical	https://archive.org/details/4BocetosSinfonicos	5	30
-jazz	jazz	https://archive.org/details/jamendo-151803	10	30
-rock	rock	https://archive.org/details/instrum_201606	10	30
-hiphop	hiphop	https://archive.org/details/jamendo-130113	10	30
-ambient	ambient	https://archive.org/details/intercepted-signal	10	30
-folk	folk	https://archive.org/details/BangBangNewYorkliveAcousticRobertKunin	5	30
-electronic	electronic	https://archive.org/details/SaschaMullerInTechnoWeTrust	30	30
-metal	metal	https://archive.org/details/verbenaveraniegaconalba	30	30
-reggae	reggae	https://archive.org/details/KayucosVan03OpulenceALaDeriva2016	30	30
-piano	piano	https://archive.org/details/jamendo-371412	10	30
-country	country	https://archive.org/details/cluckoldhend.d.teolijr.a.c.	10	30
-funk	funk	https://archive.org/details/aob_050407_aobtakeover	60	30
-salsa	salsa	https://archive.org/details/jamendo-115537	30	30
-drone	drone	https://archive.org/details/BRANAS	30	30
-techno	techno-loop	https://archive.org/details/jamendo-139532	30	30
-house	house-loop	https://archive.org/details/SmileUpDanceIi-SpindemanDjSet	60	30
-minimal	minimal-loop	https://archive.org/details/029Rajmi-EsAFenyofakAzEgigErtek	30	30
-spoken	spoken-word	https://archive.org/details/The360SecondWordFor2009-01-16_17_18IDontSeeNothingWrongWithALittle	5	30
-punk	punk	https://archive.org/details/arfortiyefnauseacast_25	30	30
-world	world	https://archive.org/details/WfgCallWithRichThawleyApril182016	60	30
+classical	classical	https://archive.org/details/jamendo-162529	10	30
+jazz	jazz	https://archive.org/details/JV-22543-1945-QmcpRGYAR7cq9y4A6meUjA1fSSUGn5h9Ny9DpY8U2fVcNx.mp3	10	30
+rock	rock	https://archive.org/details/CarelessParallels	30	30
+hiphop	hiphop	https://archive.org/details/jamendo-416723	10	30
+ambient	ambient	https://archive.org/details/RowanBoxSurveillance_201506	60	30
+folk	folk	https://archive.org/details/jamendo-224493	10	30
+electronic	electronic	https://archive.org/details/MoralDisintegrationRevise	30	30
+metal	metal	https://archive.org/details/forgiveness_timeless	30	30
+reggae	reggae	https://archive.org/details/DubatomicParticles2016.02.28	60	30
+piano	piano	https://archive.org/details/jamendo-458569	10	30
+country	country	https://archive.org/details/jamendo-516422	10	30
+funk	funk	https://archive.org/details/SpingineerGuiltyPleasures_Vol.1	60	30
+salsa	salsa	https://archive.org/details/044LAESQUINADELASALSA	30	30
+drone	drone	https://archive.org/details/disperseDispatchEpisode536	60	30
+techno	techno-loop	https://archive.org/details/Tkbnet07	60	30
+house	house-loop	https://archive.org/details/jamendo-247047	30	30
+minimal	minimal-loop	https://archive.org/details/retro-evolucion-programa-25-tempada-14	60	30
+spoken	spoken-word	https://archive.org/details/RedruthAndCornwallHeritageAndHistory13December2011	30	30
+punk	punk	https://archive.org/details/FilmedinCanada039Hardcorelogo	30	30
+world	world	https://archive.org/details/newsflash-20200729	30	30
