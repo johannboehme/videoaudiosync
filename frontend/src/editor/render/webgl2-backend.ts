@@ -38,12 +38,17 @@ type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
 /** Vertex shader for the layer-blit pass. Drives `gl_Position` from the
  *  layer's `fitRect` in output-pixel coords, and computes `v_uv` by
  *  applying `u_uvMat` (rotation+flip) to the standard quad uv around
- *  centre. Y is inverted on output so canvas-Y-down matches GL-Y-up. */
+ *  centre. Y is inverted on output so canvas-Y-down matches GL-Y-up.
+ *  `u_srcFlipY` is a per-source compensation: 1 → flip the texture's
+ *  Y axis at sample time. Used to work around Chrome's hardware video
+ *  upload path silently ignoring UNPACK_FLIP_Y_WEBGL — set to 1 for
+ *  HTMLVideoElement / VideoFrame sources, 0 for ImageBitmap. */
 const LAYER_VERT = `#version 300 es
 in vec2 a_position;
 uniform vec2 u_output;
 uniform vec4 u_destRect;
 uniform mat2 u_uvMat;
+uniform float u_srcFlipY;
 out vec2 v_uv;
 void main() {
   vec2 quadUv = a_position * 0.5 + 0.5;
@@ -53,7 +58,8 @@ void main() {
     1.0 - destPos.y / u_output.y * 2.0
   );
   gl_Position = vec4(clip, 0.0, 1.0);
-  v_uv = u_uvMat * (quadUv - 0.5) + 0.5;
+  vec2 srcUv = u_uvMat * (quadUv - 0.5) + 0.5;
+  v_uv = vec2(srcUv.x, mix(srcUv.y, 1.0 - srcUv.y, u_srcFlipY));
 }
 `;
 
@@ -83,7 +89,8 @@ export class WebGL2Backend implements CompositorBackend {
     destRect: WebGLUniformLocation | null;
     uvMat: WebGLUniformLocation | null;
     tex: WebGLUniformLocation | null;
-  } = { output: null, destRect: null, uvMat: null, tex: null };
+    srcFlipY: WebGLUniformLocation | null;
+  } = { output: null, destRect: null, uvMat: null, tex: null, srcFlipY: null };
   private currentProgram: CachedProgram | null = null;
   private caps: BackendCaps = { pixelW: 1, pixelH: 1 };
   private drawCtx: WebGL2DrawContext | null = null;
@@ -120,6 +127,7 @@ export class WebGL2Backend implements CompositorBackend {
         destRect: gl.getUniformLocation(this.layerProgram, "u_destRect"),
         uvMat: gl.getUniformLocation(this.layerProgram, "u_uvMat"),
         tex: gl.getUniformLocation(this.layerProgram, "u_tex"),
+        srcFlipY: gl.getUniformLocation(this.layerProgram, "u_srcFlipY"),
       };
       this.layerTexture = gl.createTexture();
       if (!this.layerTexture) {
@@ -218,6 +226,13 @@ export class WebGL2Backend implements CompositorBackend {
         layer.fitRect.h,
       );
       gl.uniformMatrix2fv(this.layerLocs.uvMat, false, uvMatrixCM(layer));
+      // HTMLVideoElement / VideoFrame uploads ignore UNPACK_FLIP_Y_WEBGL
+      // on Chrome's hardware path, so we compensate at sample time.
+      // ImageBitmap honours the flag — flip stays at 0 there.
+      gl.uniform1f(
+        this.layerLocs.srcFlipY,
+        src.kind === "video" || src.kind === "videoframe" ? 1 : 0,
+      );
       this.quad.draw();
     }
 
