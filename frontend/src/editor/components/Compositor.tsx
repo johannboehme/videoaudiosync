@@ -56,6 +56,13 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const poolHostRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<PreviewRuntime | null>(null);
+  // Track the latest cams prop so the post-init handoff and the cams
+  // effect can both read it. Without the ref, a cam added BETWEEN
+  // construction and init().then would be lost: the runtime starts with
+  // the constructor-captured map and the cams effect runs before
+  // runtimeRef is set, so its setCams call no-ops.
+  const camsRef = useRef<ClipUrlMap>(cams);
+  camsRef.current = cams;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -108,6 +115,8 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
           Math.max(1, Math.round(r.height)),
           window.devicePixelRatio || 1,
         );
+        // Apply any cams that arrived during init() — see camsRef.
+        runtime.setCams(camsRef.current);
         runtime.start();
         runtimeRef.current = runtime;
         // Expose for `setScale(0.75)` from the devtools console.
@@ -128,10 +137,18 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
     // We deliberately do NOT depend on `cams` here — the runtime
     // reconciles its pool on every tick via `setCams(...)`, so adding
     // / removing a cam doesn't tear down the backend / decoder pool.
-    // Initial cams are captured in the constructor; subsequent changes
-    // flow through the descriptor builder + pool reconciliation.
+    // The separate effect below pushes prop changes into the runtime so
+    // newly-added cams' URLs reach the pool / bitmap loader.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Push cams-prop changes into the running runtime without tearing it
+  // down. Without this the runtime keeps the cams map captured at mount,
+  // and a newly-added video/image has no URL to mount its <video> with —
+  // the active layer renders nothing and the preview goes black.
+  useEffect(() => {
+    runtimeRef.current?.setCams(cams);
+  }, [cams]);
 
   // Track the canvas's container size and forward to the runtime.
   // The runtime might not exist yet on the first observation (init() is
