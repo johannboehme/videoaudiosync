@@ -275,6 +275,21 @@ export function Timeline({
   const viewStart = timelineStartS + clampedScroll;
   const viewEnd = viewStart + visibleDur;
 
+  // Auto-page: when the playhead moves outside the visible range (during
+  // playback or via a programmatic seek), snap scrollX so the playhead
+  // reappears at the start of the next "screen". Gated on the playhead
+  // having moved this render — otherwise scrolling away while paused
+  // would snap straight back.
+  const lastPlayheadRef = useRef(currentTime);
+  useEffect(() => {
+    const moved = currentTime !== lastPlayheadRef.current;
+    lastPlayheadRef.current = currentTime;
+    if (!moved) return;
+    if (currentTime >= viewStart && currentTime <= viewEnd) return;
+    const next = Math.max(0, Math.min(maxScroll, currentTime - timelineStartS));
+    if (Math.abs(next - clampedScroll) > 1e-6) setScrollX(next);
+  }, [currentTime, viewStart, viewEnd, timelineStartS, maxScroll, clampedScroll, setScrollX]);
+
   // ---- Layout offsets (canvas y-coordinates per lane) ----
   const videoBands = clips.map((_, i) => ({
     top: i * videoLaneHeight,
