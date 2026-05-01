@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { ChunkyButton } from "../editor/components/ChunkyButton";
 import { RuleStrip } from "../editor/components/RuleStrip";
 import { DownloadIcon } from "../editor/components/icons";
@@ -144,8 +144,12 @@ export default function JobPage() {
           <ChunkyButton variant="primary" size="lg" onClick={onQuickRender}>
             {canRetry ? "Retry quick render" : "Quick render"}
           </ChunkyButton>
-          <ChunkyButton variant="secondary" size="lg">
-            <Link to={`/job/${job.id}/edit`}>Open editor</Link>
+          <ChunkyButton
+            variant="secondary"
+            size="lg"
+            onClick={() => navigate(`/job/${job.id}/edit`)}
+          >
+            Open editor
           </ChunkyButton>
           {downloadUrl && (
             <a
