@@ -5,7 +5,6 @@ import { markInterruptedJobsOnLoad } from "./local/lifecycle";
 import { HelpOverlay } from "./editor/components/HelpOverlay";
 import { RecMark } from "./editor/components/RuleStrip";
 import { Footer } from "./components/Footer";
-import { InstallProgressOverlay } from "./pwa/InstallProgressOverlay";
 import { Datenschutz } from "./pages/Datenschutz";
 import Editor from "./pages/Editor";
 import History from "./pages/History";
@@ -48,12 +47,7 @@ export default function App() {
     };
   }, []);
   if (!ready) {
-    return (
-      <>
-        <main className="min-h-full" aria-hidden />
-        <InstallProgressOverlay />
-      </>
-    );
+    return <main className="min-h-full" aria-hidden />;
   }
 
   if (!min.ok) {
@@ -61,7 +55,6 @@ export default function App() {
       <>
         <BrowserTooOld missing={min.missing} />
         <HelpOverlay />
-        <InstallProgressOverlay />
       </>
     );
   }
@@ -82,7 +75,6 @@ export default function App() {
       </Routes>
       <Footer overlay={isFullBleed} />
       <HelpOverlay />
-      <InstallProgressOverlay />
     </div>
   );
 }

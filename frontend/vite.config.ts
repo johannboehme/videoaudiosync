@@ -24,13 +24,28 @@ export default defineConfig({
       registerType: "autoUpdate",
       injectRegister: "auto",
       workbox: {
-        globPatterns: ["**/*.{js,css,html,svg,ico,woff2,wasm}"],
-        // Precache ffmpeg-core (~62 MB für UMD+ESM Varianten); je File ~31 MB,
-        // Workbox-Default-Limit ist 2 MiB → muss hoch.
-        globIgnores: ["**/__test_fixtures__/**"],
-        maximumFileSizeToCacheInBytes: 64 * 1024 * 1024,
+        // Precache the app shell only — ffmpeg-core (~31 MB ESM, ~62 MB
+        // incl. UMD) is deliberately excluded so first contact stays fast.
+        // It's served via runtimeCaching below: fetched on demand the first
+        // time a render needs it, then cached for offline reuse.
+        globPatterns: ["**/*.{js,css,html,svg,ico,woff2}"],
+        globIgnores: ["**/__test_fixtures__/**", "ffmpeg-core/**"],
         navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/ffmpeg-core/],
+        runtimeCaching: [
+          {
+            urlPattern: /^.*\/ffmpeg-core\/.*$/,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "ffmpeg-core",
+              expiration: {
+                maxEntries: 8,
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+        ],
       },
       manifest: {
         name: "TK-1 — Take One",
