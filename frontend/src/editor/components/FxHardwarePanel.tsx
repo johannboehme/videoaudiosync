@@ -65,23 +65,28 @@ const PAD_BODY_H = 110;
 // so the bottom padding under the pad row matches the top padding
 // above the LCD (`py-1.5` = 6 px). At fold-folded (280 px wide) we get
 // 3 pads per row → 3 rows; at iPhone-12 (390) we get 5 → 2 rows; at
-// 540+ we get 7 → 1 row. The earlier static 256 value was tuned to
-// the worst case (3 rows) and left ~36 px of dead space below the
-// pads on iPhone-class viewports — exactly the "viel platz unten"
-// the user spotted.
+// 540+ we get 7 → 1 row.
+//
+// Narrow mobile structure (top → bottom):
+//   - LCD (full-width, taller — keeps the ENV editor usable)
+//   - Encoder row: [mode buttons | encoder1 | encoder2]
+//   - Pad grid (wraps across `rows`)
 const PAD_SIZE_NARROW = 60; // pad width = pad height on phones
 const PAD_GAP_NARROW = 4; // matches `gap-1` in the JSX below
-const LCD_ROW_H_NARROW = 78; // LCD is the tallest item in the top row
+const LCD_H_NARROW = 96; // matches lcdStyle(narrow=true).height
+const ENCODER_ROW_H_NARROW = 60; // ENC_OUTER (50) + gap (3) + label (~7)
 const PADBODY_INNER_PY_NARROW = 12; // 2× py-1.5
 const PADBODY_INNER_PX_NARROW = 16; // 2× px-2
-const PADBODY_INNER_GAP_NARROW = 6; // gap-1.5 between LCD row and pad row
+const PADBODY_INNER_GAP_NARROW = 6; // gap-1.5 between rows
 function padBodyHeightNarrow(rows: number): number {
   return (
-    LCD_ROW_H_NARROW +
+    PADBODY_INNER_PY_NARROW +
+    LCD_H_NARROW +
+    PADBODY_INNER_GAP_NARROW +
+    ENCODER_ROW_H_NARROW +
     PADBODY_INNER_GAP_NARROW +
     rows * PAD_SIZE_NARROW +
-    (rows - 1) * PAD_GAP_NARROW +
-    PADBODY_INNER_PY_NARROW
+    (rows - 1) * PAD_GAP_NARROW
   );
 }
 function padsPerRowNarrow(containerCssWidth: number): number {
@@ -287,19 +292,22 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
       />
 
       {narrow ? (
-        // Narrow phones: stack the LCD/encoders on top, then a wrapped
-        // pad grid below. The earlier version used `mt-auto` to push
-        // the pads to the bottom of a 286 px container, creating ~30
-        // px of wasted space between the encoder row and the pad bank.
-        // We now flow the pads directly under the encoders (no
-        // `mt-auto`) and tighten paddings to py-1.5 so the panel
-        // body shrinks from 286 → 256 px on mobile.
+        // Narrow phones: the LCD gets its own full-width row so the
+        // ENV-mode plot and finger-friendly knot hit-targets have real
+        // estate to live in. Mode-buttons + encoders sit horizontally
+        // below the LCD, then the pad bank wraps underneath. This trades
+        // a few extra vertical pixels for a usable envelope editor on
+        // mobile.
         <div className="relative h-full flex flex-col gap-1.5 px-2 py-1.5">
-          <div className="flex items-center gap-1.5 shrink-0">
-            <ScreenModeColumn mode={screenMode} setMode={setScreenMode} />
-            <Lcd kind={selectedFxKind} mode={screenMode} />
+          <Lcd kind={selectedFxKind} mode={screenMode} narrow />
+          <div className="flex items-center justify-center gap-3 shrink-0">
+            <ScreenModeColumn
+              mode={screenMode}
+              setMode={setScreenMode}
+              narrow
+            />
             {def.params && (
-              <div className="flex items-end gap-2 self-center ml-auto">
+              <div className="flex items-end gap-2">
                 <Encoder
                   kind={selectedFxKind}
                   param={def.params[0]}
@@ -514,12 +522,20 @@ function FxPad({ pad }: { pad: PadDef }) {
 
 // — LCD ————————————————————————————————————————————————————
 
-function Lcd({ kind, mode }: { kind: FxKind; mode: ScreenMode }) {
+function Lcd({
+  kind,
+  mode,
+  narrow = false,
+}: {
+  kind: FxKind;
+  mode: ScreenMode;
+  narrow?: boolean;
+}) {
   return (
     <div
       aria-hidden
       className="relative flex flex-col justify-between leading-tight"
-      style={LCD_STYLE}
+      style={lcdStyle(narrow)}
     >
       {/* horizontal scan-line overlay — sells the "phosphor" feel.
        *  Sits ABOVE the per-mode content so both PARAMS and ENV inherit
@@ -543,7 +559,11 @@ function Lcd({ kind, mode }: { kind: FxKind; mode: ScreenMode }) {
         className="relative flex flex-col h-full vas-crt-glitch"
         style={{ zIndex: 1 }}
       >
-        {mode === "params" ? <LcdParamsView kind={kind} /> : <LcdEnvelopeView kind={kind} />}
+        {mode === "params" ? (
+          <LcdParamsView kind={kind} />
+        ) : (
+          <LcdEnvelopeView kind={kind} narrow={narrow} />
+        )}
       </div>
     </div>
   );
@@ -1140,12 +1160,24 @@ function Divider() {
 function ScreenModeColumn({
   mode,
   setMode,
+  narrow = false,
 }: {
   mode: ScreenMode;
   setMode: (m: ScreenMode) => void;
+  narrow?: boolean;
 }) {
+  // Wide: vertical pair beside the LCD (CH▲/CH▼ feel). Narrow: horizontal
+  // pair so the row Buttons|Encoders|Encoders stays compact under the
+  // full-width LCD.
   return (
-    <div className="flex flex-col items-center justify-center gap-1 self-center shrink-0">
+    <div
+      className={
+        (narrow
+          ? "flex flex-row items-center justify-center gap-1.5"
+          : "flex flex-col items-center justify-center gap-1") +
+        " self-center shrink-0"
+      }
+    >
       <ScreenModeButton
         active={mode === "params"}
         label="P"
@@ -1181,9 +1213,9 @@ function ScreenModeButton({
       aria-label={ariaLabel}
       className="relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
       style={{
-        width: 14,
-        height: 11,
-        borderRadius: 2,
+        width: 18,
+        height: 14,
+        borderRadius: 2.5,
         background: "linear-gradient(180deg,#2C2925 0%,#1A1815 100%)",
         border: "1px solid rgba(0,0,0,0.7)",
         boxShadow: active
@@ -1194,7 +1226,7 @@ function ScreenModeButton({
         cursor: "pointer",
       }}
     >
-      {/* Touch-target extender — 24×24 invisible hit-rect for fingers. */}
+      {/* Touch-target extender — 28×28 invisible hit-rect for fingers. */}
       <span
         aria-hidden
         className="absolute"
@@ -1206,10 +1238,10 @@ function ScreenModeButton({
         aria-hidden
         className="absolute"
         style={{
-          top: 1.5,
-          right: 1.5,
-          width: 3,
-          height: 3,
+          top: 2,
+          right: 2,
+          width: 4,
+          height: 4,
           borderRadius: "50%",
           background: active ? "#9FE08E" : "#1F2A1E",
           boxShadow: active
@@ -1221,9 +1253,9 @@ function ScreenModeButton({
         aria-hidden
         className="absolute leading-none"
         style={{
-          left: 3,
-          top: 2,
-          fontSize: 7,
+          left: 4,
+          top: 3,
+          fontSize: 9,
           fontFamily:
             '"JetBrains Mono Variable", ui-monospace, monospace',
           fontWeight: 700,
@@ -1251,17 +1283,25 @@ const ADSR_MAX_R_S = 3.0;
  *  left half of the plot, leaving headroom for big releases. */
 const ADSR_TOTAL_VIS_S = 5.0;
 
-function LcdEnvelopeView({ kind }: { kind: FxKind }) {
+function LcdEnvelopeView({
+  kind,
+  narrow = false,
+}: {
+  kind: FxKind;
+  narrow?: boolean;
+}) {
   const userEnv = useEditorStore((s) => s.fxEnvelopes[kind]);
   const def = fxCatalog[kind];
   const env: ADSREnvelope =
     userEnv ?? def?.defaultEnvelope ?? INSTANT_ENVELOPE;
 
-  // No header — like the OP-1, the screen is just the envelope curve.
-  // LCD is 158×78; py-1.5 = 6 px on each side gives 66 px of plot height.
-  // px-2 = 8 px gives 142 px of plot width.
+  // SVG plot is sized in logical units. px-2 = 8 px on each side gives
+  // 142 units of horizontal plot. py-1.5 = 6 px top/bottom — wide LCD is
+  // 78 px tall (66 plot units), narrow LCD is 96 px tall (84 plot units)
+  // so the curve and finger-friendly knot hit-targets get more vertical
+  // breathing room on phones.
   const PLOT_W = 142;
-  const PLOT_H = 66;
+  const PLOT_H = narrow ? 84 : 66;
   const xPerS = PLOT_W / ADSR_TOTAL_VIS_S;
 
   const geom = computeAdsrGeom(env, PLOT_W, PLOT_H, xPerS);
@@ -1285,9 +1325,12 @@ function LcdEnvelopeView({ kind }: { kind: FxKind }) {
       <svg
         viewBox={`0 0 ${PLOT_W} ${PLOT_H}`}
         width="100%"
-        height={PLOT_H}
+        height="100%"
         preserveAspectRatio="none"
-        style={{ display: "block" }}
+        // touch-action on the <g> alone isn't enough on some mobile
+        // browsers — duplicating it on the SVG keeps page scroll from
+        // hijacking the knot drag.
+        style={{ display: "block", touchAction: "none" }}
       >
         <defs>
           <filter id="vas-crt-glow" x="-20%" y="-20%" width="140%" height="140%">
@@ -1901,9 +1944,12 @@ function AdsrNode(props: AdsrNodeProps) {
       onDoubleClick={onDoubleClick}
       style={{ cursor: "grab", touchAction: "none" }}
     >
-      {/* Larger invisible hit-target — fingers on touch screens need
-       *  >= 14×14, the visible knot is just 5–7 px. */}
-      <circle cx={cx} cy={cy} r={9} fill="transparent" pointerEvents="all" />
+      {/* Larger invisible hit-target — fingers on touch screens need a
+       *  generous tap area; the visible knot is just 5–7 px. r=14 SVG
+       *  units → ~30 px tap diameter on a typical mobile LCD width
+       *  (close to the 44 px Apple HIG target without overlapping
+       *  neighbouring knots). */}
+      <circle cx={cx} cy={cy} r={14} fill="transparent" pointerEvents="all" />
       <circle
         cx={cx}
         cy={cy}
@@ -1984,18 +2030,24 @@ const BRUSHED_GRAIN: CSSProperties = {
     "repeating-linear-gradient(90deg, transparent 0, transparent 1px, rgba(255,255,255,0.025) 1px, rgba(255,255,255,0.025) 2px), linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 100%)",
 };
 
-const LCD_STYLE: CSSProperties = {
-  width: 158,
-  height: 78,
-  background: "linear-gradient(180deg, #1A2418 0%, #1F2A1E 100%)",
-  border: "1px solid rgba(0,0,0,0.7)",
-  borderRadius: 3,
-  boxShadow: [
-    "inset 0 1px 1px rgba(0,0,0,0.7)",
-    "inset 0 -1px 1px rgba(255,255,255,0.04)",
-    "0 0 0 2px rgba(0,0,0,0.35)",
-  ].join(", "),
-};
+/** LCD frame dimensions. On wide layouts the LCD is a fixed 158×78 plate
+ *  next to the encoders; on narrow (mobile) layouts it spans the full
+ *  panel width and gets a taller plot area so the ENV curve stays
+ *  finger-friendly. */
+function lcdStyle(narrow: boolean): CSSProperties {
+  return {
+    width: narrow ? "100%" : 158,
+    height: narrow ? 96 : 78,
+    background: "linear-gradient(180deg, #1A2418 0%, #1F2A1E 100%)",
+    border: "1px solid rgba(0,0,0,0.7)",
+    borderRadius: 3,
+    boxShadow: [
+      "inset 0 1px 1px rgba(0,0,0,0.7)",
+      "inset 0 -1px 1px rgba(255,255,255,0.04)",
+      "0 0 0 2px rgba(0,0,0,0.35)",
+    ].join(", "),
+  };
+}
 
 const LCD_TEXT: CSSProperties = {
   color: "#9FE08E",
