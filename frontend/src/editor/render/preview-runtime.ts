@@ -173,6 +173,11 @@ export class PreviewRuntime {
     // with so the first tick doesn't redundantly re-reconcile.
     this.lastReconciledClipsRef = snapshot.clips;
     this.lastReconciledCamsRef = this.opts.cams;
+    // Kick off bitmap loads for any image clips already in the store.
+    // The reconcile gate in tick() won't fire on the first tick (refs
+    // match what we seeded above), so the eager start has to happen
+    // here — otherwise an image present at editor open never loads.
+    this.ensureAllImageBitmaps(snapshot.clips);
     const caps = this.computeCaps();
     this.backend = await this.opts.createBackendFn(this.opts.canvas, caps, this.opts.capabilities);
     await this.backend.warmup();
@@ -300,6 +305,12 @@ export class PreviewRuntime {
       this.lastReconciledClipsRef = snapshot.clips;
       this.lastReconciledCamsRef = this.opts.cams;
       this.evictStaleFrames(snapshot.clips);
+      // Image symmetric to the video pool: a newly-added image (live
+      // "+ Media" flow) needs its bitmap fetched. We can't rely on
+      // buildSourcesMap's lazy trigger because the image has no
+      // displayW/H yet, so buildPreviewLayers drops it from
+      // descriptor.layers and that loop never sees it.
+      this.ensureAllImageBitmaps(snapshot.clips);
     }
 
     // Time the actual GPU/CPU work so the adaptive scaler sees real
@@ -512,11 +523,23 @@ export class PreviewRuntime {
           return;
         }
         this.bitmaps.set(clipId, bm);
+        // Symmetric to VideoElementPool.onDimsReport for videos: tell
+        // the store the image's natural dims so buildPreviewLayers
+        // stops early-exiting on the missing displayW/H. Store setter
+        // is a no-op when dims are unchanged, so this fires once per
+        // image and doesn't churn the clips ref.
+        useEditorStore.getState().setClipDisplayDims(clipId, bm.width, bm.height);
       })
       .catch((err) => {
         this.bitmapsLoading.delete(clipId);
         console.warn(`[compositor] image bitmap load failed for ${clipId}:`, err);
       });
+  }
+
+  private ensureAllImageBitmaps(clips: readonly Clip[]): void {
+    for (const c of clips) {
+      if (isImageClip(c)) this.ensureImageBitmap(c.id, clips);
+    }
   }
 }
 

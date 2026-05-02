@@ -9,6 +9,7 @@ import {
 } from "./video-element-pool";
 import type { Clip, ImageClip, VideoClip } from "../types";
 import type { EditorStoreSnapshot } from "./build-descriptor";
+import { useEditorStore } from "../store";
 
 function videoClip(id: string, more: Partial<VideoClip> = {}): VideoClip {
   return {
@@ -288,6 +289,166 @@ describe("PreviewRuntime — image bitmap cache", () => {
     rt.tick();
     rt.tick();
     expect(loadBitmap).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PreviewRuntime — image clips without pre-set dims", () => {
+  // Background: image clips arrive in the store without `displayW`/`displayH`
+  // (the V1 `<img>`-overlay that previously reported `naturalWidth/Height`
+  // is gone since the V1 preview path was dropped). `buildPreviewLayers`
+  // early-exits when dims are missing, so the image never enters
+  // `descriptor.layers`, so `buildSourcesMap`'s lazy `ensureImageBitmap`
+  // is never called — chicken-and-egg lock that leaves the preview black.
+  // The runtime must (a) trigger bitmap loads for image clips up front,
+  // independent of the descriptor, and (b) report `bm.width`/`bm.height`
+  // back to the store so the next frame can build the layer.
+
+  function imageClipNoDims(id: string): ImageClip {
+    // Helper builds an image clip with displayW/H deliberately unset —
+    // this is the production state for a freshly-added image, before
+    // anything has reported its natural dims.
+    const c = imageClip(id);
+    delete (c as { displayW?: number }).displayW;
+    delete (c as { displayH?: number }).displayH;
+    return c;
+  }
+
+  it("kicks off bitmap load even when image has no displayW/H (no chicken-and-egg)", async () => {
+    const fakeBitmap = { width: 800, height: 600, close: vi.fn() } as unknown as ImageBitmap;
+    const loadBitmap = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const { rt } = makeRuntime({
+      snap: snapshot({ clips: [imageClipNoDims("img1")] }),
+      cams: { img1: { videoUrl: "img1.png" } },
+      backend,
+      loadBitmap,
+    });
+    await rt.init();
+    // First tick — even though the image is dropped from the descriptor
+    // (no displayW/H → buildPreviewLayers early-exits), the load must
+    // still start.
+    rt.tick();
+    expect(loadBitmap).toHaveBeenCalledWith("img1.png");
+  });
+
+  it("reports bm.width/height to the store via setClipDisplayDims after load", async () => {
+    const fakeBitmap = { width: 1234, height: 567, close: vi.fn() } as unknown as ImageBitmap;
+    const loadBitmap = vi.fn(async () => fakeBitmap);
+    const setSpy = vi.fn();
+    const getStateSpy = vi
+      .spyOn(useEditorStore, "getState")
+      .mockReturnValue({ setClipDisplayDims: setSpy } as unknown as ReturnType<
+        typeof useEditorStore.getState
+      >);
+    try {
+      const { rt } = makeRuntime({
+        snap: snapshot({ clips: [imageClipNoDims("img1")] }),
+        cams: { img1: { videoUrl: "img1.png" } },
+        loadBitmap,
+      });
+      await rt.init();
+      rt.tick();
+      // Let the loadBitmap promise resolve and its .then run.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(setSpy).toHaveBeenCalledWith("img1", 1234, 567);
+    } finally {
+      getStateSpy.mockRestore();
+    }
+  });
+
+  it("does NOT report dims when bitmap load fails", async () => {
+    const loadBitmap = vi.fn(async () => {
+      throw new Error("nope");
+    });
+    const setSpy = vi.fn();
+    const getStateSpy = vi
+      .spyOn(useEditorStore, "getState")
+      .mockReturnValue({ setClipDisplayDims: setSpy } as unknown as ReturnType<
+        typeof useEditorStore.getState
+      >);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { rt } = makeRuntime({
+        snap: snapshot({ clips: [imageClipNoDims("img1")] }),
+        cams: { img1: { videoUrl: "img1.png" } },
+        loadBitmap,
+      });
+      await rt.init();
+      rt.tick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      getStateSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("reports dims exactly once per image — no per-frame churn", async () => {
+    const fakeBitmap = { width: 800, height: 600, close: vi.fn() } as unknown as ImageBitmap;
+    const loadBitmap = vi.fn(async () => fakeBitmap);
+    const setSpy = vi.fn();
+    const getStateSpy = vi
+      .spyOn(useEditorStore, "getState")
+      .mockReturnValue({ setClipDisplayDims: setSpy } as unknown as ReturnType<
+        typeof useEditorStore.getState
+      >);
+    try {
+      const { rt } = makeRuntime({
+        snap: snapshot({ clips: [imageClipNoDims("img1")] }),
+        cams: { img1: { videoUrl: "img1.png" } },
+        loadBitmap,
+      });
+      await rt.init();
+      // Run many ticks; the load resolves once, the dim-report fires once.
+      for (let i = 0; i < 30; i++) {
+        rt.tick();
+        await Promise.resolve();
+      }
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      expect(loadBitmap).toHaveBeenCalledTimes(1);
+    } finally {
+      getStateSpy.mockRestore();
+    }
+  });
+
+  it("kicks off bitmap load for an image added live via setCams (no init-time clip)", async () => {
+    // Repro of the live + Media flow: editor opens with no clips, user
+    // drops an image, addClip + setCams fire. The runtime must catch
+    // the dim-less image on the reconcile path, not just at init().
+    const fakeBitmap = { width: 800, height: 600, close: vi.fn() } as unknown as ImageBitmap;
+    const loadBitmap = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const pool = makePool();
+    const playback = { currentTime: 0, isPlaying: false };
+    const snap: { value: EditorStoreSnapshot } = { value: snapshot({ clips: [] }) };
+    const canvas = document.createElement("canvas");
+    const rt = new PreviewRuntime({
+      canvas,
+      cams: {},
+      capabilities: { webgl2: false, webgpu: false },
+      cssW: 100,
+      cssH: 50,
+      dpr: 1,
+      initialScale: 1,
+      createBackendFn: vi.fn(async () => backend),
+      createPool: () => pool,
+      raf: () => 0,
+      cancelRaf: () => undefined,
+      readSnapshot: () => snap.value,
+      readPlayback: () => playback,
+      loadBitmap,
+    });
+    await rt.init();
+
+    // Live add: new clip with NO displayW/H + cams URL update.
+    snap.value = snapshot({ clips: [imageClipNoDims("img1")] });
+    rt.setCams({ img1: { videoUrl: "img1.png" } });
+    rt.tick();
+    expect(loadBitmap).toHaveBeenCalledWith("img1.png");
   });
 });
 
