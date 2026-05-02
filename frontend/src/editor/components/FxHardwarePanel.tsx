@@ -65,23 +65,28 @@ const PAD_BODY_H = 110;
 // so the bottom padding under the pad row matches the top padding
 // above the LCD (`py-1.5` = 6 px). At fold-folded (280 px wide) we get
 // 3 pads per row → 3 rows; at iPhone-12 (390) we get 5 → 2 rows; at
-// 540+ we get 7 → 1 row. The earlier static 256 value was tuned to
-// the worst case (3 rows) and left ~36 px of dead space below the
-// pads on iPhone-class viewports — exactly the "viel platz unten"
-// the user spotted.
+// 540+ we get 7 → 1 row.
+//
+// Narrow mobile structure (top → bottom):
+//   - LCD (full-width, taller — keeps the ENV editor usable)
+//   - Encoder row: [mode buttons | encoder1 | encoder2]
+//   - Pad grid (wraps across `rows`)
 const PAD_SIZE_NARROW = 60; // pad width = pad height on phones
 const PAD_GAP_NARROW = 4; // matches `gap-1` in the JSX below
-const LCD_ROW_H_NARROW = 78; // LCD is the tallest item in the top row
+const LCD_H_NARROW = 96; // matches lcdStyle(narrow=true).height
+const ENCODER_ROW_H_NARROW = 60; // ENC_OUTER (50) + gap (3) + label (~7)
 const PADBODY_INNER_PY_NARROW = 12; // 2× py-1.5
 const PADBODY_INNER_PX_NARROW = 16; // 2× px-2
-const PADBODY_INNER_GAP_NARROW = 6; // gap-1.5 between LCD row and pad row
+const PADBODY_INNER_GAP_NARROW = 6; // gap-1.5 between rows
 function padBodyHeightNarrow(rows: number): number {
   return (
-    LCD_ROW_H_NARROW +
+    PADBODY_INNER_PY_NARROW +
+    LCD_H_NARROW +
+    PADBODY_INNER_GAP_NARROW +
+    ENCODER_ROW_H_NARROW +
     PADBODY_INNER_GAP_NARROW +
     rows * PAD_SIZE_NARROW +
-    (rows - 1) * PAD_GAP_NARROW +
-    PADBODY_INNER_PY_NARROW
+    (rows - 1) * PAD_GAP_NARROW
   );
 }
 function padsPerRowNarrow(containerCssWidth: number): number {
@@ -287,19 +292,22 @@ function PadBody({ narrow = false }: { narrow?: boolean }) {
       />
 
       {narrow ? (
-        // Narrow phones: stack the LCD/encoders on top, then a wrapped
-        // pad grid below. The earlier version used `mt-auto` to push
-        // the pads to the bottom of a 286 px container, creating ~30
-        // px of wasted space between the encoder row and the pad bank.
-        // We now flow the pads directly under the encoders (no
-        // `mt-auto`) and tighten paddings to py-1.5 so the panel
-        // body shrinks from 286 → 256 px on mobile.
+        // Narrow phones: the LCD gets its own full-width row so the
+        // ENV-mode plot and finger-friendly knot hit-targets have real
+        // estate to live in. Mode-buttons + encoders sit horizontally
+        // below the LCD, then the pad bank wraps underneath. This trades
+        // a few extra vertical pixels for a usable envelope editor on
+        // mobile.
         <div className="relative h-full flex flex-col gap-1.5 px-2 py-1.5">
-          <div className="flex items-center gap-1.5 shrink-0">
-            <ScreenModeColumn mode={screenMode} setMode={setScreenMode} />
-            <Lcd kind={selectedFxKind} mode={screenMode} />
+          <Lcd kind={selectedFxKind} mode={screenMode} narrow />
+          <div className="flex items-center justify-center gap-3 shrink-0">
+            <ScreenModeColumn
+              mode={screenMode}
+              setMode={setScreenMode}
+              narrow
+            />
             {def.params && (
-              <div className="flex items-end gap-2 self-center ml-auto">
+              <div className="flex items-end gap-2">
                 <Encoder
                   kind={selectedFxKind}
                   param={def.params[0]}
@@ -514,12 +522,20 @@ function FxPad({ pad }: { pad: PadDef }) {
 
 // — LCD ————————————————————————————————————————————————————
 
-function Lcd({ kind, mode }: { kind: FxKind; mode: ScreenMode }) {
+function Lcd({
+  kind,
+  mode,
+  narrow = false,
+}: {
+  kind: FxKind;
+  mode: ScreenMode;
+  narrow?: boolean;
+}) {
   return (
     <div
       aria-hidden
       className="relative flex flex-col justify-between leading-tight"
-      style={LCD_STYLE}
+      style={lcdStyle(narrow)}
     >
       {/* horizontal scan-line overlay — sells the "phosphor" feel.
        *  Sits ABOVE the per-mode content so both PARAMS and ENV inherit
@@ -543,7 +559,11 @@ function Lcd({ kind, mode }: { kind: FxKind; mode: ScreenMode }) {
         className="relative flex flex-col h-full vas-crt-glitch"
         style={{ zIndex: 1 }}
       >
-        {mode === "params" ? <LcdParamsView kind={kind} /> : <LcdEnvelopeView kind={kind} />}
+        {mode === "params" ? (
+          <LcdParamsView kind={kind} />
+        ) : (
+          <LcdEnvelopeView kind={kind} narrow={narrow} />
+        )}
       </div>
     </div>
   );
@@ -1140,12 +1160,24 @@ function Divider() {
 function ScreenModeColumn({
   mode,
   setMode,
+  narrow = false,
 }: {
   mode: ScreenMode;
   setMode: (m: ScreenMode) => void;
+  narrow?: boolean;
 }) {
+  // Wide: vertical pair beside the LCD (CH▲/CH▼ feel). Narrow: horizontal
+  // pair so the row Buttons|Encoders|Encoders stays compact under the
+  // full-width LCD.
   return (
-    <div className="flex flex-col items-center justify-center gap-1 self-center shrink-0">
+    <div
+      className={
+        (narrow
+          ? "flex flex-row items-center justify-center gap-1.5"
+          : "flex flex-col items-center justify-center gap-1") +
+        " self-center shrink-0"
+      }
+    >
       <ScreenModeButton
         active={mode === "params"}
         label="P"
@@ -1181,9 +1213,9 @@ function ScreenModeButton({
       aria-label={ariaLabel}
       className="relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-hot/40"
       style={{
-        width: 14,
-        height: 11,
-        borderRadius: 2,
+        width: 18,
+        height: 14,
+        borderRadius: 2.5,
         background: "linear-gradient(180deg,#2C2925 0%,#1A1815 100%)",
         border: "1px solid rgba(0,0,0,0.7)",
         boxShadow: active
@@ -1194,7 +1226,7 @@ function ScreenModeButton({
         cursor: "pointer",
       }}
     >
-      {/* Touch-target extender — 24×24 invisible hit-rect for fingers. */}
+      {/* Touch-target extender — 28×28 invisible hit-rect for fingers. */}
       <span
         aria-hidden
         className="absolute"
@@ -1206,10 +1238,10 @@ function ScreenModeButton({
         aria-hidden
         className="absolute"
         style={{
-          top: 1.5,
-          right: 1.5,
-          width: 3,
-          height: 3,
+          top: 2,
+          right: 2,
+          width: 4,
+          height: 4,
           borderRadius: "50%",
           background: active ? "#9FE08E" : "#1F2A1E",
           boxShadow: active
@@ -1221,9 +1253,9 @@ function ScreenModeButton({
         aria-hidden
         className="absolute leading-none"
         style={{
-          left: 3,
-          top: 2,
-          fontSize: 7,
+          left: 4,
+          top: 3,
+          fontSize: 9,
           fontFamily:
             '"JetBrains Mono Variable", ui-monospace, monospace',
           fontWeight: 700,
@@ -1251,25 +1283,55 @@ const ADSR_MAX_R_S = 3.0;
  *  left half of the plot, leaving headroom for big releases. */
 const ADSR_TOTAL_VIS_S = 5.0;
 
-function LcdEnvelopeView({ kind }: { kind: FxKind }) {
+function LcdEnvelopeView({
+  kind,
+  narrow = false,
+}: {
+  kind: FxKind;
+  narrow?: boolean;
+}) {
   const userEnv = useEditorStore((s) => s.fxEnvelopes[kind]);
   const def = fxCatalog[kind];
   const env: ADSREnvelope =
     userEnv ?? def?.defaultEnvelope ?? INSTANT_ENVELOPE;
 
-  // No header — like the OP-1, the screen is just the envelope curve.
-  // LCD is 158×78; py-1.5 = 6 px on each side gives 66 px of plot height.
-  // px-2 = 8 px gives 142 px of plot width.
+  // SVG plot is sized in logical units. px-2 = 8 px on each side gives
+  // 142 units of horizontal plot. py-1.5 = 6 px top/bottom — wide LCD is
+  // 78 px tall (66 plot units), narrow LCD is 96 px tall (84 plot units)
+  // so the curve and finger-friendly knot hit-targets get more vertical
+  // breathing room on phones.
   const PLOT_W = 142;
-  const PLOT_H = 66;
-  const xPerS = PLOT_W / ADSR_TOTAL_VIS_S;
+  const PLOT_H = narrow ? 84 : 66;
+  // Reserve a safety inset so a knot at its data-maximum (e.g. sustain=1)
+  // never sits flush on the LCD bezel — the visible dot stays clearly
+  // inside the screen and the touch hit-area has room to breathe. Wider
+  // padding on narrow viewports because the finger-vs-glass margin is
+  // tighter there.
+  const PAD_X = narrow ? 6 : 4;
+  const PAD_Y = narrow ? 8 : 4;
+  const innerW = PLOT_W - 2 * PAD_X;
+  const innerH = PLOT_H - 2 * PAD_Y;
+  const xPerS = innerW / ADSR_TOTAL_VIS_S;
 
-  const geom = computeAdsrGeom(env, PLOT_W, PLOT_H, xPerS);
+  const geom = computeAdsrGeom(env, PAD_X, PAD_Y, innerW, innerH, xPerS);
 
   const [active, setActive] = useState<AdsrAxis | null>(null);
 
   const setEnv = useEditorStore((s) => s.setFxEnvelope);
   const resetEnv = useEditorStore((s) => s.resetFxEnvelope);
+
+  // One drag controller shared between the per-knot AdsrNodes and the
+  // PlotProxyZone so a tap-anywhere grab and a direct knot-grab feed the
+  // exact same start-snapshot / move / release pipeline.
+  const drag = useAdsrDrag({
+    env,
+    kind,
+    plotH: PLOT_H,
+    xPerS,
+    setEnv,
+    resetEnv,
+    setActive,
+  });
 
   // Stable per-instance suffix so multiple ENV-views (split panels,
   // tests) can't collide on SVG ids. crypto.randomUUID would be cleanest
@@ -1278,16 +1340,24 @@ function LcdEnvelopeView({ kind }: { kind: FxKind }) {
   const clipId = `vas-env-clip-${uid.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
   const curve = buildAdsrPath(geom);
-  const filledCurve = `${curve} L${geom.rx},${PLOT_H} L0,${PLOT_H} Z`;
+  const filledCurve = `${curve} L${geom.ox},${geom.oy} Z`;
 
   return (
     <div className="flex flex-col h-full px-2 py-1.5 justify-center">
       <svg
         viewBox={`0 0 ${PLOT_W} ${PLOT_H}`}
         width="100%"
-        height={PLOT_H}
+        height="100%"
         preserveAspectRatio="none"
-        style={{ display: "block" }}
+        // overflow=visible lets the r=14 invisible hit-targets extend
+        // beyond the LCD bezel, so a knot pinned at e.g. sustain=1 (top
+        // of the inner plot) is still grabbable even if the user's
+        // finger lands a few pixels above the screen.
+        overflow="visible"
+        // touch-action on the <g> alone isn't enough on some mobile
+        // browsers — duplicating it on the SVG keeps page scroll from
+        // hijacking the knot drag.
+        style={{ display: "block", touchAction: "none", overflow: "visible" }}
       >
         <defs>
           <filter id="vas-crt-glow" x="-20%" y="-20%" width="140%" height="140%">
@@ -1318,47 +1388,32 @@ function LcdEnvelopeView({ kind }: { kind: FxKind }) {
           filledCurve={filledCurve}
           clipId={clipId}
         />
+        {/* Plot-wide tap-anywhere proxy. Sits BELOW the AdsrNodes so a
+         *  direct hit on a knot's hit-circle still wins; touches that
+         *  miss every knot's r=14 zone fall through to here and grab
+         *  the nearest knot. Crucial for tiny mobile LCDs where finger-
+         *  precision on a maxed-out knot near the edge is impractical. */}
+        <PlotProxyZone geom={geom} plotW={PLOT_W} plotH={PLOT_H} drag={drag} />
         <AdsrNode
           axis="A"
           cx={geom.ax}
           cy={geom.ay}
           active={active === "A"}
-          setActive={setActive}
-          env={env}
-          kind={kind}
-          plotW={PLOT_W}
-          plotH={PLOT_H}
-          xPerS={xPerS}
-          setEnv={setEnv}
-          resetEnv={resetEnv}
+          drag={drag}
         />
         <AdsrNode
           axis="D"
           cx={geom.dx}
           cy={geom.dy}
           active={active === "D"}
-          setActive={setActive}
-          env={env}
-          kind={kind}
-          plotW={PLOT_W}
-          plotH={PLOT_H}
-          xPerS={xPerS}
-          setEnv={setEnv}
-          resetEnv={resetEnv}
+          drag={drag}
         />
         <AdsrNode
           axis="S"
           cx={geom.sx}
           cy={geom.sy}
           active={active === "S"}
-          setActive={setActive}
-          env={env}
-          kind={kind}
-          plotW={PLOT_W}
-          plotH={PLOT_H}
-          xPerS={xPerS}
-          setEnv={setEnv}
-          resetEnv={resetEnv}
+          drag={drag}
         />
         {/* R = release-end visual marker. Always at the bottom-right
          *  corner — non-interactive. Drag the S knot to change release
@@ -1383,6 +1438,12 @@ function LcdEnvelopeView({ kind }: { kind: FxKind }) {
 const ADSR_BEZIER_K = 0.7;
 
 interface AdsrGeom {
+  // Inner-plot origin (bottom-left of the safety-inset region). The
+  // envelope curve starts here and the release marker sits at (rx, ry)
+  // — never on the SVG / LCD bezel edge, so finger and visible dot stay
+  // inside the screen.
+  ox: number;
+  oy: number;
   // Anchors (P0..P4 along the curve).
   ax: number;
   ay: number;
@@ -1403,21 +1464,30 @@ interface AdsrGeom {
 
 function computeAdsrGeom(
   env: ADSREnvelope,
-  plotW: number,
-  plotH: number,
+  padX: number,
+  padY: number,
+  innerW: number,
+  innerH: number,
   xPerS: number,
 ): AdsrGeom {
-  const ax = clamp(env.attackS * xPerS, 0, plotW);
-  const ay = 0;
-  const dx = clamp(ax + env.decayS * xPerS, ax, plotW);
-  const dy = (1 - env.sustain) * plotH;
-  const rxStart = clamp(plotW - env.releaseS * xPerS, 0, plotW);
+  const ox = padX;
+  const oy = padY + innerH; // inner bottom (sustain=0 floor)
+  const topY = padY; // inner top (sustain=1 ceiling)
+  const rightX = padX + innerW;
+
+  const ax = ox + clamp(env.attackS * xPerS, 0, innerW);
+  const ay = topY;
+  const dx = clamp(ax + env.decayS * xPerS, ax, rightX);
+  const dy = topY + (1 - env.sustain) * innerH;
+  const rxStart = clamp(rightX - env.releaseS * xPerS, ox, rightX);
   const sx = Math.max(dx, rxStart);
   const sy = dy;
-  const rx = plotW;
-  const ry = plotH;
+  const rx = rightX;
+  const ry = oy;
   const K = ADSR_BEZIER_K;
   return {
+    ox,
+    oy,
     ax,
     ay,
     dx,
@@ -1426,8 +1496,8 @@ function computeAdsrGeom(
     sy,
     rx,
     ry,
-    attackC1: { x: 0, y: plotH - K * (plotH - ay) },
-    attackC2: { x: ax - K * (ax - 0), y: ay },
+    attackC1: { x: ox, y: oy - K * (oy - ay) },
+    attackC2: { x: ax - K * (ax - ox), y: ay },
     decayC1: { x: ax, y: ay + K * (dy - ay) },
     decayC2: { x: dx - K * (dx - ax), y: dy },
     releaseC1: { x: sx, y: sy + K * (ry - sy) },
@@ -1439,9 +1509,8 @@ function computeAdsrGeom(
  *  computed by `computeAdsrGeom`. Sustain stays a straight horizontal
  *  segment so the level reads unambiguously. */
 function buildAdsrPath(g: AdsrGeom): string {
-  const plotH = g.ry;
   return [
-    `M0,${plotH}`,
+    `M${g.ox},${g.oy}`,
     `C${g.attackC1.x},${g.attackC1.y} ${g.attackC2.x},${g.attackC2.y} ${g.ax},${g.ay}`,
     `C${g.decayC1.x},${g.decayC1.y} ${g.decayC2.x},${g.decayC2.y} ${g.dx},${g.dy}`,
     `L${g.sx},${g.sy}`,
@@ -1494,13 +1563,12 @@ function curvePointAtTime(
   env: ADSREnvelope,
   localT: number,
   geom: AdsrGeom,
-  plotH: number,
   holding: boolean,
 ): { x: number; y: number; phase: AdsrPhase } {
   const A = env.attackS;
   const D = env.decayS;
   const R = env.releaseS;
-  const origin = { x: 0, y: plotH };
+  const origin = { x: geom.ox, y: geom.oy };
   const aP3 = { x: geom.ax, y: geom.ay };
   const dP3 = { x: geom.dx, y: geom.dy };
   const sP0 = { x: geom.sx, y: geom.sy };
@@ -1679,7 +1747,7 @@ function EnvelopePlayhead({
 
   // While held (persistent or preview audition): pin at sustain knee.
   // Otherwise: traverse sustain-hop then release-bezier.
-  const pt = curvePointAtTime(env, localT, geom, plotH, isHeld);
+  const pt = curvePointAtTime(env, localT, geom, isHeld);
 
   // Sustain-pulse modulation — small radius oscillation while parked.
   const inSustain = pt.phase === "sustain";
@@ -1823,87 +1891,128 @@ function EnvelopePlayhead({
 
 type AdsrAxis = "A" | "D" | "S";
 
-interface AdsrNodeProps {
-  axis: AdsrAxis;
-  cx: number;
-  cy: number;
-  active: boolean;
-  setActive: (a: AdsrAxis | null) => void;
+/** Handlers returned by `useAdsrDrag`. Wired to whichever element should
+ *  receive pointer-down (an AdsrNode <g>, the PlotProxyZone <rect>, …);
+ *  the same handlers are shared across all drag surfaces so there is a
+ *  single source of truth for the start-snapshot and active axis. */
+interface AdsrDrag {
+  beginDrag: (axis: AdsrAxis, e: ReactPointerEvent<Element>) => void;
+  onPointerMove: (e: ReactPointerEvent<Element>) => void;
+  onPointerUp: (e: ReactPointerEvent<Element>) => void;
+  resetEnv: () => void;
+}
+
+/** Pointer-driven ADSR drag controller. Snapshots the envelope at
+ *  pointer-down and accumulates per-axis deltas with the encoder-style
+ *  shift-fine sensitivity (6×). The same instance is shared between the
+ *  per-knot AdsrNodes and the plot-wide PlotProxyZone — both surfaces
+ *  feed into one startRef so a drag started in either place behaves
+ *  identically and the active-axis indicator stays consistent. */
+function useAdsrDrag(opts: {
   env: ADSREnvelope;
   kind: FxKind;
-  plotW: number;
   plotH: number;
   xPerS: number;
   setEnv: (kind: FxKind, partial: Partial<ADSREnvelope>) => void;
   resetEnv: (kind: FxKind) => void;
-}
+  setActive: (a: AdsrAxis | null) => void;
+}): AdsrDrag {
+  const startRef = useRef<{
+    x: number;
+    y: number;
+    env: ADSREnvelope;
+    axis: AdsrAxis;
+  } | null>(null);
 
-/**
- * One draggable phosphor knot on the ADSR curve. PointerDown captures
- * the pointer; pointer-move updates the relevant envelope axis with
- * shift-fine sensitivity (6×) matching the encoder convention. Double-
- * click resets the whole envelope to the kind's default.
- */
-function AdsrNode(props: AdsrNodeProps) {
-  const { axis, cx, cy, active, setActive, env, kind, plotH, xPerS } = props;
-  const startRef = useRef<{ x: number; y: number; env: ADSREnvelope } | null>(
-    null,
-  );
-
-  const onPointerDown = (e: ReactPointerEvent<SVGGElement>) => {
+  const beginDrag = (axis: AdsrAxis, e: ReactPointerEvent<Element>) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
-    startRef.current = { x: e.clientX, y: e.clientY, env: { ...env } };
-    setActive(axis);
-    e.stopPropagation();
+    startRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      env: { ...opts.env },
+      axis,
+    };
+    opts.setActive(axis);
   };
-  const onPointerMove = (e: ReactPointerEvent<SVGGElement>) => {
+
+  const onPointerMove = (e: ReactPointerEvent<Element>) => {
     const start = startRef.current;
     if (!start) return;
     const sens = e.shiftKey ? 6 : 1;
     const dxPx = (e.clientX - start.x) / sens;
     const dyPx = (e.clientY - start.y) / sens;
-    const dS = dxPx / xPerS;
-    const dLevel = -dyPx / plotH; // up = larger sustain
+    const dS = dxPx / opts.xPerS;
+    const dLevel = -dyPx / opts.plotH; // up = larger sustain
 
-    if (axis === "A") {
+    if (start.axis === "A") {
       const next = clamp(start.env.attackS + dS, 0, ADSR_MAX_A_S);
-      props.setEnv(kind, { attackS: next });
-    } else if (axis === "D") {
+      opts.setEnv(opts.kind, { attackS: next });
+    } else if (start.axis === "D") {
       const nextD = clamp(start.env.decayS + dS, 0, ADSR_MAX_D_S);
       const nextS = clamp(start.env.sustain + dLevel, 0, 1);
-      props.setEnv(kind, { decayS: nextD, sustain: snapDetent(nextS) });
-    } else if (axis === "S") {
-      // X-drag = release time (move S left → larger releaseS, since
-      // sx = PLOT_W - releaseS*xPerS). Y-drag = sustain level (linked
+      opts.setEnv(opts.kind, { decayS: nextD, sustain: snapDetent(nextS) });
+    } else {
+      // S: X-drag = release time (drag left → larger releaseS, since
+      // sx = rightX - releaseS*xPerS). Y-drag = sustain level (linked
       // with the D knot).
       const nextR = clamp(start.env.releaseS - dS, 0, ADSR_MAX_R_S);
       const nextS = clamp(start.env.sustain + dLevel, 0, 1);
-      props.setEnv(kind, { releaseS: nextR, sustain: snapDetent(nextS) });
+      opts.setEnv(opts.kind, { releaseS: nextR, sustain: snapDetent(nextS) });
     }
   };
-  const onPointerUp = (e: ReactPointerEvent<SVGGElement>) => {
+
+  const onPointerUp = (e: ReactPointerEvent<Element>) => {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     startRef.current = null;
-    setActive(null);
+    opts.setActive(null);
+  };
+
+  const resetEnv = () => opts.resetEnv(opts.kind);
+
+  return { beginDrag, onPointerMove, onPointerUp, resetEnv };
+}
+
+interface AdsrNodeProps {
+  axis: AdsrAxis;
+  cx: number;
+  cy: number;
+  active: boolean;
+  drag: AdsrDrag;
+}
+
+/**
+ * One draggable phosphor knot on the ADSR curve. Pointer-down delegates
+ * to the shared `useAdsrDrag` controller; the visible dot enlarges
+ * while active. Double-click resets the whole envelope to the kind's
+ * default.
+ */
+function AdsrNode({ axis, cx, cy, active, drag }: AdsrNodeProps) {
+  const onPointerDown = (e: ReactPointerEvent<SVGGElement>) => {
+    drag.beginDrag(axis, e);
+    e.stopPropagation();
   };
   const onDoubleClick = (e: ReactPointerEvent<SVGGElement>) => {
     e.stopPropagation();
-    props.resetEnv(kind);
+    drag.resetEnv();
   };
 
   const r = active ? 3.5 : 2.5;
   return (
     <g
       onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerMove={drag.onPointerMove}
+      onPointerUp={drag.onPointerUp}
+      onPointerCancel={drag.onPointerUp}
       onDoubleClick={onDoubleClick}
       style={{ cursor: "grab", touchAction: "none" }}
     >
-      {/* Larger invisible hit-target — fingers on touch screens need
-       *  >= 14×14, the visible knot is just 5–7 px. */}
-      <circle cx={cx} cy={cy} r={9} fill="transparent" pointerEvents="all" />
+      {/* Larger invisible hit-target — fingers on touch screens need a
+       *  generous tap area; the visible knot is just 5–7 px. r=14 SVG
+       *  units → ~30 px tap diameter on a typical mobile LCD width
+       *  (close to the 44 px Apple HIG target without overlapping
+       *  neighbouring knots). The PlotProxyZone behind these knots
+       *  catches anything outside this radius. */}
+      <circle cx={cx} cy={cy} r={14} fill="transparent" pointerEvents="all" />
       <circle
         cx={cx}
         cy={cy}
@@ -1914,6 +2023,66 @@ function AdsrNode(props: AdsrNodeProps) {
         pointerEvents="none"
       />
     </g>
+  );
+}
+
+/** Plot-wide pointer surface that grabs the nearest knot when the user
+ *  taps anywhere inside the LCD. Removes the need for finger-precision
+ *  on small mobile screens — even with knots pinned at their data-max
+ *  (e.g. sustain=1 hugging the inner top), tapping near them is enough.
+ *  Renders below the AdsrNodes so direct hits on a knot's hit-circle
+ *  still take priority via SVG paint-order. */
+function PlotProxyZone({
+  geom,
+  plotW,
+  plotH,
+  drag,
+}: {
+  geom: AdsrGeom;
+  plotW: number;
+  plotH: number;
+  drag: AdsrDrag;
+}) {
+  const onPointerDown = (e: ReactPointerEvent<SVGRectElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    // SVG uses preserveAspectRatio="none" with viewBox=0,0,plotW,plotH,
+    // so client px → SVG units is a straight per-axis ratio.
+    const svgX = ((e.clientX - rect.left) / rect.width) * plotW;
+    const svgY = ((e.clientY - rect.top) / rect.height) * plotH;
+    const candidates: { axis: AdsrAxis; cx: number; cy: number }[] = [
+      { axis: "A", cx: geom.ax, cy: geom.ay },
+      { axis: "D", cx: geom.dx, cy: geom.dy },
+      { axis: "S", cx: geom.sx, cy: geom.sy },
+    ];
+    let nearestAxis: AdsrAxis = "A";
+    let nearestD2 = Infinity;
+    for (const c of candidates) {
+      const dx = c.cx - svgX;
+      const dy = c.cy - svgY;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < nearestD2) {
+        nearestD2 = d2;
+        nearestAxis = c.axis;
+      }
+    }
+    drag.beginDrag(nearestAxis, e);
+  };
+
+  return (
+    <rect
+      x={0}
+      y={0}
+      width={plotW}
+      height={plotH}
+      fill="transparent"
+      pointerEvents="all"
+      onPointerDown={onPointerDown}
+      onPointerMove={drag.onPointerMove}
+      onPointerUp={drag.onPointerUp}
+      onPointerCancel={drag.onPointerUp}
+      style={{ touchAction: "none" }}
+    />
   );
 }
 
@@ -1984,18 +2153,24 @@ const BRUSHED_GRAIN: CSSProperties = {
     "repeating-linear-gradient(90deg, transparent 0, transparent 1px, rgba(255,255,255,0.025) 1px, rgba(255,255,255,0.025) 2px), linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 100%)",
 };
 
-const LCD_STYLE: CSSProperties = {
-  width: 158,
-  height: 78,
-  background: "linear-gradient(180deg, #1A2418 0%, #1F2A1E 100%)",
-  border: "1px solid rgba(0,0,0,0.7)",
-  borderRadius: 3,
-  boxShadow: [
-    "inset 0 1px 1px rgba(0,0,0,0.7)",
-    "inset 0 -1px 1px rgba(255,255,255,0.04)",
-    "0 0 0 2px rgba(0,0,0,0.35)",
-  ].join(", "),
-};
+/** LCD frame dimensions. On wide layouts the LCD is a fixed 158×78 plate
+ *  next to the encoders; on narrow (mobile) layouts it spans the full
+ *  panel width and gets a taller plot area so the ENV curve stays
+ *  finger-friendly. */
+function lcdStyle(narrow: boolean): CSSProperties {
+  return {
+    width: narrow ? "100%" : 158,
+    height: narrow ? 96 : 78,
+    background: "linear-gradient(180deg, #1A2418 0%, #1F2A1E 100%)",
+    border: "1px solid rgba(0,0,0,0.7)",
+    borderRadius: 3,
+    boxShadow: [
+      "inset 0 1px 1px rgba(0,0,0,0.7)",
+      "inset 0 -1px 1px rgba(255,255,255,0.04)",
+      "0 0 0 2px rgba(0,0,0,0.35)",
+    ].join(", "),
+  };
+}
 
 const LCD_TEXT: CSSProperties = {
   color: "#9FE08E",
