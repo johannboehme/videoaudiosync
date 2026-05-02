@@ -86,6 +86,15 @@ export function TransportBar() {
     }
   }
 
+  function toggleLoop() {
+    if (loop) {
+      setLoop(null);
+      return;
+    }
+    const t = useEditorStore.getState().playback.currentTime;
+    setLoop({ start: t, end: Math.min(duration, t + 2) });
+  }
+
   // Keyboard shortcuts (skip when an input/textarea is focused)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -122,12 +131,18 @@ export function TransportBar() {
           e.preventDefault();
           setOutPointAtPlayhead();
           break;
+        case "l":
+        case "L":
+          e.preventDefault();
+          toggleLoop();
+          break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
     fps,
+    duration,
     isPlaying,
     loop,
     setPlaying,
@@ -177,6 +192,15 @@ export function TransportBar() {
       : "Set trim out-point at the playhead",
     group: "Transport",
     icon: <OutIcon />,
+  });
+  useRegisterShortcut({
+    id: "transport.loop",
+    keys: ["L"],
+    description: loop
+      ? "Disable loop"
+      : "Loop a 2-second region from the playhead",
+    group: "Transport",
+    icon: <LoopIcon />,
   });
 
   return (
@@ -278,14 +302,7 @@ export function TransportBar() {
           variant={loop ? "primary" : "secondary"}
           pressed={!!loop}
           size={trimSize}
-          onClick={() => {
-            if (loop) {
-              setLoop(null);
-              return;
-            }
-            const t = useEditorStore.getState().playback.currentTime;
-            setLoop({ start: t, end: Math.min(duration, t + 2) });
-          }}
+          onClick={toggleLoop}
           iconLeft={<LoopIcon />}
           aria-label={loop ? "Disable loop" : "Loop a 2-second region from the playhead"}
         >
