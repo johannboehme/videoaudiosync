@@ -27,7 +27,7 @@ import { QualitySlider } from "./QualitySlider";
 import { ResolutionPicker } from "./ResolutionPicker";
 import { SegmentedControl } from "./SegmentedControl";
 import { SizeEstimate } from "./SizeEstimate";
-import { DownloadIcon } from "./icons";
+import { DownloadIcon, HelpIcon } from "./icons";
 
 interface Props {
   onSubmit: () => void;
@@ -226,16 +226,29 @@ export function ExportPanel({ onSubmit, submitting }: Props) {
         />
       </AdvancedDrawer>
 
-      <ChunkyButton
-        variant="primary"
-        size="lg"
-        fullWidth
-        disabled={submitting}
-        iconLeft={<DownloadIcon />}
-        onClick={onSubmit}
-      >
-        {submitting ? "Submitting…" : "Render"}
-      </ChunkyButton>
+      <div className="flex gap-2">
+        <ChunkyButton
+          variant="secondary"
+          size="lg"
+          className="aspect-square"
+          aria-label="Help"
+          onClick={() =>
+            window.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }))
+          }
+        >
+          <HelpIcon />
+        </ChunkyButton>
+        <ChunkyButton
+          variant="primary"
+          size="lg"
+          className="flex-1"
+          disabled={submitting}
+          iconLeft={<DownloadIcon />}
+          onClick={onSubmit}
+        >
+          {submitting ? "Submitting…" : "Render"}
+        </ChunkyButton>
+      </div>
     </div>
   );
 }
