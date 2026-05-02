@@ -248,6 +248,10 @@ function drawLayer(ctx: AnyCtx2D, layer: FrameLayer, src: LayerSource): void {
 function sourceToImage(src: LayerSource): CanvasImageSource | null {
   switch (src.kind) {
     case "video":
+      // Last-good-frame substitution: while the <video> is mid-seek
+      // (after a scrub or loop wrap) the runtime hands us the cached
+      // bitmap to hide the decode-latency black flash.
+      if (src.preferFallback && src.fallback) return src.fallback;
       return src.element;
     case "videoframe":
       return src.frame as unknown as CanvasImageSource;

@@ -21,7 +21,18 @@ import type { FrameDescriptor } from "./frame-descriptor";
  *  time. A missing entry means the source isn't ready yet — the
  *  backend MAY skip that layer or substitute background. */
 export type LayerSource =
-  | { kind: "video"; element: HTMLVideoElement }
+  | {
+      kind: "video";
+      element: HTMLVideoElement;
+      /** Last-good frame snapshot held by the runtime. When the
+       *  `<video>` is mid-seek (`seeking || readyState < 2`) the
+       *  runtime sets `preferFallback=true` so the backend draws this
+       *  bitmap instead of the empty/transparent video element —
+       *  hides the black flash that would otherwise show the
+       *  background-clear through during loop wraps and scrubs. */
+      fallback?: ImageBitmap;
+      preferFallback?: boolean;
+    }
   | { kind: "videoframe"; frame: VideoFrame }
   | { kind: "image"; bitmap: ImageBitmap | HTMLImageElement }
   | { kind: "test-pattern" };

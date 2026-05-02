@@ -676,6 +676,14 @@ export class WebGPUBackend implements CompositorBackend {
         }
         break;
       case "video":
+        // Runtime-supplied fallback wins over a not-yet-ready <video>
+        // — hides the black flash during seek/wrap.
+        if (src.preferFallback && src.fallback) {
+          imageSource = src.fallback;
+          srcW = src.fallback.width || 1;
+          srcH = src.fallback.height || 1;
+          break;
+        }
         if (src.element.readyState < 2) return null;
         imageSource = src.element;
         srcW = src.element.videoWidth || 1;

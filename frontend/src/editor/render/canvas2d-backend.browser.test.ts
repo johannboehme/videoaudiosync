@@ -200,6 +200,90 @@ describe("Canvas2DBackend — letterbox / pillarbox pixel parity", () => {
   });
 });
 
+describe("Canvas2DBackend — last-good-frame fallback", () => {
+  // The runtime hands the backend a `video` source with
+  // `preferFallback=true` + a cached ImageBitmap during the few decode
+  // frames after a seek/loop-wrap. The backend must paint pixels from
+  // that bitmap, not from the stale/empty <video> — otherwise the
+  // black background-clear shows through and the user sees a flash.
+
+  it("draws the fallback bitmap when preferFallback=true", async () => {
+    // Use a small distinct bitmap so we can prove the fallback path,
+    // not the global 4-quadrant fixture.
+    const off = new OffscreenCanvas(20, 20);
+    const fctx = off.getContext("2d")!;
+    fctx.fillStyle = "rgb(0, 200, 100)"; // teal-ish, unique vs fixture
+    fctx.fillRect(0, 0, 20, 20);
+    const fallback = await createImageBitmap(off);
+
+    const canvas = document.createElement("canvas");
+    const b = new Canvas2DBackend();
+    await b.init(canvas, { pixelW: 100, pixelH: 100 });
+
+    // Real <video> element — readyState is 0, so without the fallback
+    // the layer would draw nothing and the bg-clear (#000) would win.
+    const videoEl = document.createElement("video");
+    b.drawFrame(
+      descriptor([videoLayer()]),
+      new Map([
+        [
+          "a",
+          {
+            kind: "video",
+            element: videoEl,
+            fallback,
+            preferFallback: true,
+          },
+        ],
+      ]),
+    );
+    const ctx = canvas.getContext("2d")!;
+    const px = ctx.getImageData(50, 50, 1, 1).data;
+    expect(Math.abs(px[0] - 0)).toBeLessThan(20);
+    expect(Math.abs(px[1] - 200)).toBeLessThan(20);
+    expect(Math.abs(px[2] - 100)).toBeLessThan(20);
+    fallback.close();
+  });
+
+  it("ignores fallback when preferFallback is not set", async () => {
+    const off = new OffscreenCanvas(20, 20);
+    const fctx = off.getContext("2d")!;
+    fctx.fillStyle = "rgb(0, 200, 100)";
+    fctx.fillRect(0, 0, 20, 20);
+    const fallback = await createImageBitmap(off);
+
+    const canvas = document.createElement("canvas");
+    const b = new Canvas2DBackend();
+    await b.init(canvas, { pixelW: 100, pixelH: 100 });
+
+    const videoEl = document.createElement("video"); // readyState=0 → empty
+    b.drawFrame(
+      descriptor([videoLayer()]),
+      new Map([
+        [
+          "a",
+          {
+            kind: "video",
+            element: videoEl,
+            fallback, // present but flag is false → must not paint
+            preferFallback: false,
+          },
+        ],
+      ]),
+    );
+    const ctx = canvas.getContext("2d")!;
+    const px = ctx.getImageData(50, 50, 1, 1).data;
+    // Background-clear black wins (or whatever the empty <video> draws).
+    // Crucially, the teal fallback must NOT be visible.
+    const isTeal =
+      Math.abs(px[0] - 0) < 20 &&
+      Math.abs(px[1] - 200) < 20 &&
+      Math.abs(px[2] - 100) < 20;
+    expect(isTeal).toBe(false);
+    fallback.close();
+  });
+});
+
 describe("Canvas2DBackend — vignette FX pixel parity", () => {
   it("corners are darker than center after vignette pass", async () => {
     const canvas = document.createElement("canvas");
