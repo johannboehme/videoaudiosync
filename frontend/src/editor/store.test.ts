@@ -479,6 +479,40 @@ describe("useEditorStore", () => {
       expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(4.0, 6);
     });
 
+    test("grid 1: t close-but-not-on snap (1.985s) advances to NEXT snap (2.0), not 4.0", () => {
+      // Regression for the eps fallback that used to fire whenever t was
+      // within step*0.01 of a snap, falsely doubling the step. The
+      // fallback now uses an FP-only tolerance so a real 15ms gap from
+      // the snap is treated as off-grid (target = nearest forward snap).
+      useEditorStore.getState().loadJob({
+        ...baseJobMeta,
+        bpm: { value: 120, confidence: 1, phase: 0, manualOverride: false },
+        beatsPerBar: 4,
+      });
+      useEditorStore.getState().setSnapMode("1");
+      useEditorStore.getState().seek(1.985);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(2.0, 6);
+    });
+
+    test("grid 1: backward from on-grid t=2.0 lands on 0.0 (eps fallback still active for FP)", () => {
+      // Guards against shrinking eps to zero — the backward direction
+      // still needs the fallback because Math.round rounds half-toward-+∞
+      // and snapTime(probe=−step/2) returns the SAME tick (not the
+      // previous one). Without the fallback, ←-from-snap would no-op.
+      useEditorStore.getState().loadJob({
+        ...baseJobMeta,
+        bpm: { value: 120, confidence: 1, phase: 0, manualOverride: false },
+        beatsPerBar: 4,
+      });
+      useEditorStore.getState().setSnapMode("1");
+      useEditorStore.getState().seek(2.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(-1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(0.0, 6);
+    });
+
     test("MATCH mode with selected clip: jumps to next/prev candidate position", () => {
       useEditorStore.getState().loadJob(baseJobMeta, {
         clips: [
