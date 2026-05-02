@@ -80,6 +80,16 @@ export class WebGPUBackend implements CompositorBackend {
   /** Sampler shared zwischen layer-pass und FX-pass. */
   private fxSampler: GPUSampler | null = null;
 
+  /** Reused readback resources — allokier einmal pro (w,h)-config, nicht
+   *  pro Frame. Das war der dominante hot-path-overhead beim Export
+   *  (33 MB allocation + 33 MB deallocation pro 4K-Frame).
+   *  `Uint8ClampedArray<ArrayBuffer>` (nicht …<ArrayBufferLike>) damit
+   *  der ImageData-Konstruktor in strict-TS direkt akzeptiert. */
+  private readbackBuffer: GPUBuffer | null = null;
+  private readbackBytesPerRow = 0;
+  private readbackRowCount = 0;
+  private readbackRgba: Uint8ClampedArray<ArrayBuffer> | null = null;
+
   async init(canvas: AnyCanvas, caps: BackendCaps): Promise<void> {
     this.canvas = canvas;
     if (typeof navigator === "undefined" || !("gpu" in navigator)) {
@@ -197,6 +207,14 @@ export class WebGPUBackend implements CompositorBackend {
       format: CANVAS_FORMAT,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
+    // Invalidate cached readback resources — sized to old dims.
+    if (this.readbackBuffer) {
+      this.readbackBuffer.destroy();
+      this.readbackBuffer = null;
+    }
+    this.readbackBytesPerRow = 0;
+    this.readbackRowCount = 0;
+    this.readbackRgba = null;
   }
 
   async warmup(): Promise<void> {
@@ -359,6 +377,9 @@ export class WebGPUBackend implements CompositorBackend {
     if (this.snapshotTex) this.snapshotTex.destroy();
     if (this.layerTex) this.layerTex.destroy();
     if (this.layerUniformBuffer) this.layerUniformBuffer.destroy();
+    if (this.readbackBuffer) this.readbackBuffer.destroy();
+    this.readbackBuffer = null;
+    this.readbackRgba = null;
     // Pipelines / shader modules / samplers: no explicit destroy in the
     // WebGPU API — refcounted and freed when GPUDevice goes out of scope.
     if (this.device) this.device.destroy();
@@ -380,7 +401,7 @@ export class WebGPUBackend implements CompositorBackend {
   }
 
   /**
-   * Liest den vollen renderTarget aus und gibt ihn als ImageBitmap
+   * Liest den vollen renderTarget aus und gibt ihn als ImageData
    * zurück. Bypassed die Canvas-Swap-Chain komplett — das ist der
    * Compositor-Pfad für den Export, weil WebGPU's
    * `context.getCurrentTexture()` + `transferToImageBitmap()` im sync
@@ -388,29 +409,60 @@ export class WebGPUBackend implements CompositorBackend {
    * (alternierende Frames aus zwei Swap-Slots → "frames hin und her
    * springen").
    *
-   * Implementation: copyTextureToBuffer → mapAsync → ImageData →
-   * createImageBitmap. Eine GPU→CPU readback pro Frame; bei 1536×2048
-   * RGBA = 12 MB pro Frame. Trade-off: + Korrektheit, - Bandbreite.
-   * Im Preview brauchen wir das nicht (RAF + getCurrentTexture
-   * funktionieren mit VSync).
+   * Implementation:
+   *   - Buffer + RGBA-Output-Array werden über Frames hinweg gecached
+   *     (gerendert pro size-change in resize()). Spart 33 MB
+   *     allocate/free pro 4K-Frame.
+   *   - BGRA → RGBA Swap via Uint32-View statt per-Byte: 4× weniger
+   *     Schleifen-Iterationen, gleicher Output.
+   *   - Zero-copy aus dem mapped GPU buffer — kein .slice() copy.
+   *
+   * `caller MUST consume the returned ImageData synchronously` — die
+   * underlying RGBA-Bytes werden für den nächsten readback wieder
+   * überschrieben. putImageData() im Compositor passt dazu.
    */
-  async readbackToImageBitmap(): Promise<ImageBitmap> {
+  async readbackToImageData(): Promise<ImageData> {
     const device = this.device;
     const renderTarget = this.renderTarget;
     if (!device || !renderTarget) {
       throw new Error(
-        "WebGPUBackend.readbackToImageBitmap: backend not initialised",
+        "WebGPUBackend.readbackToImageData: backend not initialised",
       );
     }
     const w = this.caps.pixelW;
     const h = this.caps.pixelH;
     const bytesPerRowUnaligned = w * 4;
     const bytesPerRow = Math.ceil(bytesPerRowUnaligned / 256) * 256;
-    const buffer = device.createBuffer({
-      label: "webgpu readback",
-      size: bytesPerRow * h,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
+
+    // Reuse cached buffer + rgba array if dims unchanged (steady state
+    // of the export loop). Allocation/free per frame is the dominant
+    // overhead at 4K — caching lifts that out of the hot path.
+    if (
+      !this.readbackBuffer ||
+      this.readbackBytesPerRow !== bytesPerRow ||
+      this.readbackRowCount !== h
+    ) {
+      if (this.readbackBuffer) this.readbackBuffer.destroy();
+      this.readbackBuffer = device.createBuffer({
+        label: "webgpu readback (cached)",
+        size: bytesPerRow * h,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      this.readbackBytesPerRow = bytesPerRow;
+      this.readbackRowCount = h;
+      this.readbackRgba = null;
+    }
+    if (!this.readbackRgba || this.readbackRgba.length !== w * h * 4) {
+      // Explicit ArrayBuffer (vs. default ArrayBufferLike) so the
+      // resulting Uint8ClampedArray satisfies ImageData's constructor
+      // signature in strict TS — without this, ImageDataArray's
+      // generic mismatch fires.
+      const buf = new ArrayBuffer(w * h * 4);
+      this.readbackRgba = new Uint8ClampedArray(buf) as Uint8ClampedArray<ArrayBuffer>;
+    }
+
+    const buffer = this.readbackBuffer;
+    const rgba = this.readbackRgba;
     const encoder = device.createCommandEncoder({ label: "readback" });
     encoder.copyTextureToBuffer(
       { texture: renderTarget },
@@ -419,24 +471,58 @@ export class WebGPUBackend implements CompositorBackend {
     );
     device.queue.submit([encoder.finish()]);
     await buffer.mapAsync(GPUMapMode.READ);
-    const padded = new Uint8Array(buffer.getMappedRange()).slice();
-    buffer.unmap();
-    buffer.destroy();
-    // Strip row padding + swap BGRA → RGBA (renderTarget is bgra8unorm,
-    // ImageData expects RGBA byte order).
-    const rgba = new Uint8ClampedArray(w * h * 4);
-    for (let row = 0; row < h; row++) {
-      for (let col = 0; col < w; col++) {
-        const srcOff = row * bytesPerRow + col * 4;
-        const dstOff = row * w * 4 + col * 4;
-        rgba[dstOff + 0] = padded[srcOff + 2];
-        rgba[dstOff + 1] = padded[srcOff + 1];
-        rgba[dstOff + 2] = padded[srcOff + 0];
-        rgba[dstOff + 3] = padded[srcOff + 3];
+    // Direct view into the mapped GPU range — valid only until unmap().
+    const padded = new Uint8Array(buffer.getMappedRange());
+
+    // BGRA (renderTarget format) → RGBA (ImageData format) via Uint32
+    // swap — little-endian CPU reads bytes [B,G,R,A] as uint32
+    // 0xAARRGGBB; we want bytes [R,G,B,A] = uint32 0xAABBGGRR. Swap
+    // R↔B (bits 0..7 ↔ 16..23), keep G + A in place. 4× fewer loop
+    // iterations than the per-byte approach.
+    const noPadding = bytesPerRow === w * 4;
+    if (noPadding) {
+      const src32 = new Uint32Array(padded.buffer, padded.byteOffset, w * h);
+      const dst32 = new Uint32Array(rgba.buffer, rgba.byteOffset, w * h);
+      for (let i = 0; i < src32.length; i++) {
+        const x = src32[i];
+        dst32[i] =
+          (x & 0xff00ff00) |
+          ((x & 0x00ff0000) >>> 16) |
+          ((x & 0x000000ff) << 16);
+      }
+    } else {
+      // Padded rows — process row-by-row, each row densely.
+      for (let row = 0; row < h; row++) {
+        const src32 = new Uint32Array(
+          padded.buffer,
+          padded.byteOffset + row * bytesPerRow,
+          w,
+        );
+        const dst32 = new Uint32Array(
+          rgba.buffer,
+          rgba.byteOffset + row * w * 4,
+          w,
+        );
+        for (let col = 0; col < w; col++) {
+          const x = src32[col];
+          dst32[col] =
+            (x & 0xff00ff00) |
+            ((x & 0x00ff0000) >>> 16) |
+            ((x & 0x000000ff) << 16);
+        }
       }
     }
-    const imageData = new ImageData(rgba, w, h);
-    return await createImageBitmap(imageData);
+
+    buffer.unmap();
+    return new ImageData(rgba, w, h);
+  }
+
+  /** Convenience-Wrapper für Pixel-Tests / Settings-Probes. Im
+   *  Compositor selber benutzen wir `readbackToImageData()` direkt mit
+   *  `putImageData()` — das spart den createImageBitmap-Roundtrip. */
+  async readbackToImageBitmap(): Promise<ImageBitmap> {
+    const data = await this.readbackToImageData();
+    return await createImageBitmap(data);
   }
 
   /** Test-only readback. Liest `[w*h]` RGBA-pixel aus dem renderTarget

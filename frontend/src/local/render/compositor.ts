@@ -245,7 +245,7 @@ export class Compositor {
     //    (oder, im WebGPU-Fall, in den internen renderTarget).
     this.backend.drawFrame(descriptor, sources);
 
-    // 2. Backend-Output → ImageBitmap → finalCanvas.
+    // 2. Backend-Output → finalCanvas.
     //
     // **WebGPU-Pfad: GPU→CPU readback statt canvas-swap-chain.**
     // Hintergrund: WebGPU's canvas-Surface verwendet eine implizite
@@ -257,24 +257,35 @@ export class Compositor {
     // wieder A. Empirisch reproduziert: PSNR(frame N → frame N+2) >
     // PSNR(frame N → frame N+1), das klassische "alternierende"
     // back-and-forth Muster. Bypass: lies das interne `renderTarget`
-    // direkt via copyTextureToBuffer und konstruiere einen frischen
-    // ImageBitmap pro Frame. Eine GPU→CPU readback pro Frame; auf 4K
-    // ~33 MB Bandbreite, erträglich für Export. Live-Preview nutzt
-    // weiter die Canvas-Swap-Chain — RAF gibt VSync-Anker.
+    // direkt via copyTextureToBuffer und schreibe per `putImageData`
+    // ins finalCanvas. Live-Preview nutzt weiter die
+    // Canvas-Swap-Chain — RAF gibt VSync-Anker.
+    //
+    // Optimierungen:
+    //   - WebGPU-Pfad geht ImageData → putImageData (keinen
+    //     createImageBitmap-Roundtrip), spart eine GPU-bitmap-Allokation
+    //     und einen async-Hop pro Frame.
+    //   - Backend-seitig sind Buffer + RGBA-Array gecached (siehe
+    //     WebGPUBackend.readbackToImageData) → kein 33 MB
+    //     allocate/free pro 4K-Frame.
     //
     // Andere Backends (Canvas2D, WebGL2): canvas.transferToImageBitmap()
-    // ist spec-garantiert korrekt — die haben keinen GPU-swap-chain
-    // im selben Sinne.
-    let bitmap: ImageBitmap;
+    // ist spec-garantiert korrekt + GPU-accelerated — die haben keinen
+    // double-buffer Swap-Chain in dem Sinne, und drawImage(bitmap) ist
+    // ein einziger GPU-blit.
     if (this.backend instanceof WebGPUBackend) {
-      bitmap = await this.backend.readbackToImageBitmap();
+      const imageData = await this.backend.readbackToImageData();
+      // putImageData ist ein raw-write — überschreibt jeden Pixel,
+      // ignoriert Transformationen und Blending. Genau richtig hier:
+      // wir wollen 1:1 die Backend-Pixel im finalCanvas haben.
+      this.ctx.putImageData(imageData, 0, 0);
     } else {
-      bitmap = this.backendCanvas.transferToImageBitmap();
+      const bitmap = this.backendCanvas.transferToImageBitmap();
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.clearRect(0, 0, this.opts.width, this.opts.height);
+      this.ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
     }
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.clearRect(0, 0, this.opts.width, this.opts.height);
-    this.ctx.drawImage(bitmap, 0, 0);
-    bitmap.close();
 
     // 3. Visualizer + Overlays auf den finalen 2D-Context.
     if (this.opts.visualizers && this.opts.visualizers.length > 0) {

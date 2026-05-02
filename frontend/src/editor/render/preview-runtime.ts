@@ -11,6 +11,7 @@
  * shell that mounts the canvas + a parent for the video pool and
  * instantiates this class.
  */
+import { AdaptiveScaler } from "./adaptive-scaler";
 import type { CompositorBackend, LayerSource, SourcesMap } from "./backend";
 import { createBackend, type BackendCapabilities } from "./factory";
 import {
@@ -73,12 +74,18 @@ export class PreviewRuntime {
   private cssW: number;
   private cssH: number;
   private dpr: number;
+  /** Auto-scaling at runtime: misst tick-Latenz und reduziert die
+   *  Backbuffer-Auflösung wenn die preview ins Stottern gerät. Macht
+   *  4K-Multi-Cam mit FX spielbar (und damit als Instrument benutzbar)
+   *  auch auf weniger leistungsstarken GPUs. */
+  private adaptiveScaler: AdaptiveScaler;
 
   constructor(options: PreviewRuntimeOptions) {
     this.cssW = options.cssW;
     this.cssH = options.cssH;
     this.dpr = options.dpr ?? (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
     this.scale = options.initialScale ?? 1;
+    this.adaptiveScaler = new AdaptiveScaler(this.scale);
     this.opts = {
       ...options,
       dpr: this.dpr,
@@ -162,9 +169,18 @@ export class PreviewRuntime {
    *  free on the GPU. */
   setScale(scale: number): void {
     this.scale = Math.max(0.1, Math.min(2, scale));
+    // User override resets the auto-scaler so it doesn't immediately
+    // fight back with a different value.
+    this.adaptiveScaler.override(this.scale);
     if (this.backend) {
       this.backend.resize(this.computeCaps());
     }
+  }
+
+  /** Get the most recent auto-scaler decision — for the perf HUD or
+   *  Settings telemetry. */
+  getAdaptiveScale(): number {
+    return this.adaptiveScaler.scale;
   }
 
   /** Hand-roll a single RAF tick. Useful for tests; production RAF
@@ -195,7 +211,20 @@ export class PreviewRuntime {
     // Reconcile pool to current cam list — handles user added/removed cams.
     this.pool.setCams(collectVideoCams(snapshot.clips, this.opts.cams));
 
+    // Time the actual GPU/CPU work so the adaptive scaler sees real
+    // backend latency. Excludes the bookkeeping above which is cheap.
+    const t0 = performance.now();
     this.backend.drawFrame(descriptor, sources);
+    const drawMs = performance.now() - t0;
+
+    // Feed the adaptive scaler. Only react when the backend itself is
+    // straining — visualizers/overlays/store reads are out of scope.
+    this.adaptiveScaler.record(drawMs);
+    const status = this.adaptiveScaler.consult();
+    if (status.changed) {
+      this.scale = status.scale;
+      if (this.backend) this.backend.resize(this.computeCaps());
+    }
   }
 
   /** Stop the RAF, dispose backend + pool, revoke cached bitmaps. */
