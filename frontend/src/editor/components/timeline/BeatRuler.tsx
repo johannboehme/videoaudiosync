@@ -48,6 +48,7 @@ export function BeatRuler({
     effectiveBarOffsetBeats(s.jobMeta),
   );
   const seek = useEditorStore((s) => s.seek);
+  const loop = useEditorStore((s) => s.playback.loop);
 
   // Repaint whenever any of the dependencies change.
   useEffect(() => {
@@ -71,6 +72,32 @@ export function BeatRuler({
     ctx.fillRect(0, height - 1, contentWidthPx, 1);
 
     const visibleS = viewEndS - viewStartS;
+
+    // Loop band on the ruler — same accent as the audio-lane loop tint
+    // so the user can see the loop region above the bar grid (matters
+    // most for the OP-1 style Alt-arrow loop-shift, where the playhead
+    // stays in the old region while the loop visually jumps along the
+    // bar grid). Drawn before the ticks so they remain readable.
+    if (loop && visibleS > 0) {
+      const pxPerSecRaw = contentWidthPx / Math.max(0.001, visibleS);
+      const xs = (loop.start - viewStartS) * pxPerSecRaw;
+      const xe = (loop.end - viewStartS) * pxPerSecRaw;
+      const xsClamped = Math.max(0, xs);
+      const xeClamped = Math.min(contentWidthPx, xe);
+      if (xeClamped > xsClamped) {
+        ctx.fillStyle = "rgba(255,87,34,0.18)";
+        ctx.fillRect(xsClamped, 0, xeClamped - xsClamped, height - 1);
+        ctx.strokeStyle = "rgba(255,87,34,0.6)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(
+          xsClamped + 0.5,
+          0.5,
+          Math.max(0, xeClamped - xsClamped - 1),
+          height - 2,
+        );
+      }
+    }
+
     if (!bpm || visibleS <= 0) return;
 
     const pxPerSec = contentWidthPx / Math.max(0.001, visibleS);
@@ -164,6 +191,7 @@ export function BeatRuler({
     viewEndS,
     contentWidthPx,
     height,
+    loop,
   ]);
 
   function onClick(e: React.MouseEvent<HTMLCanvasElement>) {

@@ -30,6 +30,8 @@ export function TransportBar() {
   const loop = useEditorStore((s) => s.playback.loop);
   const setLoop = useEditorStore((s) => s.setLoop);
   const seek = useEditorStore((s) => s.seek);
+  const stepByActiveSnap = useEditorStore((s) => s.stepByActiveSnap);
+  const shiftLoop = useEditorStore((s) => s.shiftLoop);
   // Phone-sized viewports get an aggressively compacted transport bar:
   // every transport stepper + Play + IN/OUT/LOOP collapses to xs
   // (h-8 ≈ 28 px wide icon-only, no min-w) so the entire 8-button
@@ -54,6 +56,29 @@ export function TransportBar() {
     seek(currentTime + deltaSec);
   }
 
+  // IN/OUT semantics are modal: while a loop region is active they edit
+  // the loop boundaries (so the user can sculpt a practice loop with the
+  // playhead); otherwise they edit the trim/export region. Same logic in
+  // both the buttons and the I/O shortcuts.
+  function setInPointAtPlayhead() {
+    if (loop) {
+      const newStart = currentTime;
+      const newEnd = Math.max(loop.end, newStart + 1 / fps);
+      setLoop({ start: newStart, end: newEnd });
+    } else {
+      setTrim({ in: currentTime, out: trim.out });
+    }
+  }
+  function setOutPointAtPlayhead() {
+    if (loop) {
+      const newEnd = currentTime;
+      const newStart = Math.min(loop.start, newEnd - 1 / fps);
+      setLoop({ start: newStart, end: newEnd });
+    } else {
+      setTrim({ in: trim.in, out: currentTime });
+    }
+  }
+
   // Keyboard shortcuts (skip when an input/textarea is focused)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -70,84 +95,80 @@ export function TransportBar() {
           e.preventDefault();
           setPlaying(!isPlaying);
           break;
-        case "k":
-        case "K":
-          e.preventDefault();
-          setPlaying(!isPlaying);
-          break;
-        case "j":
-        case "J":
-          e.preventDefault();
-          step(-1);
-          break;
-        case "l":
-        case "L":
-          e.preventDefault();
-          step(1);
-          break;
         case "ArrowLeft":
           e.preventDefault();
-          step(e.shiftKey ? -1 : -1 / fps);
+          if (e.altKey) shiftLoop(-1);
+          else stepByActiveSnap(-1);
           break;
         case "ArrowRight":
           e.preventDefault();
-          step(e.shiftKey ? 1 : 1 / fps);
+          if (e.altKey) shiftLoop(1);
+          else stepByActiveSnap(1);
           break;
         case "i":
         case "I":
           e.preventDefault();
-          setTrim({ in: currentTime, out: trim.out });
+          setInPointAtPlayhead();
           break;
         case "o":
         case "O":
           e.preventDefault();
-          setTrim({ in: trim.in, out: currentTime });
+          setOutPointAtPlayhead();
           break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentTime, fps, isPlaying, setPlaying, setTrim, trim.in, trim.out, step]);
+  }, [
+    currentTime,
+    fps,
+    isPlaying,
+    loop,
+    setPlaying,
+    setLoop,
+    setTrim,
+    trim.in,
+    trim.out,
+    stepByActiveSnap,
+    shiftLoop,
+  ]);
 
   useRegisterShortcut({
     id: "transport.playpause",
-    keys: ["Space", "K"],
+    keys: ["Space"],
     description: "Play / pause",
     group: "Transport",
     icon: <PlayIcon />,
   });
   useRegisterShortcut({
-    id: "transport.skipback",
-    keys: ["J"],
-    description: "Skip back 1 second",
-    group: "Transport",
-    icon: <SkipBackIcon />,
-  });
-  useRegisterShortcut({
-    id: "transport.skipfwd",
-    keys: ["L"],
-    description: "Skip forward 1 second",
-    group: "Transport",
-    icon: <SkipFwdIcon />,
-  });
-  useRegisterShortcut({
     id: "transport.framestep",
     keys: ["←", "→"],
-    description: "Step one frame (hold Shift for ±1 second)",
+    description: "Step by snap target (frame, beat, bar, or match-point)",
     group: "Transport",
     icon: <ArrowKeysIcon />,
   });
   useRegisterShortcut({
+    id: "transport.loopshift",
+    keys: ["⌥←", "⌥→"],
+    description: "Shift loop region by its length (OP-1 style; playback continues)",
+    group: "Transport",
+    icon: <LoopIcon />,
+  });
+  useRegisterShortcut({
     id: "transport.in",
     keys: ["I"],
-    description: "Set IN-point at the playhead",
+    description: loop
+      ? "Set loop in-point at the playhead"
+      : "Set trim in-point at the playhead",
     group: "Transport",
     icon: <InIcon />,
   });
   useRegisterShortcut({
     id: "transport.out",
     keys: ["O"],
-    description: "Set OUT-point at the playhead",
+    description: loop
+      ? "Set loop out-point at the playhead"
+      : "Set trim out-point at the playhead",
     group: "Transport",
     icon: <OutIcon />,
   });
@@ -232,18 +253,18 @@ export function TransportBar() {
         <ChunkyButton
           variant="secondary"
           size={trimSize}
-          onClick={() => setTrim({ in: currentTime, out: trim.out })}
+          onClick={setInPointAtPlayhead}
           iconLeft={<InIcon />}
-          aria-label="Set in-point at the playhead"
+          aria-label={loop ? "Set loop in-point at the playhead" : "Set in-point at the playhead"}
         >
           {!isNarrow && "IN"}
         </ChunkyButton>
         <ChunkyButton
           variant="secondary"
           size={trimSize}
-          onClick={() => setTrim({ in: trim.in, out: currentTime })}
+          onClick={setOutPointAtPlayhead}
           iconLeft={<OutIcon />}
-          aria-label="Set out-point at the playhead"
+          aria-label={loop ? "Set loop out-point at the playhead" : "Set out-point at the playhead"}
         >
           {!isNarrow && "OUT"}
         </ChunkyButton>

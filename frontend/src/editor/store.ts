@@ -20,7 +20,8 @@ import {
 } from "./types";
 import { LoopRegion, clampLoopRegion } from "./OffsetScheduler";
 import { activeCamAt, type CamRange } from "./cuts";
-import { snapTime, type SnapMode } from "./snap";
+import { gridStepSeconds, snapTime, type SnapMode } from "./snap";
+import { buildClipMatchPositions } from "./match-snap";
 import { buildQuantizePreview, type QuantizePreview } from "./quantize";
 import {
   effectiveBeatPhaseS,
@@ -97,6 +98,11 @@ export interface PlaybackSlice {
   // user-initiated seeks from the 60Hz tick that mirrors the audio
   // element's clock back into the store.
   seekRequest: number | null;
+  // Deferred wrap point for OP-1 style loop-shift. When non-null the audio
+  // master wraps to loop.start at this master-time instead of at loop.end —
+  // letting the playhead keep playing in a now-out-of-loop zone until it
+  // reaches the OLD loop end. Cleared by user-seek and setLoop().
+  pendingWrapAt: number | null;
 }
 
 export interface OffsetSlice {
@@ -331,6 +337,21 @@ interface EditorState {
   setAbBypass(bypass: boolean): void;
   seek(t: number): void;
   clearSeekRequest(): void;
+  /** Step the playhead by the active snap target:
+   *  - off → ±1 frame
+   *  - match → next/prev match-position of the selected clip (frame-step fallback)
+   *  - 1, 1/2, 1/4, 1/8, 1/16 → ±1 grid tick on the bar/beat grid
+   *  Always writes a seekRequest. */
+  stepByActiveSnap(direction: 1 | -1): void;
+  /** OP-1 style loop-shift: move loop region by its own length without
+   *  interrupting playback. The playhead stays where it is; if it ends up
+   *  outside the new loop, `pendingWrapAt` is set to the OLD loop.end so
+   *  the audio scheduler wraps at the natural play-out point. No-op if no
+   *  loop is set or the shifted loop falls entirely outside trim. */
+  shiftLoop(direction: 1 | -1): void;
+  /** Clear the deferred wrap point (called by useAudioMaster after the
+   *  scheduler has reseeked into the new loop region). */
+  clearPendingWrap(): void;
 
   setOffset(ms: number): void;
   nudgeOffset(deltaMs: number): void;
@@ -525,6 +546,7 @@ const initialPlayback: PlaybackSlice = {
   isPlaying: false,
   loop: null,
   seekRequest: null,
+  pendingWrapAt: null,
 };
 
 const initialOffset: OffsetSlice = {
@@ -951,7 +973,9 @@ export const useEditorStore = create<EditorState>()(
     setLoop(loop) {
       const { trim } = get();
       const clamped = loop ? clampLoopRegion(loop, trim) : null;
-      set({ playback: { ...get().playback, loop: clamped } });
+      set({
+        playback: { ...get().playback, loop: clamped, pendingWrapAt: null },
+      });
     },
     setAbBypass(bypass) {
       set({ offset: { ...get().offset, abBypass: bypass } });
@@ -965,11 +989,93 @@ export const useEditorStore = create<EditorState>()(
           ...get().playback,
           currentTime: clamped,
           seekRequest: clamped,
+          // A user-initiated seek overrides any deferred loop-shift wrap —
+          // the user's intent is to be at `t`, not at the OP-1 wrap point.
+          pendingWrapAt: null,
         },
       });
     },
     clearSeekRequest() {
       set({ playback: { ...get().playback, seekRequest: null } });
+    },
+    stepByActiveSnap(direction) {
+      const s = get();
+      const t = s.playback.currentTime;
+      const fps = s.jobMeta?.fps && s.jobMeta.fps > 0 ? s.jobMeta.fps : 30;
+      const frameStep = () => s.seek(t + direction * (1 / fps));
+      const mode = s.ui.snapMode;
+
+      if (mode === "off") return frameStep();
+
+      if (mode === "match") {
+        const clip = s.clips.find((c) => c.id === s.selectedClipId);
+        if (clip && isVideoClip(clip) && clip.candidates?.length) {
+          const positions = buildClipMatchPositions(clip)
+            .map((p) => p.startS)
+            .sort((a, b) => a - b);
+          const eps = 1e-6;
+          const target =
+            direction > 0
+              ? positions.find((p) => p > t + eps)
+              : [...positions].reverse().find((p) => p < t - eps);
+          if (target !== undefined) {
+            s.seek(target);
+            return;
+          }
+        }
+        return frameStep();
+      }
+
+      const bpm = s.jobMeta?.bpm?.value ?? null;
+      const beatsPerBar = effectiveBeatsPerBar(s.jobMeta);
+      const step = gridStepSeconds(mode, bpm, beatsPerBar);
+      if (step === null || step <= 0) return frameStep();
+
+      // Probe slightly into the desired direction so snapTime rounds the
+      // correct way (snapTime always picks the nearest tick — without the
+      // probe, t already on a tick would round to itself).
+      const probe = t + direction * step * 0.5;
+      const candidate = snapTime(probe, mode, {
+        bpm,
+        beatPhase: effectiveBeatPhaseS(s.jobMeta),
+        beatsPerBar,
+        barOffsetBeats: effectiveBarOffsetBeats(s.jobMeta),
+      });
+      const eps = step * 0.01;
+      let target = candidate;
+      if (Math.abs(target - t) < eps) target = candidate + direction * step;
+      s.seek(target);
+    },
+    shiftLoop(direction) {
+      const s = get();
+      const loop = s.playback.loop;
+      if (!loop) return;
+
+      const len = loop.end - loop.start;
+      const newLoop: LoopRegion = {
+        start: loop.start + direction * len,
+        end: loop.end + direction * len,
+      };
+      const clamped = clampLoopRegion(newLoop, s.trim);
+      if (!clamped) return;
+
+      const t = s.playback.currentTime;
+      // Defer the wrap to the OLD loop end whenever the playhead is OUTSIDE
+      // the new loop region. Forward-shift while playing: t is in the old
+      // loop, before the new loop's start → wrap at old loop.end. Backward-
+      // shift while playing: t is past the new loop's end → still wrap at
+      // old loop.end (the playhead reaches it as it advances forward).
+      const insideNew = t >= clamped.start && t < clamped.end;
+      const pendingWrapAt = insideNew ? null : loop.end;
+
+      set({
+        playback: { ...s.playback, loop: clamped, pendingWrapAt },
+      });
+    },
+    clearPendingWrap() {
+      const cur = get().playback.pendingWrapAt;
+      if (cur == null) return;
+      set({ playback: { ...get().playback, pendingWrapAt: null } });
     },
 
     setOffset(ms) {

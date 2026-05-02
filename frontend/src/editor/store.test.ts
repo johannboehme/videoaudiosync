@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { useEditorStore } from "./store";
-import { isVideoClip, type VideoClip } from "./types";
+import { isVideoClip, type MatchCandidate, type VideoClip } from "./types";
 
 /** Test helper: assert a clip is a VideoClip and narrow its type. Tests in
  *  this file build video clips exclusively. */
@@ -433,6 +433,191 @@ describe("useEditorStore", () => {
       useEditorStore.getState().loadJob(baseJobMeta);
       useEditorStore.getState().setSnapMode("1/4");
       expect(useEditorStore.getState().snapMasterTime(1.337)).toBe(1.337);
+    });
+  });
+
+  describe("stepByActiveSnap — arrow-key navigation", () => {
+    test("OFF mode: steps exactly one frame", () => {
+      useEditorStore.getState().loadJob(baseJobMeta); // fps=30
+      useEditorStore.getState().seek(2.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(2.0 + 1 / 30, 6);
+      useEditorStore.getState().stepByActiveSnap(-1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(2.0, 6);
+    });
+
+    test("grid /4 with bpm=120: steps one quarter (0.5s) per press", () => {
+      useEditorStore.getState().loadJob({
+        ...baseJobMeta,
+        bpm: { value: 120, confidence: 1, phase: 0, manualOverride: false },
+      });
+      useEditorStore.getState().setSnapMode("1/4");
+      useEditorStore.getState().seek(0.6);  // not on grid
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      // From 0.6, next quarter ≥ 0.6 is 1.0 (snapped to grid)
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(1.0, 6);
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(1.5, 6);
+      useEditorStore.getState().stepByActiveSnap(-1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(1.0, 6);
+    });
+
+    test("grid 1 (full bar) with bpm=120 and 4/4: steps 2.0s per press", () => {
+      useEditorStore.getState().loadJob({
+        ...baseJobMeta,
+        bpm: { value: 120, confidence: 1, phase: 0, manualOverride: false },
+        beatsPerBar: 4,
+      });
+      useEditorStore.getState().setSnapMode("1");
+      useEditorStore.getState().seek(0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(2.0, 6);
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(4.0, 6);
+    });
+
+    test("MATCH mode with selected clip: jumps to next/prev candidate position", () => {
+      useEditorStore.getState().loadJob(baseJobMeta, {
+        clips: [
+          {
+            id: "cam-1",
+            filename: "a.mp4",
+            color: "#fff",
+            sourceDurationS: 30,
+            syncOffsetMs: 0,
+          },
+        ],
+      });
+      // Inject candidates: positions = -offsetMs/1000.
+      // Three candidates at offsetMs: 0, -1000, -3000 → positions: 0, 1, 3.
+      const clip = useEditorStore.getState().clips[0] as VideoClip;
+      const candidates: MatchCandidate[] = [
+        { offsetMs: 0, confidence: 1, overlapFrames: 100 },
+        { offsetMs: -1000, confidence: 1, overlapFrames: 100 },
+        { offsetMs: -3000, confidence: 1, overlapFrames: 100 },
+      ];
+      useEditorStore.getState().updateClip({ ...clip, candidates });
+      useEditorStore.getState().setSelectedClipId("cam-1");
+      useEditorStore.getState().setSnapMode("match");
+
+      useEditorStore.getState().seek(0.4);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      // From 0.4, next position > t is 1.
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(1.0, 6);
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(3.0, 6);
+      useEditorStore.getState().stepByActiveSnap(-1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(1.0, 6);
+    });
+
+    test("MATCH mode with no clip selected: falls back to frame-step", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setSnapMode("match");
+      useEditorStore.getState().seek(2.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(2.0 + 1 / 30, 6);
+    });
+
+    test("grid mode with no bpm: falls back to frame-step", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setSnapMode("1/4");
+      useEditorStore.getState().seek(2.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().stepByActiveSnap(1);
+      expect(useEditorStore.getState().playback.currentTime).toBeCloseTo(2.0 + 1 / 30, 6);
+    });
+  });
+
+  describe("shiftLoop — OP-1 style loop-shift", () => {
+    test("forward shift while playhead inside old loop: loop moves, pendingWrapAt = old loop.end", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop({ start: 0, end: 2 });
+      useEditorStore.getState().seek(1.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().shiftLoop(1);
+      const s = useEditorStore.getState();
+      expect(s.playback.loop).toEqual({ start: 2, end: 4 });
+      expect(s.playback.pendingWrapAt).toBe(2);
+      expect(s.playback.currentTime).toBe(1.0); // playhead UNCHANGED
+    });
+
+    test("forward shift while playhead already past new loop start: no pendingWrapAt needed", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop({ start: 0, end: 2 });
+      useEditorStore.getState().seek(2.5);  // past new loop start (2)
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().shiftLoop(1);
+      const s = useEditorStore.getState();
+      expect(s.playback.loop).toEqual({ start: 2, end: 4 });
+      // Playhead is inside new loop ([2,4]) → no pending wrap.
+      expect(s.playback.pendingWrapAt).toBeNull();
+    });
+
+    test("backward shift: loop moves left, playhead unchanged", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop({ start: 4, end: 6 });
+      useEditorStore.getState().seek(5.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().shiftLoop(-1);
+      const s = useEditorStore.getState();
+      expect(s.playback.loop).toEqual({ start: 2, end: 4 });
+      expect(s.playback.currentTime).toBe(5.0);
+      // Playhead at 5 is past new loop end (4) — wrap will happen on the
+      // next forward tick at the OLD loop.end (6); pendingWrapAt = 6.
+      expect(s.playback.pendingWrapAt).toBe(6);
+    });
+
+    test("no-op when loop is null", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop(null);
+      useEditorStore.getState().shiftLoop(1);
+      expect(useEditorStore.getState().playback.loop).toBeNull();
+    });
+
+    test("no-op when shifted loop falls entirely outside trim", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setTrim({ in: 0, out: 5 });
+      useEditorStore.getState().setLoop({ start: 3, end: 5 });
+      useEditorStore.getState().shiftLoop(1); // would be [5,7] → outside trim
+      expect(useEditorStore.getState().playback.loop).toEqual({ start: 3, end: 5 });
+    });
+
+    test("user-initiated seek clears pendingWrapAt", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop({ start: 0, end: 2 });
+      useEditorStore.getState().seek(1.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().shiftLoop(1);
+      expect(useEditorStore.getState().playback.pendingWrapAt).toBe(2);
+      useEditorStore.getState().seek(0.5); // user scrub
+      expect(useEditorStore.getState().playback.pendingWrapAt).toBeNull();
+    });
+
+    test("setLoop (full replacement) clears any pendingWrapAt", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop({ start: 0, end: 2 });
+      useEditorStore.getState().seek(1.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().shiftLoop(1);
+      expect(useEditorStore.getState().playback.pendingWrapAt).toBe(2);
+      useEditorStore.getState().setLoop({ start: 0, end: 1 });
+      expect(useEditorStore.getState().playback.pendingWrapAt).toBeNull();
+    });
+
+    test("clearPendingWrap resets the field", () => {
+      useEditorStore.getState().loadJob(baseJobMeta);
+      useEditorStore.getState().setLoop({ start: 0, end: 2 });
+      useEditorStore.getState().seek(1.0);
+      useEditorStore.getState().clearSeekRequest();
+      useEditorStore.getState().shiftLoop(1);
+      expect(useEditorStore.getState().playback.pendingWrapAt).toBe(2);
+      useEditorStore.getState().clearPendingWrap();
+      expect(useEditorStore.getState().playback.pendingWrapAt).toBeNull();
     });
   });
 
