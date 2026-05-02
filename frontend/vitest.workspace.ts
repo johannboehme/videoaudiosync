@@ -37,6 +37,22 @@ export default defineWorkspace([
         provider: "playwright",
         headless: true,
         name: "chromium",
+        // Headless Chromium hat WebGPU per default nicht aktiv. Auf macOS
+        // reicht `--enable-unsafe-webgpu` für native Metal-WebGPU; auf
+        // Linux/Windows aktiviert `Vulkan,UseSkiaRenderer` zusätzlich den
+        // Vulkan-Backend für WebGPU/Skia. Wir benutzen explizit KEINEN
+        // SwiftShader-Forcer wie `--use-vulkan=swiftshader`, weil das
+        // WebGL2 auf einen Software-Renderer zwingt und den Stress-Test
+        // p95 reißt.
+        providerOptions: {
+          launch: {
+            args: [
+              "--enable-unsafe-webgpu",
+              "--enable-features=Vulkan,UseSkiaRenderer",
+              "--ignore-gpu-blocklist",
+            ],
+          },
+        },
       },
     },
   },

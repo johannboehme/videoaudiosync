@@ -43,6 +43,7 @@ import {
   applyDriftStretchInterleaved,
 } from "./audio-fx";
 import { Compositor } from "./compositor";
+import type { BackendCapabilities } from "../../editor/render/factory";
 import { CamFrameStream } from "./cam-frame-stream";
 import { makeTestPatternCanvas } from "./test-pattern";
 import { activeCamAt } from "../../editor/cuts";
@@ -103,6 +104,13 @@ export interface EditRenderInput {
   /** Periodic progress notifications. Called from the decoder output
    *  callback — keep work in the handler tiny. */
   onProgress?: (p: EditRenderProgress) => void;
+  /** Render-Backend-Capabilities für die Compositor-Factory. Caller
+   *  is responsible for probing — main thread typically uses
+   *  `detectCapabilities() + probeWebGPU()`; the Worker probes
+   *  internally and passes the result here. Defaults to Canvas2D-only
+   *  if omitted (no GPU backend) — ensures correctness if a caller
+   *  forgets to probe; render then matches the legacy hardcoded path. */
+  capabilities?: BackendCapabilities;
 }
 
 export interface EditRenderResult {
@@ -245,16 +253,19 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     }
   }
 
-  const compositor = new Compositor({
-    width: outputWidth,
-    height: outputHeight,
-    sourceWidth: video.info.width,
-    sourceHeight: video.info.height,
-    overlays: input.overlays,
-    energy: input.energy ?? null,
-    visualizers: input.visualizers ?? [],
-    fx: input.fx ?? [],
-  });
+  const compositor = await Compositor.create(
+    {
+      width: outputWidth,
+      height: outputHeight,
+      sourceWidth: video.info.width,
+      sourceHeight: video.info.height,
+      overlays: input.overlays,
+      energy: input.energy ?? null,
+      visualizers: input.visualizers ?? [],
+      fx: input.fx ?? [],
+    },
+    input.capabilities ?? { webgl2: false, webgpu: false },
+  );
   await compositor.ensureSubtitleEngine();
 
   const encoder = new StreamingVideoEncoder({
@@ -279,59 +290,69 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   let firstFrameInGop = true;
   let framesEmitted = 0;
   let pendingError: Error | null = null;
-  // VideoEncoder.encode is synchronous, so we can chain
-  // decode → composite → encode entirely inside the decoder's output
-  // callback. No frame ever lives outside this scope.
+  // The compositor's compositeImage() is async (WebGPU readback is
+  // async — see Compositor for why). The VideoDecoder calls `output`
+  // fire-and-forget, so we serialize the per-frame work through a
+  // Promise chain — without serialization, multiple async output
+  // callbacks could interleave their `compositor.compositeImage()` /
+  // `encoder.pushFrame()` calls and produce out-of-order frames.
+  let outputQueue: Promise<void> = Promise.resolve();
   const decoder = new VideoDecoder({
     output: (frame) => {
-      try {
-        const tS = frame.timestamp / 1_000_000;
-        let inInterval = false;
-        let intervalStartS = 0;
-        for (let i = 0; i < intervals.length; i++) {
-          const seg = intervals[i];
-          if (tS >= seg.in && tS < seg.out) {
-            inInterval = true;
-            for (let j = 0; j < i; j++) {
-              intervalStartS += intervals[j].out - intervals[j].in;
+      outputQueue = outputQueue.then(async () => {
+        try {
+          const tS = frame.timestamp / 1_000_000;
+          let inInterval = false;
+          let intervalStartS = 0;
+          for (let i = 0; i < intervals.length; i++) {
+            const seg = intervals[i];
+            if (tS >= seg.in && tS < seg.out) {
+              inInterval = true;
+              for (let j = 0; j < i; j++) {
+                intervalStartS += intervals[j].out - intervals[j].in;
+              }
+              intervalStartS -= seg.in;
+              if (i !== nextIntervalIdx) {
+                nextIntervalIdx = i;
+                firstFrameInGop = true;
+              }
+              break;
             }
-            intervalStartS -= seg.in;
-            if (i !== nextIntervalIdx) {
-              nextIntervalIdx = i;
-              firstFrameInGop = true;
-            }
-            break;
           }
-        }
-        if (!inInterval) {
+          if (!inInterval) {
+            frame.close();
+            return;
+          }
+          const outTs = Math.round((tS + intervalStartS) * 1_000_000);
+          const composed = await compositor.compositeImage(
+            frame as unknown as CanvasImageSource,
+            frame.codedWidth,
+            frame.codedHeight,
+            outTs,
+            frame.duration ?? 0,
+            srcRot,
+            undefined,
+            // FX live on the master timeline; tS is the source-frame's
+            // master time (single-cam pipeline = master time).
+            tS,
+          );
+          encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
+          composed.close();
           frame.close();
-          return;
+          firstFrameInGop = false;
+          framesEmitted++;
+          if (framesEmitted % 30 === 0 || framesEmitted === framesTotal) {
+            input.onProgress?.({
+              stage: "video-encode",
+              framesDone: framesEmitted,
+              framesTotal,
+            });
+          }
+        } catch (e) {
+          pendingError = e instanceof Error ? e : new Error(String(e));
+          try { frame.close(); } catch { /* already closed */ }
         }
-        const outTs = Math.round((tS + intervalStartS) * 1_000_000);
-        const composed = compositor.compositeImage(
-          frame as unknown as CanvasImageSource,
-          frame.codedWidth,
-          frame.codedHeight,
-          outTs,
-          frame.duration ?? 0,
-          srcRot,
-        );
-        encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
-        composed.close();
-        frame.close();
-        firstFrameInGop = false;
-        framesEmitted++;
-        if (framesEmitted % 30 === 0 || framesEmitted === framesTotal) {
-          input.onProgress?.({
-            stage: "video-encode",
-            framesDone: framesEmitted,
-            framesTotal,
-          });
-        }
-      } catch (e) {
-        pendingError = e instanceof Error ? e : new Error(String(e));
-        try { frame.close(); } catch { /* already closed */ }
-      }
+      });
     },
     error: (e) => {
       pendingError = e instanceof Error ? e : new Error(String(e));
@@ -365,6 +386,10 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     );
   }
   await decoder.flush();
+  // Drain pending compositor work — flush() returns once the decoder
+  // has emitted all output callbacks, but those callbacks chain async
+  // composite work onto outputQueue. We must wait for that to settle.
+  await outputQueue;
   decoder.close();
   if (pendingError) throw pendingError;
 
@@ -676,16 +701,19 @@ export async function editRenderMulti(
   const testPattern = makeTestPatternCanvas(outputWidth, outputHeight);
 
   // Compositor (overlays + visualizers + fx shared across cams).
-  const compositor = new Compositor({
-    width: outputWidth,
-    height: outputHeight,
-    sourceWidth: outputWidth,
-    sourceHeight: outputHeight,
-    overlays: input.overlays,
-    energy: input.energy ?? null,
-    visualizers: input.visualizers ?? [],
-    fx: input.fx ?? [],
-  });
+  const compositor = await Compositor.create(
+    {
+      width: outputWidth,
+      height: outputHeight,
+      sourceWidth: outputWidth,
+      sourceHeight: outputHeight,
+      overlays: input.overlays,
+      energy: input.energy ?? null,
+      visualizers: input.visualizers ?? [],
+      fx: input.fx ?? [],
+    },
+    input.capabilities ?? { webgl2: false, webgpu: false },
+  );
   await compositor.ensureSubtitleEngine();
 
   const encoder = new StreamingVideoEncoder({
@@ -759,7 +787,7 @@ export async function editRenderMulti(
           srcH = outputHeight;
         }
         const outTimestampUs = framesEmitted * frameDurationUs;
-        const composed = compositor.compositeImage(
+        const composed = await compositor.compositeImage(
           source,
           srcW,
           srcH,
@@ -767,6 +795,10 @@ export async function editRenderMulti(
           frameDurationUs,
           srcRot,
           userTransform,
+          // FX must be looked up at master time (tMaster), not the
+          // segment-relative output timestamp — segments shift output
+          // time so FX queries with output time miss every FX.
+          tMaster,
         );
         encoder.pushFrame(composed, {
           keyFrame: framesEmitted === segStartFrame,

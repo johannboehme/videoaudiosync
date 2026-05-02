@@ -16,7 +16,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store";
-import { detectCapabilities } from "../../local/capabilities";
+import { getCapabilities } from "../../local/capabilities";
 import { MasterAudio } from "./MasterAudio";
 import { TestPattern } from "./TestPattern";
 import { OutputFrameBox } from "./OutputFrameBox";
@@ -87,7 +87,7 @@ function CompositorCanvas({ cams }: { cams: ClipUrlMap }) {
     const runtime = new PreviewRuntime({
       canvas,
       cams,
-      capabilities: detectCapabilities(),
+      capabilities: getCapabilities(),
       cssW,
       cssH,
       dpr,

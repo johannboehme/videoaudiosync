@@ -184,8 +184,11 @@ describe("meetsMinRequirements", () => {
 });
 
 describe("detectCapabilities — gpu-related fields", () => {
-  it("reports webgpu=false when navigator has no .gpu", () => {
-    // Default jsdom navigator has no .gpu — assertion is for documentation.
+  it("reports webgpu=false unconditionally (real probe is async via probeWebGPU)", () => {
+    // detectCapabilities() is sync and reports webgpu=false by default.
+    // The real check lives in probeWebGPU() (calls requestAdapter()),
+    // and initCapabilities() merges the probed value into the
+    // singleton — see App.tsx boot.
     const caps = detectCapabilities();
     expect(caps.webgpu).toBe(false);
   });

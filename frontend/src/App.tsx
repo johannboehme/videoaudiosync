@@ -1,6 +1,10 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { detectCapabilities, meetsMinRequirements } from "./local/capabilities";
+import {
+  detectCapabilities,
+  initCapabilities,
+  meetsMinRequirements,
+} from "./local/capabilities";
 import { markInterruptedJobsOnLoad } from "./local/lifecycle";
 import { HelpOverlay } from "./editor/components/HelpOverlay";
 import { RecMark } from "./editor/components/RuleStrip";
@@ -22,7 +26,11 @@ export default function App() {
   const isFullBleed =
     /^\/job\/[^/]+\/edit/.test(location.pathname) ||
     /^\/job\/[^/]+\/render$/.test(location.pathname);
-  const caps = useMemo(() => detectCapabilities(), []);
+  // `caps` starts with the sync probe (webgpu=false) and gets the
+  // async-probed `webgpu` merged in once `initCapabilities()` resolves.
+  // Both Settings (display) and any render-backend consumer that reads
+  // via `getCapabilities()` see the merged result.
+  const [caps, setCaps] = useState(() => detectCapabilities());
   const min = useMemo(() => meetsMinRequirements(caps), [caps]);
 
   // Hold off rendering anything browser-API-dependent until we've confirmed
@@ -31,17 +39,21 @@ export default function App() {
   // We also clean up jobs left in `syncing`/`rendering` from a previous
   // page session — they were necessarily interrupted (the work was driven
   // by a now-dead tab) so surfacing that beats letting them hang in limbo.
+  // And we await the WebGPU adapter probe so the Render-Backend factory
+  // gets a reliable `caps.webgpu` from the very first mount.
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    // Await the interrupted-job sweep before unblocking routing so any
-    // JobPage that mounts immediately after sees the freshly flipped
-    // "failed" status instead of a stale "rendering" snapshot.
     let cancelled = false;
-    markInterruptedJobsOnLoad()
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setReady(true);
-      });
+    Promise.all([
+      markInterruptedJobsOnLoad().catch(() => undefined),
+      initCapabilities()
+        .then((merged) => {
+          if (!cancelled) setCaps(merged);
+        })
+        .catch(() => undefined),
+    ]).finally(() => {
+      if (!cancelled) setReady(true);
+    });
     return () => {
       cancelled = true;
     };
