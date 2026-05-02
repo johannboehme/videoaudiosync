@@ -115,4 +115,43 @@ describe("shouldRescheduleOnTick", () => {
       }),
     ).toBe(true);
   });
+
+  // After an OP-1 style loop-shift, the playhead can sit *outside* the new
+  // loop region but should keep playing until it reaches the OLD loop end —
+  // that's the "deferred wrap" point we keep separately. The scheduler must
+  // honour it: don't snap to the new loop region until the playhead has
+  // crossed the deferred wrap point.
+  describe("with pendingWrapAt (OP-1 deferred loop-shift)", () => {
+    test("does not trigger when videoTime is before pendingWrapAt — even if videoTime < loop.start", () => {
+      // loop just got shifted right [0,2] → [2,4]. Playhead still at 1,
+      // pendingWrapAt = old loop.end = 2. Must NOT reschedule yet.
+      expect(
+        shouldRescheduleOnTick({
+          videoTime: 1.0,
+          loop: { start: 2, end: 4 },
+          pendingWrapAt: 2,
+        }),
+      ).toBe(false);
+    });
+
+    test("triggers exactly when videoTime crosses pendingWrapAt", () => {
+      expect(
+        shouldRescheduleOnTick({
+          videoTime: 2.01,
+          loop: { start: 2, end: 4 },
+          pendingWrapAt: 2,
+        }),
+      ).toBe(true);
+    });
+
+    test("pendingWrapAt = null behaves like no override", () => {
+      expect(
+        shouldRescheduleOnTick({
+          videoTime: 2.05,
+          loop: { start: 1, end: 2 },
+          pendingWrapAt: null,
+        }),
+      ).toBe(true);
+    });
+  });
 });

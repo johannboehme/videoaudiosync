@@ -65,14 +65,23 @@ export function clampLoopRegion(
  * Should we re-seek + re-schedule the audio source? Triggers on:
  *   - playhead crossed past loop.end → wrap back to start
  *   - playhead jumped before loop.start (user scrubbed) → restart loop
+ *
+ * `pendingWrapAt` overrides the default trigger: while it's set (non-null)
+ * the only condition that matters is `videoTime >= pendingWrapAt`. Used by
+ * the OP-1 style loop-shift, where the loop region jumps ahead but the
+ * playhead must keep playing in the now-out-of-loop zone until it reaches
+ * the *old* loop end.
  */
 export function shouldRescheduleOnTick({
   videoTime,
   loop,
+  pendingWrapAt,
 }: {
   videoTime: number;
   loop: LoopRegion | null;
+  pendingWrapAt?: number | null;
 }): boolean {
   if (!loop) return false;
+  if (pendingWrapAt != null) return videoTime >= pendingWrapAt;
   return videoTime >= loop.end || videoTime < loop.start;
 }

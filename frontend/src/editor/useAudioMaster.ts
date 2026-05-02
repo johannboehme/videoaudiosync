@@ -182,8 +182,15 @@ export function useAudioMaster(
 
       // Loop-region wrap. The store mutates currentTime via seek(); the
       // seek effect above turns that into an audio.currentTime write.
+      // pendingWrapAt overrides the default end-of-loop trigger to allow
+      // OP-1 style loop-shifting (playhead keeps playing past the new
+      // loop's start until it reaches the OLD loop end).
       const loop = store.playback.loop;
-      if (loop && shouldRescheduleOnTick({ videoTime: t, loop })) {
+      const pendingWrapAt = store.playback.pendingWrapAt;
+      if (
+        loop &&
+        shouldRescheduleOnTick({ videoTime: t, loop, pendingWrapAt })
+      ) {
         store.seek(loop.start);
       }
 
