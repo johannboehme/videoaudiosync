@@ -2,7 +2,7 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChunkyButton } from "./ChunkyButton";
-import { ChevronLeftIcon, DownloadIcon } from "./icons";
+import { ChevronLeftIcon, DownloadIcon, HelpIcon } from "./icons";
 import { BottomSheet } from "./BottomSheet";
 import { useEditorStore } from "../store";
 
@@ -267,15 +267,28 @@ function TopBar({
           editor
         </span>
       </div>
-      <ChunkyButton
-        variant="primary"
-        size="md"
-        onClick={onSubmit}
-        disabled={submitting}
-        iconLeft={<DownloadIcon />}
-      >
-        {submitting ? "Rendering…" : "Render"}
-      </ChunkyButton>
+      <div className="flex items-center gap-2">
+        <ChunkyButton
+          variant="secondary"
+          size="md"
+          className="aspect-square"
+          aria-label="Help"
+          onClick={() =>
+            window.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true }))
+          }
+        >
+          <HelpIcon />
+        </ChunkyButton>
+        <ChunkyButton
+          variant="primary"
+          size="md"
+          onClick={onSubmit}
+          disabled={submitting}
+          iconLeft={<DownloadIcon />}
+        >
+          {submitting ? "Rendering…" : "Render"}
+        </ChunkyButton>
+      </div>
     </header>
   );
 }
