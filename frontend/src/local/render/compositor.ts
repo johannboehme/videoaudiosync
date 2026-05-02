@@ -42,6 +42,7 @@ import type {
   LayerSource,
   SourcesMap,
 } from "../../editor/render/backend";
+import { WebGPUBackend } from "../../editor/render/webgpu-backend";
 import type {
   FrameDescriptor,
   FrameFx,
@@ -155,7 +156,7 @@ export class Compositor {
 
   /** Composite `frame` for `timestampUs` and return a fresh VideoFrame whose
    *  caller MUST `.close()` after encoding. */
-  composite(frame: VideoFrame, timestampUs: number): VideoFrame {
+  composite(frame: VideoFrame, timestampUs: number): Promise<VideoFrame> {
     return this.compositeImage(
       frame as unknown as CanvasImageSource,
       this.opts.sourceWidth ?? frame.codedWidth,
@@ -165,7 +166,7 @@ export class Compositor {
     );
   }
 
-  compositeImage(
+  async compositeImage(
     source: CanvasImageSource,
     srcW: number,
     srcH: number,
@@ -173,7 +174,7 @@ export class Compositor {
     durationUs: number,
     rotationDeg: 0 | 90 | 180 | 270 = 0,
     userTransform: { rotation?: number; flipX?: boolean; flipY?: boolean } = {},
-  ): VideoFrame {
+  ): Promise<VideoFrame> {
     const intrinsic = rotationDeg % 360;
     const userRot =
       ((Math.round((userTransform.rotation ?? 0) / 90) * 90) % 360 + 360) % 360;
@@ -226,17 +227,40 @@ export class Compositor {
       ["src", classifySource(source)],
     ]);
 
-    // 1. Backend rendert Layer + FX in den internen backendCanvas.
+    // 1. Backend rendert Layer + FX in den internen backendCanvas
+    //    (oder, im WebGPU-Fall, in den internen renderTarget).
     this.backend.drawFrame(descriptor, sources);
 
-    // 2. Reset transform und blit den Backend-Output ins finale Canvas.
+    // 2. Backend-Output → ImageBitmap → finalCanvas.
+    //
+    // **WebGPU-Pfad: GPU→CPU readback statt canvas-swap-chain.**
+    // Hintergrund: WebGPU's canvas-Surface verwendet eine implizite
+    // double-buffer Swap-Chain (`context.getCurrentTexture()` rotiert
+    // zwischen 2+ slots). Im Export-Loop ohne VSync-Anker feuert der
+    // VideoDecoder synchron alle Frames hintereinander, sodass
+    // `transferToImageBitmap()` den FALSCHEN swap-slot lesen kann —
+    // einmal slot A (frame N), dann slot B (frame N-1 oder N+1), dann
+    // wieder A. Empirisch reproduziert: PSNR(frame N → frame N+2) >
+    // PSNR(frame N → frame N+1), das klassische "alternierende"
+    // back-and-forth Muster. Bypass: lies das interne `renderTarget`
+    // direkt via copyTextureToBuffer und konstruiere einen frischen
+    // ImageBitmap pro Frame. Eine GPU→CPU readback pro Frame; auf 4K
+    // ~33 MB Bandbreite, erträglich für Export. Live-Preview nutzt
+    // weiter die Canvas-Swap-Chain — RAF gibt VSync-Anker.
+    //
+    // Andere Backends (Canvas2D, WebGL2): canvas.transferToImageBitmap()
+    // ist spec-garantiert korrekt — die haben keinen GPU-swap-chain
+    // im selben Sinne.
+    let bitmap: ImageBitmap;
+    if (this.backend instanceof WebGPUBackend) {
+      bitmap = await this.backend.readbackToImageBitmap();
+    } else {
+      bitmap = this.backendCanvas.transferToImageBitmap();
+    }
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.opts.width, this.opts.height);
-    // drawImage() funktioniert mit OffscreenCanvas (sowohl 2D- als auch
-    // GPU-Context-backed) als Source in modernen Engines (Chromium ≥113,
-    // Safari 17, Firefox 116). Falls eine ältere Engine fehlschlägt,
-    // ist ImageBitmap → drawImage der Workaround; nicht hier nötig.
-    this.ctx.drawImage(this.backendCanvas, 0, 0);
+    this.ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
 
     // 3. Visualizer + Overlays auf den finalen 2D-Context.
     if (this.opts.visualizers && this.opts.visualizers.length > 0) {
@@ -255,7 +279,24 @@ export class Compositor {
       );
     }
 
-    return new VideoFrame(this.canvas, {
+    // 4. Snapshot finalCanvas → ImageBitmap → VideoFrame.
+    //
+    // **Critical**: `new VideoFrame(canvas)` may take a *reference*
+    // (zero-copy) instead of a deep copy in some Chromium builds. The
+    // encoder.pushFrame() consumes VideoFrames asynchronously — if the
+    // canvas mutates between VideoFrame construction and encoder
+    // consumption (i.e. the next composite() call writes new pixels),
+    // the encoded N-th frame ends up holding the (N+1)-th content.
+    // This was the user-reported "frames jumping back and forth"
+    // bug in exports.
+    //
+    // ImageBitmap is spec-immutable; constructing VideoFrame from a
+    // bitmap forces an independent snapshot regardless of internal
+    // zero-copy strategy. transferToImageBitmap() also clears the
+    // canvas, but we reset/clear it ourselves at the start of each
+    // composite() call anyway, so that's a no-op for our use.
+    const finalBitmap = this.canvas.transferToImageBitmap();
+    return new VideoFrame(finalBitmap, {
       timestamp: timestampUs,
       duration: durationUs,
     });

@@ -290,59 +290,65 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
   let firstFrameInGop = true;
   let framesEmitted = 0;
   let pendingError: Error | null = null;
-  // VideoEncoder.encode is synchronous, so we can chain
-  // decode → composite → encode entirely inside the decoder's output
-  // callback. No frame ever lives outside this scope.
+  // The compositor's compositeImage() is async (WebGPU readback is
+  // async — see Compositor for why). The VideoDecoder calls `output`
+  // fire-and-forget, so we serialize the per-frame work through a
+  // Promise chain — without serialization, multiple async output
+  // callbacks could interleave their `compositor.compositeImage()` /
+  // `encoder.pushFrame()` calls and produce out-of-order frames.
+  let outputQueue: Promise<void> = Promise.resolve();
   const decoder = new VideoDecoder({
     output: (frame) => {
-      try {
-        const tS = frame.timestamp / 1_000_000;
-        let inInterval = false;
-        let intervalStartS = 0;
-        for (let i = 0; i < intervals.length; i++) {
-          const seg = intervals[i];
-          if (tS >= seg.in && tS < seg.out) {
-            inInterval = true;
-            for (let j = 0; j < i; j++) {
-              intervalStartS += intervals[j].out - intervals[j].in;
+      outputQueue = outputQueue.then(async () => {
+        try {
+          const tS = frame.timestamp / 1_000_000;
+          let inInterval = false;
+          let intervalStartS = 0;
+          for (let i = 0; i < intervals.length; i++) {
+            const seg = intervals[i];
+            if (tS >= seg.in && tS < seg.out) {
+              inInterval = true;
+              for (let j = 0; j < i; j++) {
+                intervalStartS += intervals[j].out - intervals[j].in;
+              }
+              intervalStartS -= seg.in;
+              if (i !== nextIntervalIdx) {
+                nextIntervalIdx = i;
+                firstFrameInGop = true;
+              }
+              break;
             }
-            intervalStartS -= seg.in;
-            if (i !== nextIntervalIdx) {
-              nextIntervalIdx = i;
-              firstFrameInGop = true;
-            }
-            break;
           }
-        }
-        if (!inInterval) {
+          if (!inInterval) {
+            frame.close();
+            return;
+          }
+          const outTs = Math.round((tS + intervalStartS) * 1_000_000);
+          const composed = await compositor.compositeImage(
+            frame as unknown as CanvasImageSource,
+            frame.codedWidth,
+            frame.codedHeight,
+            outTs,
+            frame.duration ?? 0,
+            srcRot,
+          );
+          encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
+          composed.close();
           frame.close();
-          return;
+          firstFrameInGop = false;
+          framesEmitted++;
+          if (framesEmitted % 30 === 0 || framesEmitted === framesTotal) {
+            input.onProgress?.({
+              stage: "video-encode",
+              framesDone: framesEmitted,
+              framesTotal,
+            });
+          }
+        } catch (e) {
+          pendingError = e instanceof Error ? e : new Error(String(e));
+          try { frame.close(); } catch { /* already closed */ }
         }
-        const outTs = Math.round((tS + intervalStartS) * 1_000_000);
-        const composed = compositor.compositeImage(
-          frame as unknown as CanvasImageSource,
-          frame.codedWidth,
-          frame.codedHeight,
-          outTs,
-          frame.duration ?? 0,
-          srcRot,
-        );
-        encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
-        composed.close();
-        frame.close();
-        firstFrameInGop = false;
-        framesEmitted++;
-        if (framesEmitted % 30 === 0 || framesEmitted === framesTotal) {
-          input.onProgress?.({
-            stage: "video-encode",
-            framesDone: framesEmitted,
-            framesTotal,
-          });
-        }
-      } catch (e) {
-        pendingError = e instanceof Error ? e : new Error(String(e));
-        try { frame.close(); } catch { /* already closed */ }
-      }
+      });
     },
     error: (e) => {
       pendingError = e instanceof Error ? e : new Error(String(e));
@@ -376,6 +382,10 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     );
   }
   await decoder.flush();
+  // Drain pending compositor work — flush() returns once the decoder
+  // has emitted all output callbacks, but those callbacks chain async
+  // composite work onto outputQueue. We must wait for that to settle.
+  await outputQueue;
   decoder.close();
   if (pendingError) throw pendingError;
 
@@ -773,7 +783,7 @@ export async function editRenderMulti(
           srcH = outputHeight;
         }
         const outTimestampUs = framesEmitted * frameDurationUs;
-        const composed = compositor.compositeImage(
+        const composed = await compositor.compositeImage(
           source,
           srcW,
           srcH,

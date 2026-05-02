@@ -10,6 +10,8 @@ const ALL_KEYS: ReadonlyArray<keyof Capabilities> = [
   "audioEncoder",
   "videoEncoder",
   "fileSystemAccess",
+  "webgl2",
+  "webgpu",
 ];
 
 interface RenderPath {
@@ -38,6 +40,28 @@ function pickRenderPath(caps: Capabilities): RenderPath {
   };
 }
 
+function pickRenderBackend(caps: Capabilities): RenderPath {
+  if (caps.webgpu) {
+    return {
+      label: "WebGPU",
+      detail:
+        "State-of-the-art GPU compositing — preview and export both render Layer + FX through WGSL shaders. Same backend code, same pixels in both paths.",
+    };
+  }
+  if (caps.webgl2) {
+    return {
+      label: "WebGL2",
+      detail:
+        "Fallback GPU path. Same Layer + FX pipeline as WebGPU, GLSL shaders. Used when WebGPU adapter unavailable.",
+    };
+  }
+  return {
+    label: "Canvas2D",
+    detail:
+      "Floor fallback (CPU compositing). Some FX (WEAR static, sat/luma wobble) ship reduced fidelity here — accept it on legacy browsers.",
+  };
+}
+
 interface SettingsProps {
   caps: Capabilities;
 }
@@ -45,6 +69,7 @@ interface SettingsProps {
 export function Settings({ caps }: SettingsProps) {
   const min = meetsMinRequirements(caps);
   const renderPath = pickRenderPath(caps);
+  const renderBackend = pickRenderBackend(caps);
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 p-8">
@@ -73,6 +98,11 @@ export function Settings({ caps }: SettingsProps) {
           <div className="text-sm uppercase opacity-70">Render path</div>
           <div className="font-mono text-base">{renderPath.label}</div>
           <p className="mt-1 text-sm opacity-80">{renderPath.detail}</p>
+        </div>
+        <div data-testid="render-backend" className="rounded-lg border p-4">
+          <div className="text-sm uppercase opacity-70">Render backend</div>
+          <div className="font-mono text-base">{renderBackend.label}</div>
+          <p className="mt-1 text-sm opacity-80">{renderBackend.detail}</p>
         </div>
       </section>
 

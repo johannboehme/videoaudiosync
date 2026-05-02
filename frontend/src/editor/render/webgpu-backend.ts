@@ -379,6 +379,66 @@ export class WebGPUBackend implements CompositorBackend {
     this.fxSampler = null;
   }
 
+  /**
+   * Liest den vollen renderTarget aus und gibt ihn als ImageBitmap
+   * zurück. Bypassed die Canvas-Swap-Chain komplett — das ist der
+   * Compositor-Pfad für den Export, weil WebGPU's
+   * `context.getCurrentTexture()` + `transferToImageBitmap()` im sync
+   * Decoder→Encoder-Loop double-buffered chaos produzieren kann
+   * (alternierende Frames aus zwei Swap-Slots → "frames hin und her
+   * springen").
+   *
+   * Implementation: copyTextureToBuffer → mapAsync → ImageData →
+   * createImageBitmap. Eine GPU→CPU readback pro Frame; bei 1536×2048
+   * RGBA = 12 MB pro Frame. Trade-off: + Korrektheit, - Bandbreite.
+   * Im Preview brauchen wir das nicht (RAF + getCurrentTexture
+   * funktionieren mit VSync).
+   */
+  async readbackToImageBitmap(): Promise<ImageBitmap> {
+    const device = this.device;
+    const renderTarget = this.renderTarget;
+    if (!device || !renderTarget) {
+      throw new Error(
+        "WebGPUBackend.readbackToImageBitmap: backend not initialised",
+      );
+    }
+    const w = this.caps.pixelW;
+    const h = this.caps.pixelH;
+    const bytesPerRowUnaligned = w * 4;
+    const bytesPerRow = Math.ceil(bytesPerRowUnaligned / 256) * 256;
+    const buffer = device.createBuffer({
+      label: "webgpu readback",
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder({ label: "readback" });
+    encoder.copyTextureToBuffer(
+      { texture: renderTarget },
+      { buffer, bytesPerRow, rowsPerImage: h },
+      { width: w, height: h, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish()]);
+    await buffer.mapAsync(GPUMapMode.READ);
+    const padded = new Uint8Array(buffer.getMappedRange()).slice();
+    buffer.unmap();
+    buffer.destroy();
+    // Strip row padding + swap BGRA → RGBA (renderTarget is bgra8unorm,
+    // ImageData expects RGBA byte order).
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    for (let row = 0; row < h; row++) {
+      for (let col = 0; col < w; col++) {
+        const srcOff = row * bytesPerRow + col * 4;
+        const dstOff = row * w * 4 + col * 4;
+        rgba[dstOff + 0] = padded[srcOff + 2];
+        rgba[dstOff + 1] = padded[srcOff + 1];
+        rgba[dstOff + 2] = padded[srcOff + 0];
+        rgba[dstOff + 3] = padded[srcOff + 3];
+      }
+    }
+    const imageData = new ImageData(rgba, w, h);
+    return await createImageBitmap(imageData);
+  }
+
   /** Test-only readback. Liest `[w*h]` RGBA-pixel aus dem renderTarget
    *  beim Punkt `(x, y)` (canvas-Y-down). Returns Uint8Array(w*h*4) im
    *  RGBA-Format (auch wenn das Texture-Format BGRA ist — wir swappen
