@@ -499,6 +499,17 @@ function uploadSource(
       );
       return true;
     case "video":
+      if (src.preferFallback && src.fallback) {
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          src.fallback,
+        );
+        return true;
+      }
       if (src.element.readyState < 2) return false;
       gl.texImage2D(
         gl.TEXTURE_2D,

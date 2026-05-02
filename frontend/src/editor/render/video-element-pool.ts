@@ -105,6 +105,21 @@ export class VideoElementPool {
     return this.slots.get(clipId)?.el ?? null;
   }
 
+  /** Whether `masterT` lands inside the cam's source-time range. False
+   *  for unknown ids. The runtime uses this to gate the last-good-frame
+   *  fallback: out-of-range cams should stay black (correct empty
+   *  state), in-range cams that are mid-seek should hold the cached
+   *  frame to hide the decode-latency flash. */
+  isInRange(clipId: string, masterT: number): boolean {
+    const slot = this.slots.get(clipId);
+    if (!slot) return false;
+    const sourceT = camSourceTimeS(masterT, {
+      masterStartS: slot.anchorS,
+      driftRatio: slot.driftRatio,
+    });
+    return sourceT >= 0 && sourceT < slot.sourceDurS;
+  }
+
   /** Re-syncs every cam in the pool against the master clock. Called
    *  by the runtime once per RAF tick. Cheap — no allocations, the
    *  hot path is one float compare per cam. */

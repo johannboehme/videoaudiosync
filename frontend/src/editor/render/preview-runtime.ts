@@ -59,14 +59,24 @@ export interface PreviewRuntimeOptions {
   readPlayback?: () => { currentTime: number; isPlaying: boolean };
   /** Test-injection — load an image bitmap from a URL. */
   loadBitmap?: (url: string) => Promise<ImageBitmap>;
+  /** Test-injection — snapshot a live `<video>` element into an
+   *  ImageBitmap. Defaults to `createImageBitmap(el)`. */
+  createBitmapFromVideo?: (el: HTMLVideoElement) => Promise<ImageBitmap>;
   /** Test-injection — high-resolution clock. Defaults to `performance.now`.
    *  Used by the frame-budget watchdog. */
   now?: () => number;
 }
 
+/** Minimum gap between two snapshot refreshes for the SAME layer.
+ *  60Hz `createImageBitmap(<video>)` would churn the heap without
+ *  meaningful benefit — the cache only needs to overbridge the 1–3
+ *  decode-frames after a seek. */
+const SNAPSHOT_THROTTLE_MS = 100;
+const READY_HAVE_CURRENT_DATA = 2;
+
 export class PreviewRuntime {
   private opts: Required<
-    Pick<PreviewRuntimeOptions, "dpr" | "initialScale" | "raf" | "cancelRaf" | "readSnapshot" | "readPlayback" | "loadBitmap" | "createBackendFn" | "createPool" | "now" | "frameBudgetMs">
+    Pick<PreviewRuntimeOptions, "dpr" | "initialScale" | "raf" | "cancelRaf" | "readSnapshot" | "readPlayback" | "loadBitmap" | "createBitmapFromVideo" | "createBackendFn" | "createPool" | "now" | "frameBudgetMs">
   > &
     PreviewRuntimeOptions;
 
@@ -77,6 +87,20 @@ export class PreviewRuntime {
    *  the same image clip lingers across many RAF ticks before its
    *  bitmap resolves. */
   private bitmapsLoading = new Set<string>();
+  /** Last successfully decoded `<video>` frame per layerId, captured
+   *  whenever the element was ready at draw time. While the element is
+   *  mid-seek (after a scrub or loop wrap) we hand this bitmap to the
+   *  backend instead of the empty/transparent video — without it, the
+   *  unconditional black background-clear flashes through for the
+   *  1–3 decode frames the seek takes. */
+  private lastGoodFrames = new Map<
+    string,
+    { bitmap: ImageBitmap; lastSnapshotMs: number }
+  >();
+  /** Layers for which a snapshot is currently in flight. Prevents two
+   *  overlapping `createImageBitmap` calls for the same layer (the
+   *  second would race the first and leak the loser). */
+  private snapshotInFlight = new Set<string>();
 
   private rafId: number | null = null;
   private running = false;
@@ -119,6 +143,8 @@ export class PreviewRuntime {
       readSnapshot: options.readSnapshot ?? defaultReadSnapshot,
       readPlayback: options.readPlayback ?? defaultReadPlayback,
       loadBitmap: options.loadBitmap ?? defaultLoadBitmap,
+      createBitmapFromVideo:
+        options.createBitmapFromVideo ?? defaultCreateBitmapFromVideo,
       createBackendFn: options.createBackendFn ?? createBackend,
       createPool: options.createPool ?? ((o) => new VideoElementPool(o)),
       now:
@@ -241,7 +267,11 @@ export class PreviewRuntime {
 
     const snapshot = this.opts.readSnapshot();
     const descriptor = buildPreviewFrameDescriptor(snapshot, playback.currentTime);
-    const sources = this.buildSourcesMap(descriptor.layers, snapshot.clips);
+    const sources = this.buildSourcesMap(
+      descriptor.layers,
+      snapshot.clips,
+      playback.currentTime,
+    );
 
     // Close any pending fx-first-render perf mark on the first frame
     // we draw with active fx. Editor.tsx stashes the handle on
@@ -269,6 +299,7 @@ export class PreviewRuntime {
       this.pool.setCams(collectVideoCams(snapshot.clips, this.opts.cams));
       this.lastReconciledClipsRef = snapshot.clips;
       this.lastReconciledCamsRef = this.opts.cams;
+      this.evictStaleFrames(snapshot.clips);
     }
 
     // Time the actual GPU/CPU work so the adaptive scaler sees real
@@ -276,6 +307,8 @@ export class PreviewRuntime {
     const t0 = this.opts.now();
     this.backend.drawFrame(descriptor, sources);
     const drawMs = this.opts.now() - t0;
+
+    this.maybeRefreshSnapshots(descriptor.layers, playback.currentTime);
 
     // Feed the adaptive scaler. Only react when the backend itself is
     // straining — visualizers/overlays/store reads are out of scope.
@@ -315,6 +348,15 @@ export class PreviewRuntime {
     }
     this.bitmaps.clear();
     this.bitmapsLoading.clear();
+    for (const entry of this.lastGoodFrames.values()) {
+      try {
+        entry.bitmap.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    this.lastGoodFrames.clear();
+    this.snapshotInFlight.clear();
   }
 
   // ---- internals ----
@@ -337,12 +379,32 @@ export class PreviewRuntime {
   private buildSourcesMap(
     layers: ReadonlyArray<{ layerId: string; source: { kind: string } }>,
     clips: readonly Clip[],
+    masterT: number,
   ): SourcesMap {
     const out = new Map<string, LayerSource>();
     for (const layer of layers) {
       if (layer.source.kind === "video") {
         const el = this.pool?.getElement(layer.layerId);
-        if (el) out.set(layer.layerId, { kind: "video", element: el });
+        if (!el) continue;
+        // Last-good-frame fallback: only when (a) the cam is currently
+        // in-range (out-of-range layers correctly stay black), (b) the
+        // <video> can't deliver a fresh frame this tick (mid-seek or
+        // pre-decode), and (c) we have a snapshot to substitute. Misses
+        // any of these → standard video source.
+        const inRange = this.pool?.isInRange(layer.layerId, masterT) ?? true;
+        const ready =
+          !el.seeking && el.readyState >= READY_HAVE_CURRENT_DATA;
+        const cached = this.lastGoodFrames.get(layer.layerId);
+        if (inRange && !ready && cached) {
+          out.set(layer.layerId, {
+            kind: "video",
+            element: el,
+            fallback: cached.bitmap,
+            preferFallback: true,
+          });
+        } else {
+          out.set(layer.layerId, { kind: "video", element: el });
+        }
       } else if (layer.source.kind === "image") {
         const cached = this.bitmaps.get(layer.layerId);
         if (cached) {
@@ -353,6 +415,83 @@ export class PreviewRuntime {
       }
     }
     return out;
+  }
+
+  /** After a successful drawFrame, capture the live `<video>` of every
+   *  active layer that's currently in-range and ready. Per-layer
+   *  throttle keeps this cheap: most ticks hit the fast path
+   *  (`now() - lastSnapshotMs < 100ms` → noop). The held bitmap is what
+   *  `buildSourcesMap` substitutes during seeks/wraps. */
+  private maybeRefreshSnapshots(
+    layers: ReadonlyArray<{ layerId: string; source: { kind: string } }>,
+    masterT: number,
+  ): void {
+    if (!this.pool) return;
+    let now: number | null = null;
+    for (const layer of layers) {
+      if (layer.source.kind !== "video") continue;
+      if (this.snapshotInFlight.has(layer.layerId)) continue;
+      const existing = this.lastGoodFrames.get(layer.layerId);
+      if (now === null) now = this.opts.now();
+      if (existing && now - existing.lastSnapshotMs < SNAPSHOT_THROTTLE_MS) {
+        continue;
+      }
+      const el = this.pool.getElement(layer.layerId);
+      if (!el) continue;
+      if (el.seeking || el.readyState < READY_HAVE_CURRENT_DATA) continue;
+      if (!this.pool.isInRange(layer.layerId, masterT)) continue;
+
+      this.snapshotInFlight.add(layer.layerId);
+      const layerId = layer.layerId;
+      void this.opts
+        .createBitmapFromVideo(el)
+        .then((bm) => {
+          this.snapshotInFlight.delete(layerId);
+          // The cam may have been removed while we were awaiting — drop
+          // the new bitmap rather than re-introducing it.
+          if (!this.pool || !this.pool.getElement(layerId)) {
+            try {
+              bm.close();
+            } catch {
+              /* already closed */
+            }
+            return;
+          }
+          const prev = this.lastGoodFrames.get(layerId);
+          if (prev) {
+            try {
+              prev.bitmap.close();
+            } catch {
+              /* already closed */
+            }
+          }
+          this.lastGoodFrames.set(layerId, {
+            bitmap: bm,
+            lastSnapshotMs: this.opts.now(),
+          });
+        })
+        .catch(() => {
+          this.snapshotInFlight.delete(layerId);
+        });
+    }
+  }
+
+  /** Drop cached frames for cams that aren't in the current clip list
+   *  anymore. Mirrors how `bitmaps` (image clips) decays — without
+   *  this, removed cams' last-good-frames would leak ImageBitmaps. */
+  private evictStaleFrames(clips: readonly Clip[]): void {
+    if (this.lastGoodFrames.size === 0) return;
+    const live = new Set<string>();
+    for (const clip of clips) live.add(clip.id);
+    for (const [id, entry] of this.lastGoodFrames) {
+      if (live.has(id)) continue;
+      try {
+        entry.bitmap.close();
+      } catch {
+        /* already closed */
+      }
+      this.lastGoodFrames.delete(id);
+    }
   }
 
   private ensureImageBitmap(clipId: string, clips: readonly Clip[]): void {
@@ -406,6 +545,12 @@ async function defaultLoadBitmap(url: string): Promise<ImageBitmap> {
   const res = await fetch(url);
   const blob = await res.blob();
   return createImageBitmap(blob);
+}
+
+async function defaultCreateBitmapFromVideo(
+  el: HTMLVideoElement,
+): Promise<ImageBitmap> {
+  return createImageBitmap(el);
 }
 
 function collectVideoCams(clips: readonly Clip[], cams: ClipUrlMap): VideoCam[] {

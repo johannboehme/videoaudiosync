@@ -85,19 +85,44 @@ function makePool(): VideoElementPool {
   // Minimal stub — the pool tests cover the real logic; here we only
   // care that the runtime delegates correctly.
   const elements = new Map<string, HTMLVideoElement>();
+  const inRange = new Map<string, boolean>();
   const pool = {
     syncAll: vi.fn(),
     getElement: vi.fn((id: string) => elements.get(id) ?? null),
+    isInRange: vi.fn((id: string) => inRange.get(id) ?? true),
     setCams: vi.fn(),
     mount: vi.fn(),
     unmount: vi.fn(),
     dispose: vi.fn(),
   } as unknown as VideoElementPool;
   // Attach a fake element for any id we want to "have" in the pool.
-  (pool as unknown as { _add: (id: string) => void })._add = (id: string) => {
-    elements.set(id, document.createElement("video"));
+  (pool as unknown as {
+    _add: (id: string, el?: HTMLVideoElement) => void;
+    _setInRange: (id: string, v: boolean) => void;
+  })._add = (id: string, el?: HTMLVideoElement) => {
+    elements.set(id, el ?? document.createElement("video"));
   };
+  (pool as unknown as { _setInRange: (id: string, v: boolean) => void })._setInRange =
+    (id: string, v: boolean) => {
+      inRange.set(id, v);
+    };
   return pool;
+}
+
+/** Build a video element with controllable seeking/readyState — the
+ *  runtime reads both to decide whether the source is "ready" or
+ *  whether the last-good-frame fallback should kick in. */
+function makeFakeVideoEl(over: { readyState?: number; seeking?: boolean } = {}): HTMLVideoElement {
+  const el = document.createElement("video");
+  Object.defineProperty(el, "readyState", {
+    configurable: true,
+    get: () => over.readyState ?? 4,
+  });
+  Object.defineProperty(el, "seeking", {
+    configurable: true,
+    get: () => over.seeking ?? false,
+  });
+  return el;
 }
 
 function makeRuntime(opts: {
@@ -107,6 +132,8 @@ function makeRuntime(opts: {
   backend?: MockBackend;
   pool?: VideoElementPool;
   loadBitmap?: (url: string) => Promise<ImageBitmap>;
+  createBitmapFromVideo?: (el: HTMLVideoElement) => Promise<ImageBitmap>;
+  now?: () => number;
 }) {
   const backend = opts.backend ?? makeBackend();
   const pool = opts.pool ?? makePool();
@@ -128,6 +155,8 @@ function makeRuntime(opts: {
     readSnapshot: () => opts.snap,
     readPlayback: () => playback,
     loadBitmap: opts.loadBitmap,
+    createBitmapFromVideo: opts.createBitmapFromVideo,
+    now: opts.now,
   });
   return { rt, backend, pool, canvas };
 }
@@ -259,6 +288,217 @@ describe("PreviewRuntime — image bitmap cache", () => {
     rt.tick();
     rt.tick();
     expect(loadBitmap).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PreviewRuntime — last-good-frame cache (hides black flash on seek/wrap)", () => {
+  // Background: when the user scrubs the playhead OR a loop wraps to
+  // its start, the pool re-sets `<video>.currentTime`. The browser's
+  // decoder needs 1–3 frames before a real frame is available; in the
+  // meantime drawImage(<video>) can produce empty/transparent pixels,
+  // and the backend's unconditional black background-clear shows
+  // through as a black flash. The runtime holds the last successful
+  // <video> frame as an ImageBitmap per layerId and hands it to the
+  // backend as a fallback while seeking.
+
+  it("uses cached fallback when video is seeking and in-range", async () => {
+    const fakeBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    const createBitmapFromVideo = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const pool = makePool();
+    const readyEl = makeFakeVideoEl({ readyState: 4, seeking: false });
+    (pool as unknown as { _add: (id: string, el?: HTMLVideoElement) => void })._add(
+      "a",
+      readyEl,
+    );
+    let nowMs = 0;
+    const { rt } = makeRuntime({
+      snap: snapshot({ clips: [videoClip("a")] }),
+      playback: { currentTime: 0.5, isPlaying: false },
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+      createBitmapFromVideo,
+      now: () => nowMs,
+    });
+    await rt.init();
+    // Tick 1: video ready → snapshot scheduled. Throttle is per-layer
+    // wall-clock, so even with the deterministic now() the scheduling
+    // path runs.
+    rt.tick();
+    // Let the snapshot promise resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createBitmapFromVideo).toHaveBeenCalledTimes(1);
+
+    // Now the video is "seeking" — flip the descriptor to mid-seek.
+    Object.defineProperty(readyEl, "seeking", {
+      configurable: true,
+      get: () => true,
+    });
+    nowMs = 50; // < throttle window
+    rt.tick();
+
+    const src = backend.lastSources?.get("a");
+    expect(src?.kind).toBe("video");
+    expect((src as { fallback?: ImageBitmap }).fallback).toBe(fakeBitmap);
+    expect((src as { preferFallback?: boolean }).preferFallback).toBe(true);
+  });
+
+  it("does NOT use fallback when layer is out of range (black is correct)", async () => {
+    const fakeBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    const createBitmapFromVideo = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const pool = makePool();
+    const readyEl = makeFakeVideoEl({ readyState: 4, seeking: false });
+    (pool as unknown as { _add: (id: string, el?: HTMLVideoElement) => void })._add(
+      "a",
+      readyEl,
+    );
+    const { rt } = makeRuntime({
+      snap: snapshot({ clips: [videoClip("a")] }),
+      playback: { currentTime: 0.5, isPlaying: false },
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+      createBitmapFromVideo,
+    });
+    await rt.init();
+    // Populate cache: tick 1, video ready.
+    rt.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Now the layer is out of range — even if seeking, fallback must
+    // NOT be used. Black is correct in a between-clips gap.
+    Object.defineProperty(readyEl, "seeking", {
+      configurable: true,
+      get: () => true,
+    });
+    (pool as unknown as { _setInRange: (id: string, v: boolean) => void })._setInRange(
+      "a",
+      false,
+    );
+    rt.tick();
+    const src = backend.lastSources?.get("a");
+    // Either no entry at all (descriptor builder may drop the layer)
+    // or a video source without preferFallback. The contract is just:
+    // do not paint the cached image.
+    if (src && src.kind === "video") {
+      expect((src as { preferFallback?: boolean }).preferFallback).not.toBe(true);
+    }
+  });
+
+  it("does NOT use fallback when video is ready (real frame wins)", async () => {
+    const fakeBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    const createBitmapFromVideo = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const pool = makePool();
+    const readyEl = makeFakeVideoEl({ readyState: 4, seeking: false });
+    (pool as unknown as { _add: (id: string, el?: HTMLVideoElement) => void })._add(
+      "a",
+      readyEl,
+    );
+    const { rt } = makeRuntime({
+      snap: snapshot({ clips: [videoClip("a")] }),
+      playback: { currentTime: 0.5, isPlaying: false },
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+      createBitmapFromVideo,
+    });
+    await rt.init();
+    rt.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+    rt.tick();
+    const src = backend.lastSources?.get("a");
+    expect(src?.kind).toBe("video");
+    expect((src as { preferFallback?: boolean }).preferFallback).not.toBe(true);
+  });
+
+  it("evicts cached bitmap on cam removal (no leak)", async () => {
+    const fakeBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    const createBitmapFromVideo = vi.fn(async () => fakeBitmap);
+    const backend = makeBackend();
+    const pool = makePool();
+    const readyEl = makeFakeVideoEl({ readyState: 4, seeking: false });
+    (pool as unknown as { _add: (id: string, el?: HTMLVideoElement) => void })._add(
+      "a",
+      readyEl,
+    );
+    const snap: { value: EditorStoreSnapshot } = {
+      value: snapshot({ clips: [videoClip("a")] }),
+    };
+    const canvas = document.createElement("canvas");
+    const rt = new PreviewRuntime({
+      canvas,
+      cams: { a: { videoUrl: "a.mp4" } },
+      capabilities: { webgl2: false, webgpu: false },
+      cssW: 100,
+      cssH: 50,
+      dpr: 1,
+      initialScale: 1,
+      createBackendFn: vi.fn(async () => backend),
+      createPool: () => pool,
+      raf: () => 0,
+      cancelRaf: () => undefined,
+      readSnapshot: () => snap.value,
+      readPlayback: () => ({ currentTime: 0.5, isPlaying: false }),
+      createBitmapFromVideo,
+    });
+    await rt.init();
+    rt.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createBitmapFromVideo).toHaveBeenCalledTimes(1);
+
+    // Remove the cam from store + cams map.
+    snap.value = snapshot({ clips: [] });
+    rt.setCams({});
+    rt.tick();
+
+    expect(fakeBitmap.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("throttles snapshot creation per layer (~100ms)", async () => {
+    const fakeBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    const createBitmapFromVideo = vi.fn(async () => ({
+      close: vi.fn(),
+    }) as unknown as ImageBitmap);
+    void fakeBitmap;
+    const backend = makeBackend();
+    const pool = makePool();
+    const readyEl = makeFakeVideoEl({ readyState: 4, seeking: false });
+    (pool as unknown as { _add: (id: string, el?: HTMLVideoElement) => void })._add(
+      "a",
+      readyEl,
+    );
+    let nowMs = 0;
+    const { rt } = makeRuntime({
+      snap: snapshot({ clips: [videoClip("a")] }),
+      playback: { currentTime: 0.5, isPlaying: false },
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+      createBitmapFromVideo,
+      now: () => nowMs,
+    });
+    await rt.init();
+
+    // Many fast ticks within the throttle window.
+    for (let i = 0; i < 6; i++) {
+      nowMs = i * 16; // ~60Hz
+      rt.tick();
+      await Promise.resolve();
+    }
+    expect(createBitmapFromVideo).toHaveBeenCalledTimes(1);
+
+    // Step past the throttle window.
+    nowMs = 200;
+    rt.tick();
+    await Promise.resolve();
+    expect(createBitmapFromVideo).toHaveBeenCalledTimes(2);
   });
 });
 
