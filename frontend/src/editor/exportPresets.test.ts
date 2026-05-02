@@ -66,105 +66,67 @@ describe("resolveResolution", () => {
   });
 });
 
-describe("applyPreset — preserves user's aspect, caps long-side", () => {
+describe("applyPreset — opinionated recipes", () => {
   function spec(over: Partial<Parameters<typeof applyPreset>[1]> = {}): Parameters<typeof applyPreset>[1] {
     return { preset: "custom", ...over };
   }
 
-  it("WEB at 4K-long-side with 16:9 → caps to 1920×1080", () => {
+  it("WEB always sets 16:9 1920×1080 + H.264 + Good", () => {
     const out = applyPreset(
       "web",
-      spec({
-        aspectRatio: "16:9",
-        resolutionLongSide: 3840,
-        resolution: { w: 3840, h: 2160 },
-      }),
+      spec({ aspectRatio: "9:16", resolutionLongSide: 720, resolution: { w: 405, h: 720 } }),
     );
-    expect(out.resolution).toEqual({ w: 1920, h: 1080 });
+    expect(out.preset).toBe("web");
+    expect(out.aspectRatio).toBe("16:9");
     expect(out.resolutionLongSide).toBe(1920);
+    expect(out.resolution).toEqual({ w: 1920, h: 1080 });
     expect(out.video_codec).toBe("h264");
+    expect(out.quality).toBe("good");
   });
 
-  it("WEB respects the user's 9:16 aspect (long-side 1080 stays under cap)", () => {
+  it("MOBILE always sets 9:16 1080×1920 + H.264 + Low", () => {
     const out = applyPreset(
-      "web",
-      spec({
-        aspectRatio: "9:16",
-        resolutionLongSide: 1080,
-        resolution: { w: 608, h: 1080 },
-      }),
+      "mobile",
+      spec({ aspectRatio: "16:9", resolutionLongSide: 3840, resolution: { w: 3840, h: 2160 } }),
     );
-    // long-side 1080 ≤ 1920 cap → unchanged. Aspect 9:16 → 1080×1920…
-    // wait: long-side is 1080, so dims = 9:16 with long=1080 → 608×1080? no.
-    // 9:16: hRatio > wRatio → long axis is H, w = 1080*9/16 = 607.5 → 606.
-    expect(out.resolutionLongSide).toBe(1080);
-    expect(out.resolution?.h).toBe(1080);
+    expect(out.preset).toBe("mobile");
+    expect(out.aspectRatio).toBe("9:16");
+    expect(out.resolutionLongSide).toBe(1920);
+    expect(out.resolution).toEqual({ w: 1080, h: 1920 });
+    expect(out.video_codec).toBe("h264");
+    expect(out.quality).toBe("low");
   });
 
-  it("ARCHIVE keeps the user's long-side untouched + flips codec to H.265", () => {
+  it("ARCHIVE keeps the user's aspect + dims, flips to H.265 + Pristine", () => {
     const out = applyPreset(
       "archive",
       spec({
-        aspectRatio: "16:9",
-        resolutionLongSide: 3840,
-        resolution: { w: 3840, h: 2160 },
+        aspectRatio: "9:16",
+        resolutionLongSide: 1920,
+        resolution: { w: 1080, h: 1920 },
       }),
     );
-    expect(out.resolution).toEqual({ w: 3840, h: 2160 });
+    expect(out.preset).toBe("archive");
+    expect(out.aspectRatio).toBe("9:16");
+    expect(out.resolution).toEqual({ w: 1080, h: 1920 });
     expect(out.video_codec).toBe("h265");
     expect(out.quality).toBe("pristine");
   });
 
-  it("MOBILE caps long-side at 1920, preserves user's portrait aspect", () => {
-    const out = applyPreset(
-      "mobile",
-      spec({
-        aspectRatio: "9:16",
-        resolutionLongSide: 3840,
-        resolution: { w: 2160, h: 3840 },
-      }),
-    );
-    expect(out.resolutionLongSide).toBe(1920);
-    expect(out.resolution).toEqual({ w: 1080, h: 1920 });
-    expect(out.quality).toBe("low");
+  it("ARCHIVE on a fresh spec falls back to 16:9 4K", () => {
+    const out = applyPreset("archive", spec({}));
+    expect(out.aspectRatio).toBe("16:9");
+    expect(out.resolutionLongSide).toBe(3840);
+    expect(out.resolution).toEqual({ w: 3840, h: 2160 });
   });
 
-  it("MOBILE keeps a small long-side unchanged (under cap)", () => {
-    const out = applyPreset(
-      "mobile",
-      spec({
-        aspectRatio: "16:9",
-        resolutionLongSide: 1280,
-        resolution: { w: 1280, h: 720 },
-      }),
-    );
-    expect(out.resolution).toEqual({ w: 1280, h: 720 });
-  });
-
-  it("custom-aspect dims scale on cap: shrink uniformly, preserving the free ratio", () => {
-    const out = applyPreset(
-      "web",
-      spec({
-        aspectRatio: "custom",
-        resolution: { w: 3000, h: 2000 },
-      }),
-    );
-    // 3000 long-side capped to 1920 → k = 1920/3000 = 0.64
-    expect(out.resolution).toEqual({ w: 1920, h: roundEven(2000 * (1920 / 3000)) });
-  });
-
-  it("CUSTOM only flips the discriminator", () => {
+  it("CUSTOM only flips the discriminator — keeps user-set aspect / dims / codec", () => {
     const out = applyPreset("custom", spec({}));
     expect(out.preset).toBe("custom");
     expect(out.resolution).toBeUndefined();
     expect(out.video_codec).toBeUndefined();
   });
 });
-
-function roundEven(n: number): number {
-  const r = Math.round(n);
-  return r % 2 === 0 ? r : r - 1;
-}
 
 describe("estimateFileSizeBytes", () => {
   it("computes bytes ≈ (videoKbps + audioKbps) × duration / 8", () => {

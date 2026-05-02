@@ -76,22 +76,6 @@ export function resolveResolution(
   return resolution;
 }
 
-/**
- * Cap the long side of a source to `maxLong`, preserving aspect ratio.
- * Always rounds dims to even pixels — most encoders demand it.
- */
-function capLongSide(source: { w: number; h: number }, maxLong: number) {
-  const long = Math.max(source.w, source.h);
-  if (long <= maxLong) {
-    return { w: roundEven(source.w), h: roundEven(source.h) };
-  }
-  const scale = maxLong / long;
-  return {
-    w: roundEven(source.w * scale),
-    h: roundEven(source.h * scale),
-  };
-}
-
 function roundEven(n: number): number {
   const r = Math.round(n);
   return r % 2 === 0 ? r : r - 1;
