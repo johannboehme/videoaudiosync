@@ -39,6 +39,13 @@ export interface PreviewRuntimeOptions {
   dpr?: number;
   /** Initial backbuffer scale (resolution dial). Default 1. */
   initialScale?: number;
+  /** Per-tick frame-budget in ms. When a tick exceeds this, the next
+   *  tick skips its draw to give the main thread breathing room — the
+   *  audio scheduler RAF must keep firing on time even if a single
+   *  preview frame's GPU upload spikes (multi-cam loop wrap on long
+   *  files is the canonical trigger). Default 14ms ≈ 84% of a 60 Hz
+   *  frame. Set to Infinity to disable. */
+  frameBudgetMs?: number;
   /** Test-injection. Defaults to the production factory. */
   createBackendFn?: typeof createBackend;
   /** Test-injection. Defaults to `new VideoElementPool(opts)`. */
@@ -52,11 +59,14 @@ export interface PreviewRuntimeOptions {
   readPlayback?: () => { currentTime: number; isPlaying: boolean };
   /** Test-injection — load an image bitmap from a URL. */
   loadBitmap?: (url: string) => Promise<ImageBitmap>;
+  /** Test-injection — high-resolution clock. Defaults to `performance.now`.
+   *  Used by the frame-budget watchdog. */
+  now?: () => number;
 }
 
 export class PreviewRuntime {
   private opts: Required<
-    Pick<PreviewRuntimeOptions, "dpr" | "initialScale" | "raf" | "cancelRaf" | "readSnapshot" | "readPlayback" | "loadBitmap" | "createBackendFn" | "createPool">
+    Pick<PreviewRuntimeOptions, "dpr" | "initialScale" | "raf" | "cancelRaf" | "readSnapshot" | "readPlayback" | "loadBitmap" | "createBackendFn" | "createPool" | "now" | "frameBudgetMs">
   > &
     PreviewRuntimeOptions;
 
@@ -79,6 +89,20 @@ export class PreviewRuntime {
    *  4K-Multi-Cam mit FX spielbar (und damit als Instrument benutzbar)
    *  auch auf weniger leistungsstarken GPUs. */
   private adaptiveScaler: AdaptiveScaler;
+  /** When the previous tick exceeded the frame budget, skip THIS
+   *  tick's draw. One-shot — cleared every tick. Pool sync still
+   *  runs (cheap) so cam decoders stay aligned. */
+  private skipNextDraw = false;
+  /** Last clip-list reference seen by `tick()`. Used to dirty-flag
+   *  pool reconciliation: when the store's clips array reference is
+   *  unchanged, no clip was added/removed/edited, so `pool.setCams`
+   *  doesn't need to run. Prevents 60Hz heap churn (collectVideoCams
+   *  allocates a fresh VideoCam[] on every call). */
+  private lastReconciledClipsRef: readonly Clip[] | null = null;
+  /** Last cams URL map reference seen by `tick()`. Symmetric to
+   *  `lastReconciledClipsRef` for the runtime-side cams map (which
+   *  changes when the editor receives a "+ Media" event). */
+  private lastReconciledCamsRef: ClipUrlMap | null = null;
 
   constructor(options: PreviewRuntimeOptions) {
     this.cssW = options.cssW;
@@ -97,6 +121,12 @@ export class PreviewRuntime {
       loadBitmap: options.loadBitmap ?? defaultLoadBitmap,
       createBackendFn: options.createBackendFn ?? createBackend,
       createPool: options.createPool ?? ((o) => new VideoElementPool(o)),
+      now:
+        options.now ??
+        (typeof performance !== "undefined"
+          ? () => performance.now()
+          : () => Date.now()),
+      frameBudgetMs: options.frameBudgetMs ?? 14,
     };
   }
 
@@ -113,6 +143,10 @@ export class PreviewRuntime {
         useEditorStore.getState().setClipDisplayDims(id, w, h);
       },
     });
+    // Seed the dirty-flag with the refs the pool was constructed
+    // with so the first tick doesn't redundantly re-reconcile.
+    this.lastReconciledClipsRef = snapshot.clips;
+    this.lastReconciledCamsRef = this.opts.cams;
     const caps = this.computeCaps();
     this.backend = await this.opts.createBackendFn(this.opts.canvas, caps, this.opts.capabilities);
     await this.backend.warmup();
@@ -187,8 +221,23 @@ export class PreviewRuntime {
    *  loop calls this internally. */
   tick(): void {
     if (!this.backend || !this.pool) return;
+    const tickStart = this.opts.now();
     const playback = this.opts.readPlayback();
+    // Pool sync stays in the hot path even on skipped frames — it's
+    // cheap (one float compare per cam) and keeps cam decoders aligned
+    // for when the next non-skipped frame draws.
     this.pool.syncAll(playback.currentTime, playback.isPlaying);
+
+    // Frame-budget watchdog: if the previous tick blew the budget, drop
+    // this tick's draw. One-shot. Audio is on a separate thread so it
+    // doesn't care about preview frame drops; the user's stated
+    // priority (audio sacred, video can compensate) is exactly what
+    // this implements.
+    if (this.skipNextDraw) {
+      this.skipNextDraw = false;
+      this.recordTickLatency(this.opts.now() - tickStart);
+      return;
+    }
 
     const snapshot = this.opts.readSnapshot();
     const descriptor = buildPreviewFrameDescriptor(snapshot, playback.currentTime);
@@ -208,14 +257,25 @@ export class PreviewRuntime {
       }
     }
 
-    // Reconcile pool to current cam list — handles user added/removed cams.
-    this.pool.setCams(collectVideoCams(snapshot.clips, this.opts.cams));
+    // Reconcile pool only when the inputs actually changed. Both refs
+    // are stable across most ticks (clips changes on store mutations,
+    // cams changes on `+Media` events), so reference equality is
+    // enough — and avoids the per-frame VideoCam[] allocation that
+    // collectVideoCams does inside.
+    if (
+      snapshot.clips !== this.lastReconciledClipsRef ||
+      this.opts.cams !== this.lastReconciledCamsRef
+    ) {
+      this.pool.setCams(collectVideoCams(snapshot.clips, this.opts.cams));
+      this.lastReconciledClipsRef = snapshot.clips;
+      this.lastReconciledCamsRef = this.opts.cams;
+    }
 
     // Time the actual GPU/CPU work so the adaptive scaler sees real
     // backend latency. Excludes the bookkeeping above which is cheap.
-    const t0 = performance.now();
+    const t0 = this.opts.now();
     this.backend.drawFrame(descriptor, sources);
-    const drawMs = performance.now() - t0;
+    const drawMs = this.opts.now() - t0;
 
     // Feed the adaptive scaler. Only react when the backend itself is
     // straining — visualizers/overlays/store reads are out of scope.
@@ -224,6 +284,14 @@ export class PreviewRuntime {
     if (status.changed) {
       this.scale = status.scale;
       if (this.backend) this.backend.resize(this.computeCaps());
+    }
+
+    this.recordTickLatency(this.opts.now() - tickStart);
+  }
+
+  private recordTickLatency(tickMs: number): void {
+    if (tickMs > this.opts.frameBudgetMs) {
+      this.skipNextDraw = true;
     }
   }
 

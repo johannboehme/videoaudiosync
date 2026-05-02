@@ -3,6 +3,8 @@ import {
   computeAudioStartOffset,
   clampLoopRegion,
   shouldRescheduleOnTick,
+  loopWrapTime,
+  shouldArmCrossfade,
 } from "./OffsetScheduler";
 
 describe("computeAudioStartOffset", () => {
@@ -153,5 +155,133 @@ describe("shouldRescheduleOnTick", () => {
         }),
       ).toBe(true);
     });
+  });
+});
+
+describe("loopWrapTime", () => {
+  test("returns loop.end when no pending wrap is set", () => {
+    expect(loopWrapTime({ start: 1, end: 2 }, null)).toBe(2);
+  });
+
+  test("returns pendingWrapAt when set (OP-1 deferred shift)", () => {
+    // Loop just got shifted to [2,4]; old loop.end was 2 → still wrap at 2.
+    expect(loopWrapTime({ start: 2, end: 4 }, 2)).toBe(2);
+  });
+
+  test("returns null when no loop", () => {
+    expect(loopWrapTime(null, null)).toBeNull();
+    expect(loopWrapTime(null, 5)).toBeNull();
+  });
+
+  test("undefined pendingWrap behaves like null", () => {
+    expect(loopWrapTime({ start: 1, end: 2 }, undefined)).toBe(2);
+  });
+});
+
+/*
+ * shouldArmCrossfade — drives the audio-master ping-pong.
+ *
+ * The semantics: while playing inside a loop, the active <audio>
+ * approaches loop.end (or pendingWrapAt). Slightly before that, we want
+ * to ARM a sample-accurate crossfade scheduled in the AudioContext —
+ * the crossfade itself fires later, on the audio render thread, with no
+ * main-thread involvement.
+ *
+ * "Arm" means: schedule the crossfade and remember we did so. The
+ * helper says when to arm, given the lead time and whether we already
+ * armed for this wrap. The hook owns the "alreadyScheduled" flag and
+ * resets it after the crossfade has fired (or the loop changed).
+ */
+describe("shouldArmCrossfade", () => {
+  test("does not arm while still far from wrap point", () => {
+    expect(
+      shouldArmCrossfade({
+        masterT: 1.0,
+        loop: { start: 0, end: 5 },
+        pendingWrapAt: null,
+        leadTimeS: 0.05,
+        alreadyArmed: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("arms inside the lead-time window before loop.end", () => {
+    // 5.0 - 0.04 = 4.96; lead 0.05 → 4.95 ≤ 4.96 ≤ 5.0 → arm.
+    expect(
+      shouldArmCrossfade({
+        masterT: 4.96,
+        loop: { start: 0, end: 5 },
+        pendingWrapAt: null,
+        leadTimeS: 0.05,
+        alreadyArmed: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not re-arm once armed", () => {
+    expect(
+      shouldArmCrossfade({
+        masterT: 4.97,
+        loop: { start: 0, end: 5 },
+        pendingWrapAt: null,
+        leadTimeS: 0.05,
+        alreadyArmed: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("arms inside the lead-time window before pendingWrapAt (OP-1 shift)", () => {
+    // Loop shifted to [2,4]; pendingWrapAt = old loop.end = 2.
+    // masterT=1.97, lead=0.05 → 1.95 ≤ 1.97 ≤ 2.0 → arm.
+    expect(
+      shouldArmCrossfade({
+        masterT: 1.97,
+        loop: { start: 2, end: 4 },
+        pendingWrapAt: 2,
+        leadTimeS: 0.05,
+        alreadyArmed: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("returns false when no loop is set", () => {
+    expect(
+      shouldArmCrossfade({
+        masterT: 99,
+        loop: null,
+        pendingWrapAt: null,
+        leadTimeS: 0.05,
+        alreadyArmed: false,
+      }),
+    ).toBe(false);
+  });
+
+  // Belt and suspenders: if RAF stalls and we miss the lead-window, the
+  // helper still arms once we've crossed wrap (the hook then schedules
+  // an immediate crossfade rather than dropping the wrap entirely).
+  test("arms even when masterT has crossed the wrap point (caught up after stall)", () => {
+    expect(
+      shouldArmCrossfade({
+        masterT: 5.02,
+        loop: { start: 0, end: 5 },
+        pendingWrapAt: null,
+        leadTimeS: 0.05,
+        alreadyArmed: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("arms immediately when user scrubbed before loop.start", () => {
+    // No pendingWrap; user scrubbed to 0.5 with loop [1, 3]. We want to
+    // restart the loop ASAP — the same "arm now" intent as a wrap.
+    expect(
+      shouldArmCrossfade({
+        masterT: 0.5,
+        loop: { start: 1, end: 3 },
+        pendingWrapAt: null,
+        leadTimeS: 0.05,
+        alreadyArmed: false,
+      }),
+    ).toBe(true);
   });
 });

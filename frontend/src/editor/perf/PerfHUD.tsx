@@ -17,6 +17,7 @@ import {
   type PerfEventKind,
 } from "./marks";
 import { tokens } from "../design-tokens";
+import { useEditorStore } from "../store";
 
 const RING_SIZE = 50;
 const REFRESH_MS = 250;
@@ -109,6 +110,10 @@ export function PerfHUD(): JSX.Element | null {
     // Stash buckets on the window for ad-hoc inspection / agents.
     (window as unknown as { __perfBuckets?: Map<PerfEventKind, MetricBucket> })
       .__perfBuckets = buckets;
+    // Expose the store so bench scripts can drive playback / loop /
+    // seek without going through the timeline UI. Strictly perf-mode.
+    (window as unknown as { __editorStore?: typeof useEditorStore })
+      .__editorStore = useEditorStore;
 
     const interval = window.setInterval(() => {
       // Trigger render. Reading buckets in the render path is fine since

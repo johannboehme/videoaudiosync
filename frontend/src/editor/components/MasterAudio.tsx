@@ -1,11 +1,17 @@
 /**
- * Owns the master `<audio>` element. Drives the editor's master clock via
- * `useAudioMaster` — every cam in the preview is a passive slave of the
- * store's `playback.currentTime`, which this component keeps mirrored to
- * the audio element's currentTime.
+ * Owns the master `<audio>` elements. Drives the editor's master clock
+ * via `useAudioMaster` — every cam in the preview is a passive slave
+ * of the store's `playback.currentTime`.
  *
- * Visually invisible (display:none). The element is only here for the
- * decode + playback pipeline; the user listens to the resulting audio.
+ * Two `<audio>` elements with the same `src` are mounted: the hook
+ * uses one as the audible "active" side and the other as a hot-spare
+ * pre-parked at `loop.start`. At loop-wrap the WebAudio gain ramps
+ * crossfade between them — gapless, sample-accurate on the audio
+ * render thread. See `useAudioMaster.ts` for the full design.
+ *
+ * Visually invisible (display:none). Both elements are only here for
+ * the decode + playback pipeline; the user listens to the WebAudio
+ * graph's masterGain → destination output.
  */
 import { useRef } from "react";
 import { useAudioMaster } from "../useAudioMaster";
@@ -15,16 +21,25 @@ interface Props {
 }
 
 export function MasterAudio({ audioUrl }: Props) {
-  const ref = useRef<HTMLAudioElement>(null);
-  const handle = useAudioMaster(ref, audioUrl);
+  const refA = useRef<HTMLAudioElement>(null);
+  const refB = useRef<HTMLAudioElement>(null);
+  const handle = useAudioMaster({ a: refA, b: refB }, audioUrl);
   return (
     <>
       <audio
-        ref={ref}
+        ref={refA}
         src={audioUrl}
         preload="auto"
         crossOrigin="anonymous"
         data-testid="master-audio"
+        style={{ display: "none" }}
+      />
+      <audio
+        ref={refB}
+        src={audioUrl}
+        preload="auto"
+        crossOrigin="anonymous"
+        data-testid="master-audio-b"
         style={{ display: "none" }}
       />
       {!handle.isReady && (

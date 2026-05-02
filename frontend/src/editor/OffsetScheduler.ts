@@ -71,6 +71,11 @@ export function clampLoopRegion(
  * the OP-1 style loop-shift, where the loop region jumps ahead but the
  * playhead must keep playing in the now-out-of-loop zone until it reaches
  * the *old* loop end.
+ *
+ * Kept as the legacy "wrap now" predicate. The new audio-master uses
+ * `shouldArmCrossfade` to schedule a sample-accurate AudioContext
+ * crossfade slightly *before* the wrap point — eliminating the click
+ * that `currentTime`-seek-based looping can't avoid.
  */
 export function shouldRescheduleOnTick({
   videoTime,
@@ -84,4 +89,56 @@ export function shouldRescheduleOnTick({
   if (!loop) return false;
   if (pendingWrapAt != null) return videoTime >= pendingWrapAt;
   return videoTime >= loop.end || videoTime < loop.start;
+}
+
+/**
+ * Master-time at which the audio loop should wrap. Returns
+ * `pendingWrapAt` when set (OP-1 deferred shift, wrap at OLD loop.end),
+ * otherwise `loop.end`. `null` when no loop is configured.
+ */
+export function loopWrapTime(
+  loop: LoopRegion | null,
+  pendingWrapAt: number | null | undefined,
+): number | null {
+  if (!loop) return null;
+  return pendingWrapAt ?? loop.end;
+}
+
+/**
+ * Should the audio master arm a crossfade now? Used per RAF tick.
+ *
+ * "Arm" = schedule a sample-accurate gain crossfade on the AudioContext
+ * a few tens of ms before the wrap point. The crossfade itself fires
+ * later on the audio render thread; arming is the only main-thread
+ * action involved in a loop wrap.
+ *
+ * Returns true when the playhead is within `leadTimeS` of the wrap
+ * point (or has already crossed it after a RAF stall), AND we haven't
+ * already armed for this wrap. Also returns true when the playhead
+ * sits before `loop.start` with no pending wrap — a user-scrub-back
+ * that should restart the loop ASAP.
+ */
+export function shouldArmCrossfade({
+  masterT,
+  loop,
+  pendingWrapAt,
+  leadTimeS,
+  alreadyArmed,
+}: {
+  masterT: number;
+  loop: LoopRegion | null;
+  pendingWrapAt?: number | null;
+  leadTimeS: number;
+  alreadyArmed: boolean;
+}): boolean {
+  if (!loop) return false;
+  if (alreadyArmed) return false;
+
+  // User scrubbed before loop.start while no wrap is pending → arm
+  // immediately so the loop restarts at the next AudioContext-scheduled
+  // moment.
+  if (pendingWrapAt == null && masterT < loop.start) return true;
+
+  const wrapT = pendingWrapAt ?? loop.end;
+  return masterT >= wrapT - leadTimeS;
 }

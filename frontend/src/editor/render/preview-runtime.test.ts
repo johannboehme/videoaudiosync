@@ -450,6 +450,190 @@ describe("PreviewRuntime — dispose", () => {
   });
 });
 
+describe("PreviewRuntime — pool reconciliation dirty-flag", () => {
+  // pool.setCams reconciles slots (Set membership + per-slot updates).
+  // It allocates a new VideoCam[] every call. On a quiet timeline that
+  // never changes, calling it 60×/sec is pure GC churn. The runtime
+  // should only re-reconcile when the clips list reference OR the cams
+  // URL map reference actually changes.
+
+  it("does NOT call pool.setCams when neither clips nor cams map changed", async () => {
+    const backend = makeBackend();
+    const pool = makePool();
+    const setCamsSpy = (pool as unknown as { setCams: ReturnType<typeof vi.fn> })
+      .setCams;
+    const clips: Clip[] = [videoClip("a")];
+    const snap: { value: EditorStoreSnapshot } = { value: snapshot({ clips }) };
+    const { rt } = makeRuntime({
+      snap: snap.value,
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+    });
+    // Force the test runtime to read the same snapshot ref each tick
+    // (the makeRuntime helper captures opts.snap at construction).
+    rt["opts"].readSnapshot = () => snap.value;
+    await rt.init();
+    setCamsSpy.mockClear();
+    rt.tick();
+    rt.tick();
+    rt.tick();
+    expect(setCamsSpy).not.toHaveBeenCalled();
+  });
+
+  it("calls pool.setCams once when the clips list reference changes", async () => {
+    const backend = makeBackend();
+    const pool = makePool();
+    const setCamsSpy = (pool as unknown as { setCams: ReturnType<typeof vi.fn> })
+      .setCams;
+    const snap: { value: EditorStoreSnapshot } = {
+      value: snapshot({ clips: [videoClip("a")] }),
+    };
+    const { rt } = makeRuntime({
+      snap: snap.value,
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+    });
+    rt["opts"].readSnapshot = () => snap.value;
+    await rt.init();
+    setCamsSpy.mockClear();
+    rt.tick();
+    // New clips array reference (e.g. user added a clip).
+    snap.value = snapshot({ clips: [videoClip("a"), videoClip("b")] });
+    rt.tick();
+    rt.tick(); // unchanged after the propagation tick
+    expect(setCamsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls pool.setCams once when the cams URL map reference changes", async () => {
+    const backend = makeBackend();
+    const pool = makePool();
+    const setCamsSpy = (pool as unknown as { setCams: ReturnType<typeof vi.fn> })
+      .setCams;
+    const snap: { value: EditorStoreSnapshot } = {
+      value: snapshot({ clips: [videoClip("a")] }),
+    };
+    const { rt } = makeRuntime({
+      snap: snap.value,
+      cams: { a: { videoUrl: "a.mp4" } },
+      backend,
+      pool,
+    });
+    rt["opts"].readSnapshot = () => snap.value;
+    await rt.init();
+    setCamsSpy.mockClear();
+    rt.tick();
+    rt.setCams({ a: { videoUrl: "a.mp4" }, b: { videoUrl: "b.mp4" } });
+    rt.tick();
+    rt.tick();
+    expect(setCamsSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PreviewRuntime — frame-budget watchdog", () => {
+  /** Helper: build a runtime with an injected clock so we can simulate
+   *  ticks of arbitrary duration. */
+  function makeWithClock(opts: {
+    backend?: MockBackend;
+    pool?: VideoElementPool;
+    frameBudgetMs?: number;
+    /** Sequence of (tick-start, intermediate, tick-end) timestamps the
+     *  injected `now()` returns in order. */
+    nowSequence?: number[];
+  }) {
+    const backend = opts.backend ?? makeBackend();
+    const pool = opts.pool ?? makePool();
+    let nowIdx = 0;
+    const nowSeq = opts.nowSequence ?? [];
+    const canvas = document.createElement("canvas");
+    const rt = new PreviewRuntime({
+      canvas,
+      cams: {},
+      capabilities: { webgl2: false, webgpu: false },
+      cssW: 100,
+      cssH: 50,
+      dpr: 1,
+      initialScale: 1,
+      frameBudgetMs: opts.frameBudgetMs ?? 14,
+      createBackendFn: vi.fn(async () => backend),
+      createPool: () => pool,
+      raf: () => 0,
+      cancelRaf: () => undefined,
+      readSnapshot: () => snapshot(),
+      readPlayback: () => ({ currentTime: 0, isPlaying: false }),
+      now: () => {
+        const v = nowSeq[Math.min(nowIdx, nowSeq.length - 1)] ?? 0;
+        nowIdx++;
+        return v;
+      },
+    });
+    return { rt, backend, pool, advanceTick: () => rt.tick() };
+  }
+
+  it("draws normally when ticks stay under the budget", async () => {
+    // Each tick reads now() at: tickStart, drawStart, drawEnd, tickEnd.
+    // 4 reads/tick → 8 entries for 2 ticks. Both ticks: 5 ms total.
+    const seq = [0, 1, 4, 5, 100, 101, 104, 105];
+    const { rt, backend } = makeWithClock({ nowSequence: seq, frameBudgetMs: 14 });
+    await rt.init();
+    rt.tick();
+    rt.tick();
+    expect(backend.drawFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the next draw after a tick that exceeded the budget", async () => {
+    // Tick 1: 30ms total → blows 14ms budget → arms the skip
+    // Tick 2: must skip drawFrame
+    // Tick 3: short again → resumes drawing
+    // 4 now()-reads per non-skipped tick (start, drawStart, drawEnd, tickEnd)
+    // 2 now()-reads per skipped tick (start, tickEnd).
+    const seq = [
+      0, 1, 30, 31, // tick 1: 31ms
+      100, 102, // tick 2: skipped — no drawFrame timestamps
+      200, 201, 204, 205, // tick 3: 5ms
+    ];
+    const { rt, backend } = makeWithClock({ nowSequence: seq, frameBudgetMs: 14 });
+    await rt.init();
+    rt.tick(); // overshoots — schedules skip
+    expect(backend.drawFrame).toHaveBeenCalledTimes(1);
+    rt.tick(); // skip
+    expect(backend.drawFrame).toHaveBeenCalledTimes(1);
+    rt.tick(); // back to drawing
+    expect(backend.drawFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it("still syncs the video pool on a skipped tick (cam decoders stay aligned)", async () => {
+    const seq = [
+      0, 1, 30, 31, // tick 1
+      100, 102, // tick 2 (skipped)
+    ];
+    const pool = makePool();
+    const { rt } = makeWithClock({ nowSequence: seq, pool, frameBudgetMs: 14 });
+    await rt.init();
+    rt.tick(); // overshoots
+    rt.tick(); // skipped
+    const syncSpy = (pool as unknown as { syncAll: ReturnType<typeof vi.fn> }).syncAll;
+    // pool.syncAll fired on both ticks (init does not call it).
+    expect(syncSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("disabling the watchdog (frameBudgetMs=Infinity) never skips", async () => {
+    const seq = [
+      0, 1, 100, 101, // 101ms — would normally trigger skip
+      200, 201, 300, 301,
+    ];
+    const { rt, backend } = makeWithClock({
+      nowSequence: seq,
+      frameBudgetMs: Infinity,
+    });
+    await rt.init();
+    rt.tick();
+    rt.tick();
+    expect(backend.drawFrame).toHaveBeenCalledTimes(2);
+  });
+});
+
 // silence the "unused variable" lint for the imported VideoCam helper.
 void ((): VideoCam | null => null);
 void ((_: VideoElementPoolOptions) => null);
