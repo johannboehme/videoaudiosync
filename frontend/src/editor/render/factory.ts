@@ -1,12 +1,17 @@
 /**
  * Backend factory — picks the best available CompositorBackend for the
- * supplied capabilities. Mirrors the `createFxRenderer` factory pattern
- * in `editor/fx/render.ts`: try → catch → warn → fall through. Never
- * throws — the Canvas2DBackend always succeeds (it's the floor).
+ * supplied capabilities. Strict ladder: WebGPU → WebGL2 → Canvas2D.
  *
- * Order: WebGPU → WebGL2 → Canvas2D. The WebGPU step is gated by
- * `EXPERIMENTAL_WEBGPU` (off by default) since the implementation is a
- * stub today. When a real WebGPU backend lands, flip the flag.
+ * `capabilities.webgpu === true` is treated as a hard guarantee that
+ * the WebGPU backend will succeed. The caller (`probeWebGPU()` in
+ * `local/capabilities.ts`) is responsible for ensuring this — a
+ * `requestAdapter() → null` host must report `webgpu: false` so we
+ * never reach the WebGPU branch on a platform that can't run it.
+ *
+ * WebGL2 keeps a try/catch fallback because jsdom's
+ * `getContext('webgl2')` returns null even when the host probe (in a
+ * real browser) said it was available — that branch handles unit
+ * tests that exercise the factory under jsdom.
  */
 import { Canvas2DBackend } from "./canvas2d-backend";
 import { WebGL2Backend } from "./webgl2-backend";
@@ -18,11 +23,6 @@ export interface BackendCapabilities {
   webgpu: boolean;
 }
 
-/** Set true to attempt the WebGPU backend before WebGL2. Default off
- *  while the WebGPU backend is a stub — flipping it without a real
- *  implementation would only burn a try/catch per session. */
-export const EXPERIMENTAL_WEBGPU = false;
-
 export type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
 
 export async function createBackend(
@@ -30,17 +30,10 @@ export async function createBackend(
   caps: BackendCaps,
   capabilities: BackendCapabilities,
 ): Promise<CompositorBackend> {
-  if (EXPERIMENTAL_WEBGPU && capabilities.webgpu) {
-    try {
-      const b = new WebGPUBackend();
-      await b.init(canvas, caps);
-      return b;
-    } catch (err) {
-      console.warn(
-        "[compositor] WebGPU init failed, falling back to WebGL2:",
-        err,
-      );
-    }
+  if (capabilities.webgpu) {
+    const b = new WebGPUBackend();
+    await b.init(canvas, caps);
+    return b;
   }
   if (capabilities.webgl2) {
     try {

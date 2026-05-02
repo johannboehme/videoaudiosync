@@ -43,12 +43,26 @@ describe("createBackend factory — fallback ladder", () => {
     expect(b.id).toBe("canvas2d");
   });
 
-  it("never tries WebGPU when EXPERIMENTAL_WEBGPU is false (default)", async () => {
-    // Spy on WebGPUBackend.init — it must NOT be called even with caps.webgpu.
-    const initSpy = vi.spyOn(WebGPUBackend.prototype, "init");
-    await createBackend(mockCanvas(), { pixelW: 1, pixelH: 1 }, CAPS_BOTH);
-    expect(initSpy).not.toHaveBeenCalled();
+  it("attempts WebGPU first when caps.webgpu === true", async () => {
+    // Spy on WebGPUBackend.init — caps.webgpu being true is a hard
+    // guarantee from the platform probe, so the factory MUST call init.
+    // Stub init to resolve so the pipeline doesn't try to allocate a
+    // real GPU device under jsdom.
+    const initSpy = vi
+      .spyOn(WebGPUBackend.prototype, "init")
+      .mockImplementation(async () => undefined);
+    const disposeSpy = vi
+      .spyOn(WebGPUBackend.prototype, "dispose")
+      .mockImplementation(() => undefined);
+    const b = await createBackend(
+      mockCanvas(),
+      { pixelW: 1, pixelH: 1 },
+      CAPS_BOTH,
+    );
+    expect(initSpy).toHaveBeenCalledOnce();
+    expect(b.id).toBe("webgpu");
     initSpy.mockRestore();
+    disposeSpy.mockRestore();
   });
 
   it("Canvas2DBackend is always reachable as the floor", async () => {
@@ -62,21 +76,4 @@ describe("createBackend factory — fallback ladder", () => {
   });
 });
 
-describe("WebGPUBackend stub", () => {
-  it("init() rejects with BackendError", async () => {
-    const b = new WebGPUBackend();
-    await expect(b.init(mockCanvas(), { pixelW: 1, pixelH: 1 })).rejects.toThrow(
-      /not implemented/,
-    );
-  });
-
-  it("warmup is a no-op", async () => {
-    const b = new WebGPUBackend();
-    await expect(b.warmup()).resolves.toBeUndefined();
-  });
-
-  it("dispose is safe to call (no init required)", () => {
-    const b = new WebGPUBackend();
-    expect(() => b.dispose()).not.toThrow();
-  });
-});
+// (WebGPUBackend unit tests live in webgpu-backend.test.ts.)

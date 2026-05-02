@@ -77,10 +77,93 @@ export function detectCapabilities(): Capabilities {
     videoEncoder: typeof w.VideoEncoder !== "undefined",
     fileSystemAccess: typeof w.showSaveFilePicker === "function",
     webgl2: detectWebGL2(),
-    webgpu:
-      typeof navigator !== "undefined" &&
-      "gpu" in (navigator as unknown as Record<string, unknown>),
+    // webgpu defaults to false here — `"gpu" in navigator` is too weak
+    // to gate the renderer on (Linux Chrome has navigator.gpu but
+    // requestAdapter() can return null on hosts without a compatible
+    // GPU). Use `probeWebGPU()` async to get a real value, then merge
+    // it into the Capabilities returned from this function.
+    webgpu: false,
   };
+}
+
+/** Module-singleton cache for the async WebGPU probe. Resolves once
+ *  per process — `requestAdapter` is cheap on subsequent calls but
+ *  caching avoids re-creating the promise + dropping unused adapters. */
+let webgpuProbeCache: Promise<boolean> | null = null;
+
+/**
+ * Real WebGPU probe: actually calls `navigator.gpu.requestAdapter()`.
+ * This is the only way to know if the platform has a usable adapter
+ * (Linux Chrome / FF can have `navigator.gpu` but no compatible
+ * adapter). Cached — call as many times as you like.
+ *
+ * Usage at app boot:
+ *   const caps = detectCapabilities();
+ *   caps.webgpu = await probeWebGPU();
+ *   // … pass `caps` to consumers (compositor, factory, etc.)
+ */
+export function probeWebGPU(): Promise<boolean> {
+  if (webgpuProbeCache) return webgpuProbeCache;
+  webgpuProbeCache = (async () => {
+    if (typeof navigator === "undefined") return false;
+    const nav = navigator as Navigator & { gpu?: GPU };
+    if (!nav.gpu) return false;
+    try {
+      const adapter = await nav.gpu.requestAdapter();
+      return adapter != null;
+    } catch {
+      return false;
+    }
+  })();
+  return webgpuProbeCache;
+}
+
+/** Test-only: clear the WebGPU probe cache. Used so a test that
+ *  monkey-patches `navigator.gpu` can re-probe without bleeding cache
+ *  state into the next test. */
+export function _resetWebGPUProbeForTest(): void {
+  webgpuProbeCache = null;
+  _capabilitiesSingleton = null;
+}
+
+// ---- Boot-singleton that merges sync + async probes ------------------
+//
+// Render-Konsumenten (PreviewRuntime, Compositor.tsx) brauchen
+// `caps.webgpu` zur Mount-Zeit synchron. Wir caching daher das
+// async-merged Resultat in einem Module-Singleton und erwarten dass
+// der App-Boot `initCapabilities()` einmal aufruft, bevor der erste
+// Render-Konsument mountet.
+
+let _capabilitiesSingleton: Capabilities | null = null;
+
+/**
+ * Sync detect + async probeWebGPU, mergen das Resultat, und cachen es
+ * für synchrone `getCapabilities()`-Aufrufe. Mehrfacher Aufruf ist OK
+ * — gibt das gecachte Resultat (oder die laufende Promise im Konflikt-
+ * fall) zurück. Boot-Pfad: einmal in App.tsx awaiten.
+ */
+export async function initCapabilities(): Promise<Capabilities> {
+  if (_capabilitiesSingleton) return _capabilitiesSingleton;
+  const sync = detectCapabilities();
+  const webgpu = await probeWebGPU();
+  _capabilitiesSingleton = { ...sync, webgpu };
+  return _capabilitiesSingleton;
+}
+
+/**
+ * Synchroner Lookup. Returns das initialisierte Singleton wenn
+ * `initCapabilities()` schon resolved hat; sonst ein sync-detect
+ * (mit `webgpu: false` weil noch nicht geprobed). Compositor.tsx /
+ * PreviewRuntime callen das.
+ *
+ * Race-Condition-Behandlung: wenn ein Konsument vor dem Boot-Probe
+ * mountet, sieht er webgpu=false → fällt auf WebGL2 zurück. Bei
+ * Re-Mount nach erfolgreichem Probe wird WebGPU benutzt. Akzeptabel
+ * weil App.tsx alle Render-Pfade hinter einem `ready`-State gatet
+ * der initCapabilities() awaitet.
+ */
+export function getCapabilities(): Capabilities {
+  return _capabilitiesSingleton ?? detectCapabilities();
 }
 
 /** Probe a throwaway canvas for a WebGL2 context. The canvas is

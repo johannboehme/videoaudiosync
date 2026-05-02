@@ -8,6 +8,7 @@
 import type {
   CanvasLikeContext,
   WebGL2DrawContext,
+  WebGPUDrawContext,
 } from "./renderer-context";
 import type { ADSREnvelope } from "./envelope";
 import type { FxKind, FxParamDef, PunchFx } from "./types";
@@ -66,6 +67,17 @@ export interface FxDefinition {
    *  `ctx.bindSourceTexture()` and sampled as `u_source` in the shader. */
   drawWebGL2(
     ctx: WebGL2DrawContext,
+    fx: PunchFx,
+    w: number,
+    h: number,
+    t: number,
+  ): void;
+
+  /** WebGPU renderer. Same parameters and contract as `drawWebGL2`,
+   *  driving a `WebGPUDrawContext` instead. Required: every FxKind
+   *  must ship a WGSL implementation. */
+  drawWebGPU(
+    ctx: WebGPUDrawContext,
     fx: PunchFx,
     w: number,
     h: number,
@@ -159,6 +171,16 @@ const VIGNETTE: FxDefinition = {
     ctx.useProgram("vignette");
     ctx.setUniform1f("u_intensity", intensity);
     ctx.setUniform1f("u_falloff", falloff);
+    ctx.drawFullscreenQuad();
+  },
+  drawWebGPU(ctx, fx) {
+    const { intensity, falloff } = vignetteParams(fx);
+    ctx.setBlendMode("over");
+    ctx.useProgram("vignette");
+    // Note: WebGPU uniform field names match the WGSL struct (no
+    // `u_` prefix), unlike the WebGL2 path which prefixes its globals.
+    ctx.setUniform1f("intensity", intensity);
+    ctx.setUniform1f("falloff", falloff);
     ctx.drawFullscreenQuad();
   },
   // Vignette is a pure overlay — its alpha IS the intensity, so scaling
@@ -358,6 +380,19 @@ const WEAR: FxDefinition = {
     ctx.setUniform2f("u_texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
     ctx.drawFullscreenQuad();
   },
+  drawWebGPU(ctx, fx, w, h, t) {
+    const { decay, drift } = wearParams(fx);
+    const period = bipolarPeriodS(drift);
+    const driftPhase = isFinite(period) ? lfoPhase(t, fx.inS, period) : -1;
+    ctx.setBlendMode("replace");
+    ctx.useProgram("wear");
+    ctx.bindSourceTexture();
+    ctx.setUniform1f("decay", decay);
+    ctx.setUniform1f("driftPhase", driftPhase);
+    ctx.setUniform1f("t", t);
+    ctx.setUniform2f("texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
+    ctx.drawFullscreenQuad();
+  },
   // Wear's master amount is `decay` — every component (Y/C bleed,
   // tracking-bar visibility, wobble depth, grain density, dropouts,
   // tint) scales internally with it. Drift (LFO timing) keeps its
@@ -416,6 +451,17 @@ const RGB: FxDefinition = {
     ctx.bindSourceTexture("u_source");
     ctx.setUniform1f("u_split", split);
     ctx.setUniform1f("u_angle", angle);
+    ctx.drawFullscreenQuad();
+  },
+  drawWebGPU(ctx, fx) {
+    const p = fx.params ?? {};
+    const split = clamp01(p.split ?? RGB_DEFAULTS.split);
+    const angle = clamp01(p.angle ?? RGB_DEFAULTS.angle);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("rgb");
+    ctx.bindSourceTexture();
+    ctx.setUniform1f("split", split);
+    ctx.setUniform1f("angle", angle);
     ctx.drawFullscreenQuad();
   },
   // RGB-split's "amount" is the channel-offset distance. At wetness=0
@@ -522,6 +568,19 @@ const ZOOM: FxDefinition = {
     ctx.setUniform1f("u_phase", phase);
     ctx.drawFullscreenQuad();
   },
+  drawWebGPU(ctx, fx, _w, _h, t) {
+    const p = fx.params ?? {};
+    const punch = clamp01(p.punch ?? ZOOM_DEFAULTS.punch);
+    const rate = clamp01(p.rate ?? ZOOM_DEFAULTS.rate);
+    const period = bipolarPeriodS(rate);
+    const phase = lfoPhase(t, fx.inS, period);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("zoom");
+    ctx.bindSourceTexture();
+    ctx.setUniform1f("punch", punch);
+    ctx.setUniform1f("phase", phase);
+    ctx.drawFullscreenQuad();
+  },
   // Zoom is a displacement effect — alpha-blending source over zoomed
   // would ghost. Scale `punch` (the pulse magnitude) linearly with the
   // envelope's wetness so each pulse's amplitude tracks the envelope
@@ -601,6 +660,18 @@ const UV: FxDefinition = {
     ctx.setUniform2f("u_texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
     ctx.drawFullscreenQuad();
   },
+  drawWebGPU(ctx, fx, w, h) {
+    const p = fx.params ?? {};
+    const glow = clamp01(p.glow ?? UV_DEFAULTS.glow);
+    const tint = clamp01(p.tint ?? UV_DEFAULTS.tint);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("uv");
+    ctx.bindSourceTexture();
+    ctx.setUniform1f("glow", glow);
+    ctx.setUniform1f("tint", tint);
+    ctx.setUniform2f("texel", w > 0 ? 1 / w : 0, h > 0 ? 1 / h : 0);
+    ctx.drawFullscreenQuad();
+  },
   // UV's `glow` is the intensity (bloom strength). `tint` is a colour
   // selector — scaling it shifts the hue (tint=0.4 vs 0.2 are different
   // colours, not different brightnesses), so a wetness ramp on tint
@@ -669,6 +740,20 @@ const ECHO: FxDefinition = {
     ctx.setUniform1f("u_trail", trail);
     ctx.setUniform1f("u_mix", mix);
     ctx.setUniform1f("u_phase", phase);
+    ctx.drawFullscreenQuad();
+  },
+  drawWebGPU(ctx, fx, _w, _h, t) {
+    const p = fx.params ?? {};
+    const trail = clamp01(p.trail ?? ECHO_DEFAULTS.trail);
+    const mix = clamp01(p.mix ?? ECHO_DEFAULTS.mix);
+    const period = bipolarPeriodS(trail);
+    const phase = lfoPhase(t, fx.inS, period);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("echo");
+    ctx.bindSourceTexture();
+    ctx.setUniform1f("trail", trail);
+    ctx.setUniform1f("mix", mix);
+    ctx.setUniform1f("phase", phase);
     ctx.drawFullscreenQuad();
   },
   // Echo's `mix` is its wet/dry — at mix=0 the additive trails vanish
@@ -777,6 +862,21 @@ const TAPE: FxDefinition = {
     ctx.bindSourceTexture("u_source");
     ctx.setUniform1f("u_warp", warp);
     ctx.setUniform1f("u_phase", phase);
+    ctx.drawFullscreenQuad();
+  },
+  drawWebGPU(ctx, fx, _w, _h, t) {
+    const p = fx.params ?? {};
+    const bend = clamp01(p.bend ?? TAPE_DEFAULTS.bend);
+    const warp = clamp01(p.warp ?? TAPE_DEFAULTS.warp);
+    const period = bipolarPeriodS(bend);
+    const oneShot = oneShotPhase(t, fx.inS, period);
+    const phaseFloor = clamp01(p.phaseFloor ?? 0);
+    const phase = Math.max(oneShot, phaseFloor);
+    ctx.setBlendMode("replace");
+    ctx.useProgram("tape");
+    ctx.bindSourceTexture();
+    ctx.setUniform1f("warp", warp);
+    ctx.setUniform1f("phase", phase);
     ctx.drawFullscreenQuad();
   },
   // Tape's visual stop is driven by `warp` (chroma + darken depth).

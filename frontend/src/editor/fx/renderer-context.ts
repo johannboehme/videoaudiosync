@@ -39,6 +39,38 @@ export interface WebGL2DrawContext {
   drawFullscreenQuad(): void;
 }
 
+/** WebGPU-Pendant zu WebGL2DrawContext. Bewahrt strukturparallele
+ *  Catalog-Aufrufe (`useProgram` / `setUniform*` / `bindSourceTexture` /
+ *  `setBlendMode` / `drawFullscreenQuad`) damit `drawWebGPU` 1:1 zu
+ *  `drawWebGL2` aussieht — anderer Backend, gleiche FX-Logik.
+ *
+ *  Implementation lebt in `editor/render/webgpu/draw-context.ts` und
+ *  managed:
+ *   - GPURenderPipeline-Cache (pro FX-Kind, in 2 Blend-Varianten)
+ *   - Scratch-Uniform-Buffer mit Per-Field-Offsets aus dem FX-Spec
+ *   - SnapshotTex-Bindung (Pre-FX-Source) auf festem Texture-Binding
+ *   - Bind-Group-Allocation pro `drawFullscreenQuad`
+ *
+ *  Lifecycle: Backend setzt die aktive Render-Pass + Snapshot-View
+ *  über interne Methoden; Catalog-Code sieht nur die Public-API hier. */
+export interface WebGPUDrawContext {
+  /** Aktive FX-Pipeline binden (lazy-compiled durch den Cache). */
+  useProgram(name: string): void;
+  setUniform1i(name: string, value: number): void;
+  setUniform1f(name: string, value: number): void;
+  setUniform2f(name: string, a: number, b: number): void;
+  setUniform4f(name: string, a: number, b: number, c: number, d: number): void;
+  /** Source-Texture (= Pre-FX-Snapshot) ans Sampler-Slot binden. Der
+   *  Backend reserviert die Slots (typischerweise binding=0 sampler,
+   *  binding=1 source-tex, binding=2 uniforms). `samplerName` ist
+   *  Compat-API mit WebGL2 — bei WebGPU informationell, weil das
+   *  Layout-Slot fest ist. */
+  bindSourceTexture(samplerName?: string): void;
+  setBlendMode(mode: FxBlendMode): void;
+  /** Flush Uniforms → GPU, set Bind-Group, draw 3 (fullscreen triangle). */
+  drawFullscreenQuad(): void;
+}
+
 /** Shared helper for tests / debug logging — describes a fx call site. */
 export function fxLogId(fx: PunchFx): string {
   return `${fx.kind}#${fx.id}`;

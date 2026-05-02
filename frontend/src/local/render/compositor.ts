@@ -2,16 +2,27 @@
  * Per-frame compositor for the edit-render pipeline.
  *
  * Pipeline per output frame:
- *   1. Draw the source VideoFrame onto the main canvas.
- *   2. Paint any active audio-reactive Visualizer layers on top.
- *   3. Burn in text overlays via our Canvas2D ASS-subset renderer.
- *   4. Wrap the canvas as a new VideoFrame for the encoder.
+ *   1. Layer + FX pass via the shared CompositorBackend
+ *      (WebGPU → WebGL2 → Canvas2D fallback ladder, picked by
+ *      `createBackend()` from `editor/render/factory.ts`). The
+ *      backend writes its result into an internal `OffscreenCanvas`.
+ *   2. The internal backend canvas is blitted into the final 2D
+ *      `OffscreenCanvas` via `drawImage()` — once per frame.
+ *   3. Audio-reactive Visualizer layers are painted on top with 2D ctx.
+ *   4. Text overlays are burned in via the Canvas2D ASS-subset renderer.
+ *   5. The final 2D canvas is wrapped as a new VideoFrame for the encoder.
  *
- * The `ass-builder` module is still the source of truth for what a
- * downloadable .ass file should look like (e.g. for external use); the
- * `ass-renderer` here is the source of truth for what burns into rendered
- * video. They share the TextOverlay shape so a spec built once is
- * faithful to both.
+ * Rationale for the two-canvas pattern: the live preview now uses the
+ * same `createBackend()` factory, which means the export's backend may
+ * be WebGPU/WebGL2 (GPU context) — and a single canvas can't hold both
+ * a GPU context and a 2D context. Visualizers + overlays still render
+ * via Canvas2D (they're audio-reactive + text-rendering code, not
+ * shader-friendly), so we composite GPU output into a 2D canvas first.
+ *
+ * Result: preview and export share the same backend code AND the same
+ * backend choice, eliminating the long-standing "WEAR/TAPE look
+ * different in render vs preview" bug. See [memory:
+ * Render-Backends mit Fallback-Ladder].
  */
 
 import type { TextOverlay, EnergyCurves } from "./ass-builder";
@@ -22,13 +33,20 @@ import type { PunchFx } from "../../editor/fx/types";
 import { activeFxAt } from "../../editor/fx/active";
 import { fxCatalog } from "../../editor/fx/catalog";
 import { envelopeAt, INSTANT_ENVELOPE } from "../../editor/fx/envelope";
-import { Canvas2DBackend } from "../../editor/render/canvas2d-backend";
+import {
+  createBackend,
+  type BackendCapabilities,
+} from "../../editor/render/factory";
+import type {
+  CompositorBackend,
+  LayerSource,
+  SourcesMap,
+} from "../../editor/render/backend";
 import type {
   FrameDescriptor,
   FrameFx,
   FrameLayer,
 } from "../../editor/render/frame-descriptor";
-import type { LayerSource, SourcesMap } from "../../editor/render/backend";
 
 export interface CompositorOptions {
   /** Output canvas dimensions — what's encoded. Overlays + visualizers are
@@ -45,8 +63,8 @@ export interface CompositorOptions {
   visualizers?: Visualizer[];
   /** Punch-in FX with in/out spans on the master timeline. Active fx at
    *  the current frame's timestamp paint over the source frame BEFORE
-   *  visualizers and text overlays. Same `drawCanvas2D` impl as the
-   *  live-preview's Canvas2D fallback — single source of truth per kind. */
+   *  visualizers and text overlays. Same `fxCatalog[kind]` impl as the
+   *  live preview — single source of truth per kind. */
   fx?: readonly PunchFx[];
 }
 
@@ -63,41 +81,63 @@ function computeFitRect(
     return { x: 0, y: 0, w: dstW, h: dstH, fillsCanvas: true };
   }
   if (srcAspect > dstAspect) {
-    // Source is wider — fit to width, letterbox top/bottom.
     const h = dstW / srcAspect;
     return { x: 0, y: (dstH - h) / 2, w: dstW, h, fillsCanvas: false };
   }
-  // Source is taller — fit to height, pillarbox left/right.
   const w = dstH * srcAspect;
   return { x: (dstW - w) / 2, y: 0, w, h: dstH, fillsCanvas: false };
 }
 
 export class Compositor {
+  /** Final 2D output canvas — blitted backend output + visualizers +
+   *  overlays end up here, gets wrapped in the VideoFrame. */
   private canvas: OffscreenCanvas;
   private ctx: OffscreenCanvasRenderingContext2D;
+  /** Internal backend canvas (GPU- or 2D-context, depending on
+   *  Backend tier). Layer + FX render here. */
+  private backendCanvas: OffscreenCanvas;
+  private backend: CompositorBackend;
   private opts: CompositorOptions;
   private assBlob: string | null = null;
-  /** Shared draw pipeline — same Canvas2DBackend the live preview uses
-   *  when WebGL2 is unavailable. Routing the export through this
-   *  ensures preview ↔ export pixel parity by construction; whatever
-   *  the backend draws on a frame N descriptor here is exactly what
-   *  the preview RAF would draw on the same descriptor. */
-  private backend: Canvas2DBackend;
 
-  constructor(opts: CompositorOptions) {
+  /** Konstruktor ist private; Aufrufer nutzen `Compositor.create()` weil
+   *  der Backend-Factory async ist. */
+  private constructor(
+    opts: CompositorOptions,
+    canvas: OffscreenCanvas,
+    ctx: OffscreenCanvasRenderingContext2D,
+    backendCanvas: OffscreenCanvas,
+    backend: CompositorBackend,
+  ) {
     this.opts = opts;
-    this.canvas = new OffscreenCanvas(opts.width, opts.height);
-    const ctx = this.canvas.getContext("2d");
-    if (!ctx) throw new Error("Compositor: OffscreenCanvas 2d context unavailable");
+    this.canvas = canvas;
     this.ctx = ctx;
-    this.backend = new Canvas2DBackend();
-    this.backend.initSync(this.canvas, { pixelW: opts.width, pixelH: opts.height });
+    this.backendCanvas = backendCanvas;
+    this.backend = backend;
   }
 
-  /**
-   * Pre-build the ASS string (used for external download / debugging).
-   * Returns immediately — there's no async setup needed for the renderer.
-   */
+  /** Async-Factory. Picks the best backend for `capabilities` via
+   *  `createBackend()` and binds it to an internal OffscreenCanvas. */
+  static async create(
+    opts: CompositorOptions,
+    capabilities: BackendCapabilities,
+  ): Promise<Compositor> {
+    const canvas = new OffscreenCanvas(opts.width, opts.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Compositor: OffscreenCanvas 2d context unavailable");
+    }
+    const backendCanvas = new OffscreenCanvas(opts.width, opts.height);
+    const backend = await createBackend(
+      backendCanvas,
+      { pixelW: opts.width, pixelH: opts.height },
+      capabilities,
+    );
+    await backend.warmup();
+    return new Compositor(opts, canvas, ctx, backendCanvas, backend);
+  }
+
+  /** Pre-build the ASS string (used for external download / debugging). */
   async ensureSubtitleEngine(): Promise<void> {
     if (this.opts.overlays.length === 0) return;
     this.assBlob = buildAss(
@@ -113,10 +153,8 @@ export class Compositor {
     return this.assBlob;
   }
 
-  /**
-   * Composite `frame` for `timestampUs` and return a fresh VideoFrame whose
-   * caller MUST `.close()` after encoding.
-   */
+  /** Composite `frame` for `timestampUs` and return a fresh VideoFrame whose
+   *  caller MUST `.close()` after encoding. */
   composite(frame: VideoFrame, timestampUs: number): VideoFrame {
     return this.compositeImage(
       frame as unknown as CanvasImageSource,
@@ -127,25 +165,6 @@ export class Compositor {
     );
   }
 
-  /**
-   * Multi-source variant: caller provides an arbitrary `CanvasImageSource`
-   * (VideoFrame, ImageBitmap, OffscreenCanvas …) plus its native dimensions.
-   * Letterbox / pillarbox is recomputed per call so cams of different
-   * aspects can share a single compositor + output stream.
-   *
-   * `rotationDeg` is the source's display rotation as decoded from its
-   * MP4 transform matrix (0/90/180/270). Phone recordings held in
-   * portrait carry 90 or 270 here — the browser's `<video>` element
-   * applies it implicitly in preview, so the render must too or the
-   * output comes out sideways relative to what the user finetuned.
-   *
-   * `userTransform` is the per-clip rotation+flip the user applied via
-   * the Options panel. Stacked on top of `rotationDeg` (intrinsic) so the
-   * effective rotation is `(intrinsic + user) mod 360`. Flip is applied
-   * AFTER rotation in the source's stored frame (so a horizontal flip is
-   * always horizontal from the user's point of view, regardless of how
-   * the cam was rotated).
-   */
   compositeImage(
     source: CanvasImageSource,
     srcW: number,
@@ -155,10 +174,9 @@ export class Compositor {
     rotationDeg: 0 | 90 | 180 | 270 = 0,
     userTransform: { rotation?: number; flipX?: boolean; flipY?: boolean } = {},
   ): VideoFrame {
-    // Intrinsic + user rotation, snapped to 90° steps. Free angles aren't
-    // supported in V1 (the bbox / fit math would need a rotated AABB).
     const intrinsic = rotationDeg % 360;
-    const userRot = ((Math.round((userTransform.rotation ?? 0) / 90) * 90) % 360 + 360) % 360;
+    const userRot =
+      ((Math.round((userTransform.rotation ?? 0) / 90) * 90) % 360 + 360) % 360;
     const rot = ((intrinsic + userRot) % 360) as 0 | 90 | 180 | 270;
     const flipX = !!userTransform.flipX;
     const flipY = !!userTransform.flipY;
@@ -171,8 +189,6 @@ export class Compositor {
 
     const layer: FrameLayer = {
       layerId: "src",
-      // Kind is informational at this layer — the backend dispatches on
-      // the SourcesMap entry's kind, not this one.
       source: { kind: "video", clipId: "src", sourceTimeS: 0, sourceDurS: 0 },
       weight: 1,
       fitRect: { x: fit.x, y: fit.y, w: fit.w, h: fit.h },
@@ -194,13 +210,7 @@ export class Compositor {
               def.applyWetness && wetness < 1
                 ? def.applyWetness(merged, wetness)
                 : merged;
-            return {
-              id: fx.id,
-              kind: fx.kind,
-              inS: fx.inS,
-              params,
-              wetness,
-            };
+            return { id: fx.id, kind: fx.kind, inS: fx.inS, params, wetness };
           })
           .filter((f) => f.wetness > 0)
       : [];
@@ -216,17 +226,19 @@ export class Compositor {
       ["src", classifySource(source)],
     ]);
 
-    // Layer + fx pass — same code path as the live preview's Canvas2D
-    // fallback. Bit-equivalent pixels for any (rotation, flip, fx)
-    // combination by construction.
+    // 1. Backend rendert Layer + FX in den internen backendCanvas.
     this.backend.drawFrame(descriptor, sources);
 
-    // Reset transform before visualizers / overlays so they render in
-    // raw output-pixel coords. Backend leaves the canvas in a scale-
-    // transformed state that's identity here (pixelW == output.w on
-    // the export side) but explicit reset is cheap insurance.
+    // 2. Reset transform und blit den Backend-Output ins finale Canvas.
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, this.opts.width, this.opts.height);
+    // drawImage() funktioniert mit OffscreenCanvas (sowohl 2D- als auch
+    // GPU-Context-backed) als Source in modernen Engines (Chromium ≥113,
+    // Safari 17, Firefox 116). Falls eine ältere Engine fehlschlägt,
+    // ist ImageBitmap → drawImage der Workaround; nicht hier nötig.
+    this.ctx.drawImage(this.backendCanvas, 0, 0);
 
+    // 3. Visualizer + Overlays auf den finalen 2D-Context.
     if (this.opts.visualizers && this.opts.visualizers.length > 0) {
       for (const v of this.opts.visualizers) {
         v.draw(this.ctx, t, this.opts.width, this.opts.height);
@@ -254,11 +266,7 @@ export class Compositor {
   }
 }
 
-/** Map a generic CanvasImageSource into the backend's LayerSource union.
- *  ImageBitmap / OffscreenCanvas / HTMLImageElement land in the "image"
- *  bucket (the backend's `drawImage` accepts any of them). VideoFrame
- *  uses the dedicated "videoframe" branch so future GPU backends can
- *  pick `importExternalTexture` instead of an upload. */
+/** Map a generic CanvasImageSource into the backend's LayerSource union. */
 function classifySource(source: CanvasImageSource): LayerSource {
   if (typeof VideoFrame !== "undefined" && source instanceof VideoFrame) {
     return { kind: "videoframe", frame: source };

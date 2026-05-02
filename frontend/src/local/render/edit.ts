@@ -43,6 +43,7 @@ import {
   applyDriftStretchInterleaved,
 } from "./audio-fx";
 import { Compositor } from "./compositor";
+import type { BackendCapabilities } from "../../editor/render/factory";
 import { CamFrameStream } from "./cam-frame-stream";
 import { makeTestPatternCanvas } from "./test-pattern";
 import { activeCamAt } from "../../editor/cuts";
@@ -103,6 +104,13 @@ export interface EditRenderInput {
   /** Periodic progress notifications. Called from the decoder output
    *  callback — keep work in the handler tiny. */
   onProgress?: (p: EditRenderProgress) => void;
+  /** Render-Backend-Capabilities für die Compositor-Factory. Caller
+   *  is responsible for probing — main thread typically uses
+   *  `detectCapabilities() + probeWebGPU()`; the Worker probes
+   *  internally and passes the result here. Defaults to Canvas2D-only
+   *  if omitted (no GPU backend) — ensures correctness if a caller
+   *  forgets to probe; render then matches the legacy hardcoded path. */
+  capabilities?: BackendCapabilities;
 }
 
 export interface EditRenderResult {
@@ -245,16 +253,19 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
     }
   }
 
-  const compositor = new Compositor({
-    width: outputWidth,
-    height: outputHeight,
-    sourceWidth: video.info.width,
-    sourceHeight: video.info.height,
-    overlays: input.overlays,
-    energy: input.energy ?? null,
-    visualizers: input.visualizers ?? [],
-    fx: input.fx ?? [],
-  });
+  const compositor = await Compositor.create(
+    {
+      width: outputWidth,
+      height: outputHeight,
+      sourceWidth: video.info.width,
+      sourceHeight: video.info.height,
+      overlays: input.overlays,
+      energy: input.energy ?? null,
+      visualizers: input.visualizers ?? [],
+      fx: input.fx ?? [],
+    },
+    input.capabilities ?? { webgl2: false, webgpu: false },
+  );
   await compositor.ensureSubtitleEngine();
 
   const encoder = new StreamingVideoEncoder({
@@ -676,16 +687,19 @@ export async function editRenderMulti(
   const testPattern = makeTestPatternCanvas(outputWidth, outputHeight);
 
   // Compositor (overlays + visualizers + fx shared across cams).
-  const compositor = new Compositor({
-    width: outputWidth,
-    height: outputHeight,
-    sourceWidth: outputWidth,
-    sourceHeight: outputHeight,
-    overlays: input.overlays,
-    energy: input.energy ?? null,
-    visualizers: input.visualizers ?? [],
-    fx: input.fx ?? [],
-  });
+  const compositor = await Compositor.create(
+    {
+      width: outputWidth,
+      height: outputHeight,
+      sourceWidth: outputWidth,
+      sourceHeight: outputHeight,
+      overlays: input.overlays,
+      energy: input.energy ?? null,
+      visualizers: input.visualizers ?? [],
+      fx: input.fx ?? [],
+    },
+    input.capabilities ?? { webgl2: false, webgpu: false },
+  );
   await compositor.ensureSubtitleEngine();
 
   const encoder = new StreamingVideoEncoder({

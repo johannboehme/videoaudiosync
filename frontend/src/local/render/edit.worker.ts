@@ -26,6 +26,7 @@ import {
   type Segment,
 } from "./edit";
 import { opfs } from "../../storage/opfs";
+import type { BackendCapabilities } from "../../editor/render/factory";
 import { ShowwavesVisualizer } from "./visualizer/showwaves";
 import { ShowfreqsVisualizer } from "./visualizer/showfreqs";
 import type { Visualizer } from "./visualizer/types";
@@ -108,6 +109,33 @@ export type EditWorkerEvent =
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
+/** Detect render-backend capabilities inside the worker. The compositor
+ *  uses these to pick WebGPU → WebGL2 → Canvas2D in the Factory ladder.
+ *  - webgl2: sync probe via OffscreenCanvas.getContext.
+ *  - webgpu: async probe via requestAdapter — null means "API exists
+ *            but no compatible adapter on this platform" (Linux-Chrome
+ *            without dedicated GPU is the typical fail case). */
+async function probeBackendCapabilities(): Promise<BackendCapabilities> {
+  let webgl2 = false;
+  try {
+    const probe = new OffscreenCanvas(1, 1);
+    webgl2 = probe.getContext("webgl2") != null;
+  } catch {
+    /* OffscreenCanvas missing or webgl2 unsupported */
+  }
+  let webgpu = false;
+  const gpu = (self.navigator as Navigator & { gpu?: GPU }).gpu;
+  if (gpu) {
+    try {
+      const adapter = await gpu.requestAdapter();
+      webgpu = adapter != null;
+    } catch {
+      /* requestAdapter threw — leave webgpu=false */
+    }
+  }
+  return { webgl2, webgpu };
+}
+
 ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
   const msg = e.data;
   if (msg.type !== "start") return;
@@ -116,6 +144,9 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
   let writable: FileSystemWritableFileStream | null = null;
   try {
     writable = await opfs.createWritable(input.outputPath);
+    // Probe once per worker invocation. Cheap on the second worker-spawn
+    // (adapter is cached at the platform-driver level).
+    const capabilities = await probeBackendCapabilities();
 
     const visualizers: Visualizer[] = [];
     for (const d of input.visualizers) {
@@ -176,6 +207,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
         audioBitrateBps: input.audioBitrateBps,
         output: writable,
         onProgress,
+        capabilities,
       });
     } else {
       // Single-cam fast path. Either `videoPath` (legacy) or the only entry
@@ -201,6 +233,7 @@ ctx.addEventListener("message", async (e: MessageEvent<EditWorkerMessage>) => {
         audioBitrateBps: input.audioBitrateBps,
         output: writable,
         onProgress,
+        capabilities,
       });
     }
 
