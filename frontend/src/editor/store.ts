@@ -1041,7 +1041,12 @@ export const useEditorStore = create<EditorState>()(
         beatsPerBar,
         barOffsetBeats: effectiveBarOffsetBeats(s.jobMeta),
       });
-      const eps = step * 0.01;
+      // FP tolerance only — used to absorb snapTime's
+      // round-half-toward-+∞ asymmetry on negative half-tick probes.
+      // NOT a "near a snap" widener: a larger eps would falsely double
+      // the step when the user's playhead happens to land within ±N ms
+      // of a snap (e.g. via audio-mirror seek precision).
+      const eps = step * 1e-9;
       let target = candidate;
       if (Math.abs(target - t) < eps) target = candidate + direction * step;
       s.seek(target);

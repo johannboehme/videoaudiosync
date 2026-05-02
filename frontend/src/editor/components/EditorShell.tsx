@@ -9,6 +9,38 @@ import { useEditorStore } from "../store";
 const SIDE_PANEL_COLLAPSE_KEY = "editor.sidepanel.collapsed";
 const EXPANDED_W = 380;
 
+/** Tailwind `lg` breakpoint (= 1024px). The desktop and mobile layout
+ *  branches BOTH receive the same React children (`videoArea`,
+ *  `transport`, `timeline`, ...). Rendering them under a CSS-only
+ *  `hidden lg:grid` / `lg:hidden` swap mounts each child TWICE in the
+ *  React tree — burning a duplicate `<MasterAudio>` (= a second WebAudio
+ *  ping-pong + AudioContext) and a duplicate `<TransportBar>` (=
+ *  duplicate keydown listener → arrows step 2× the snap). We use
+ *  this hook to render exactly ONE branch instead. */
+const LG_MQ = "(min-width: 1024px)";
+function useIsLargeViewport(): boolean {
+  const [large, setLarge] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.matchMedia(LG_MQ).matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mql = window.matchMedia(LG_MQ);
+    const onChange = (e: MediaQueryListEvent) => setLarge(e.matches);
+    if (mql.addEventListener) {
+      mql.addEventListener("change", onChange);
+      return () => mql.removeEventListener("change", onChange);
+    }
+    const legacy = mql as unknown as {
+      addListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
+      removeListener?: (cb: (ev: MediaQueryListEvent) => void) => void;
+    };
+    legacy.addListener?.(onChange);
+    return () => legacy.removeListener?.(onChange);
+  }, []);
+  return large;
+}
+
 function readCollapsed(): boolean {
   if (typeof localStorage === "undefined") return false;
   return localStorage.getItem(SIDE_PANEL_COLLAPSE_KEY) === "1";
@@ -43,6 +75,7 @@ export function EditorShell({
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(readCollapsed);
   const fxPanelOpen = useEditorStore((s) => s.ui.fxPanelOpen);
+  const isLarge = useIsLargeViewport();
   // When the FX compartment is pulled out, the timeline's top corners
   // go flat — the compartment merges with the timeline as a single
   // "drawer pulled out of the timeline" silhouette.
@@ -77,9 +110,20 @@ export function EditorShell({
        *  expand-handle floats over the right edge as a small grab tab.
        *  No overflow-hidden here — the handle uses negative `right`
        *  to escape the px-3 padding and sit flush against the screen
-       *  edge when collapsed. */}
+       *  edge when collapsed.
+       *
+       *  CRITICAL: rendered ONLY on lg+ via JS (not CSS-toggled).
+       *  Mounting both branches via `hidden lg:grid` + `lg:hidden`
+       *  duplicates `transport` / `videoArea` / `timeline` in the React
+       *  tree — fine for static markup, fatal for nodes with effects.
+       *  In particular it spawns TWO `<MasterAudio>` instances (= two
+       *  parallel WebAudio ping-pong setups summed into the same
+       *  destination, audible as constant phasing/comb-filtering across
+       *  the whole loop) and TWO `<TransportBar>` keydown listeners
+       *  (arrow-key snap navigation steps 2× the snap distance). */}
+      {isLarge && (
       <div
-        className="relative flex-1 hidden lg:grid gap-3 px-3 pb-3 min-h-0 transition-[grid-template-columns] duration-200 ease-out"
+        className="relative flex-1 grid gap-3 px-3 pb-3 min-h-0 transition-[grid-template-columns] duration-200 ease-out"
         style={{
           gridTemplateColumns: sideCollapsed
             ? `1fr 0px`
@@ -126,6 +170,7 @@ export function EditorShell({
           onToggle={() => setSideCollapsed((c) => !c)}
         />
       </div>
+      )}
 
       {/* Tablet / mobile layout — scrollable column. Phones can't fit
        *  video + transport + FX + timeline + actions on one screen, so
@@ -140,7 +185,8 @@ export function EditorShell({
        *  FX pull-tab visible separation from the snap-button strip
        *  at the top of the timeline panel — without this the panels
        *  felt fused together. */}
-      <div className="flex-1 lg:hidden flex flex-col gap-2 px-2 pb-2 overflow-y-auto overflow-x-hidden min-h-0">
+      {!isLarge && (
+      <div className="flex-1 flex flex-col gap-2 px-2 pb-2 overflow-y-auto overflow-x-hidden min-h-0">
         <div
           className="relative aspect-video shrink-0 bg-sunken rounded-lg border border-rule shadow-panel overflow-hidden"
           style={{ maxHeight: "40vh" }}
@@ -161,6 +207,7 @@ export function EditorShell({
           <div className="h-full p-3">{sidePanel}</div>
         </BottomSheet>
       </div>
+      )}
     </div>
   );
 }
