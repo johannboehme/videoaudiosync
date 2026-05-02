@@ -331,6 +331,10 @@ export async function editRender(input: EditRenderInput): Promise<EditRenderResu
             outTs,
             frame.duration ?? 0,
             srcRot,
+            undefined,
+            // FX live on the master timeline; tS is the source-frame's
+            // master time (single-cam pipeline = master time).
+            tS,
           );
           encoder.pushFrame(composed, { keyFrame: firstFrameInGop });
           composed.close();
@@ -791,6 +795,10 @@ export async function editRenderMulti(
           frameDurationUs,
           srcRot,
           userTransform,
+          // FX must be looked up at master time (tMaster), not the
+          // segment-relative output timestamp — segments shift output
+          // time so FX queries with output time miss every FX.
+          tMaster,
         );
         encoder.pushFrame(composed, {
           keyFrame: framesEmitted === segStartFrame,

@@ -174,6 +174,15 @@ export class Compositor {
     durationUs: number,
     rotationDeg: 0 | 90 | 180 | 270 = 0,
     userTransform: { rotation?: number; flipX?: boolean; flipY?: boolean } = {},
+    /**
+     * Master-timeline time in seconds for FX lookup. **Must be passed
+     * by callers that use segments**, because `timestampUs` is the
+     * output-relative timestamp (starts at 0 each segment) — looking
+     * up FX with that ignores the master-time offset and the FX never
+     * "fire" in the export. When omitted, falls back to
+     * `timestampUs / 1e6` (correct only for whole-video renders where
+     * output time == master time). */
+    tMasterS?: number,
   ): Promise<VideoFrame> {
     const intrinsic = rotationDeg % 360;
     const userRot =
@@ -187,6 +196,11 @@ export class Compositor {
     const fit = computeFitRect(dispW, dispH, this.opts.width, this.opts.height);
 
     const t = timestampUs / 1_000_000;
+    // FX live on the master timeline (e.g. fx.inS = 13.43s). When the
+    // export uses segments, `timestampUs` is segment-relative and lookups
+    // with it would miss every FX. Callers pass `tMasterS` for the
+    // correct master-time FX query.
+    const tFx = tMasterS ?? t;
 
     const layer: FrameLayer = {
       layerId: "src",
@@ -201,11 +215,11 @@ export class Compositor {
     };
 
     const fxFrame: FrameFx[] = this.opts.fx
-      ? activeFxAt(this.opts.fx, t)
+      ? activeFxAt(this.opts.fx, tFx)
           .map((fx) => {
             const def = fxCatalog[fx.kind];
             const env = fx.envelope ?? INSTANT_ENVELOPE;
-            const wetness = envelopeAt(env, fx.outS - fx.inS, t - fx.inS);
+            const wetness = envelopeAt(env, fx.outS - fx.inS, tFx - fx.inS);
             const merged = { ...def.defaultParams, ...(fx.params ?? {}) };
             const params =
               def.applyWetness && wetness < 1
@@ -217,7 +231,7 @@ export class Compositor {
       : [];
 
     const descriptor: FrameDescriptor = {
-      tMaster: t,
+      tMaster: tFx,
       output: { w: this.opts.width, h: this.opts.height },
       layers: [layer],
       fx: fxFrame,
