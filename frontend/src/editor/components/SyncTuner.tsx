@@ -24,7 +24,8 @@ export function SyncTuner({ lastSyncOverrideMs }: Props) {
   const nudgeClipSyncOverride = useEditorStore((s) => s.nudgeClipSyncOverride);
   const abBypass = useEditorStore((s) => s.offset.abBypass);
   const setAbBypass = useEditorStore((s) => s.setAbBypass);
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
+  // currentTime read imperatively in the loop-around-playhead handler
+  // — subscribing would re-render this whole panel 60×/sec for nothing.
   const trim = useEditorStore((s) => s.trim);
   const setLoop = useEditorStore((s) => s.setLoop);
   const loop = useEditorStore((s) => s.playback.loop);
@@ -48,8 +49,9 @@ export function SyncTuner({ lastSyncOverrideMs }: Props) {
   const totalMs = abBypass ? algoMs : algoMs + userOverrideMs;
 
   function setLoopAroundPlayhead(seconds: number) {
+    const t = useEditorStore.getState().playback.currentTime;
     const half = seconds / 2;
-    const start = Math.max(trim.in, currentTime - half);
+    const start = Math.max(trim.in, t - half);
     const end = Math.min(trim.out, start + seconds);
     setLoop({ start, end });
   }
@@ -321,7 +323,7 @@ function MasterAudioBranch() {
   );
   const setAudioStartNudgeS = useEditorStore((s) => s.setAudioStartNudgeS);
   const nudgeAudioStartMs = useEditorStore((s) => s.nudgeAudioStartMs);
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
+  // currentTime read imperatively in setLoopAroundPlayhead.
   const trim = useEditorStore((s) => s.trim);
   const setLoop = useEditorStore((s) => s.setLoop);
   const loop = useEditorStore((s) => s.playback.loop);
@@ -329,8 +331,9 @@ function MasterAudioBranch() {
   const audioNudgeMs = audioNudgeS * 1000;
 
   function setLoopAroundPlayhead(seconds: number) {
+    const t = useEditorStore.getState().playback.currentTime;
     const half = seconds / 2;
-    const start = Math.max(trim.in, currentTime - half);
+    const start = Math.max(trim.in, t - half);
     const end = Math.min(trim.out, start + seconds);
     setLoop({ start, end });
   }

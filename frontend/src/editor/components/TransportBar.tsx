@@ -24,7 +24,11 @@ export function TransportBar() {
   const meta = useEditorStore((s) => s.jobMeta);
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const setPlaying = useEditorStore((s) => s.setPlaying);
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
+  // Don't subscribe to currentTime here — it changes 60×/sec while
+  // playing and would re-render this whole bar (and re-bind the
+  // keyboard listener via the useEffect deps). All consumers below are
+  // click/keyboard handlers; they read the current value imperatively
+  // via getState() at the moment of the action.
   const trim = useEditorStore((s) => s.trim);
   const setTrim = useEditorStore((s) => s.setTrim);
   const loop = useEditorStore((s) => s.playback.loop);
@@ -53,7 +57,8 @@ export function TransportBar() {
   const effectiveStart = effectiveAudioStartS(meta);
 
   function step(deltaSec: number) {
-    seek(currentTime + deltaSec);
+    const t = useEditorStore.getState().playback.currentTime;
+    seek(t + deltaSec);
   }
 
   // IN/OUT semantics are modal: while a loop region is active they edit
@@ -61,21 +66,23 @@ export function TransportBar() {
   // playhead); otherwise they edit the trim/export region. Same logic in
   // both the buttons and the I/O shortcuts.
   function setInPointAtPlayhead() {
+    const t = useEditorStore.getState().playback.currentTime;
     if (loop) {
-      const newStart = currentTime;
+      const newStart = t;
       const newEnd = Math.max(loop.end, newStart + 1 / fps);
       setLoop({ start: newStart, end: newEnd });
     } else {
-      setTrim({ in: currentTime, out: trim.out });
+      setTrim({ in: t, out: trim.out });
     }
   }
   function setOutPointAtPlayhead() {
+    const t = useEditorStore.getState().playback.currentTime;
     if (loop) {
-      const newEnd = currentTime;
+      const newEnd = t;
       const newStart = Math.min(loop.start, newEnd - 1 / fps);
       setLoop({ start: newStart, end: newEnd });
     } else {
-      setTrim({ in: trim.in, out: currentTime });
+      setTrim({ in: trim.in, out: t });
     }
   }
 
@@ -120,7 +127,6 @@ export function TransportBar() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
-    currentTime,
     fps,
     isPlaying,
     loop,
@@ -272,7 +278,14 @@ export function TransportBar() {
           variant={loop ? "primary" : "secondary"}
           pressed={!!loop}
           size={trimSize}
-          onClick={() => setLoop(loop ? null : { start: currentTime, end: Math.min(duration, currentTime + 2) })}
+          onClick={() => {
+            if (loop) {
+              setLoop(null);
+              return;
+            }
+            const t = useEditorStore.getState().playback.currentTime;
+            setLoop({ start: t, end: Math.min(duration, t + 2) });
+          }}
           iconLeft={<LoopIcon />}
           aria-label={loop ? "Disable loop" : "Loop a 2-second region from the playhead"}
         >

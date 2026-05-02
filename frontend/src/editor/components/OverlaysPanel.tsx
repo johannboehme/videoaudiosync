@@ -31,15 +31,17 @@ export function OverlaysPanel() {
   const removeOverlay = useEditorStore((s) => s.removeOverlay);
   const visualizer = useEditorStore((s) => s.visualizer);
   const setVisualizer = useEditorStore((s) => s.setVisualizer);
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
+  // currentTime is only read inside the click handler; subscribing
+  // would re-render this whole panel 60×/sec while playback runs.
   const trim = useEditorStore((s) => s.trim);
 
   function add() {
+    const t = useEditorStore.getState().playback.currentTime;
     addOverlay({
       type: "text",
       text: "Your text",
-      start: currentTime,
-      end: Math.min(trim.out, currentTime + 2),
+      start: t,
+      end: Math.min(trim.out, t + 2),
       preset: "outline",
       x: 0.5,
       y: 0.85,

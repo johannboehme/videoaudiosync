@@ -29,8 +29,12 @@ interface Props {
 }
 
 export function Compositor({ cams, audioUrl }: Props) {
-  const currentTime = useEditorStore((s) => s.playback.currentTime);
-  const activeCamId = useEditorStore((s) => s.activeCamId(currentTime));
+  // Single selector so we re-render only when the *active cam id* flips
+  // — not on every 60 Hz currentTime tick. Zustand's default Object.is
+  // comparison on the returned string short-circuits between flips.
+  // (The previous two-selector form re-rendered the whole compositor
+  // every frame just to feed currentTime into activeCamId.)
+  const activeCamId = useEditorStore((s) => s.activeCamId(s.playback.currentTime));
   const showTestPattern = activeCamId === null;
 
   return (
