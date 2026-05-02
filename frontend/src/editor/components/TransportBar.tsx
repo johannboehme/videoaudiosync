@@ -91,8 +91,16 @@ export function TransportBar() {
       setLoop(null);
       return;
     }
+    // Anchor inside trim — if the playhead sits before/after the trim
+    // region (e.g. fresh editor open with currentTime = 0 while the
+    // audio starts at trim.in = 6.4 s) we'd otherwise propose a region
+    // outside trim, which `setLoop` clamps to null and the L shortcut
+    // appears to do nothing. Clamping here keeps the action a real
+    // toggle from any playhead position.
     const t = useEditorStore.getState().playback.currentTime;
-    setLoop({ start: t, end: Math.min(duration, t + 2) });
+    const start = Math.max(trim.in, Math.min(trim.out - 1 / fps, t));
+    const end = Math.min(trim.out, start + 2);
+    setLoop({ start, end });
   }
 
   // Keyboard shortcuts (skip when an input/textarea is focused)
